@@ -62,5 +62,12 @@ qobj.$O: /sys/src/cmd/qc/q.out.h
 vobj.$O: /sys/src/cmd/vc/v.out.h
 jobj.$O: /sys/src/cmd/jc/j.out.h
 
+# jdb.c #include's jc/enam.c (a generated table of opcode names).
+# Make sure it's generated before jdb compiles, so mk doesn't need
+# /sys/src/cmd/jc to have been built first.
+jdb.$O: /sys/src/cmd/jc/enam.c
+/sys/src/cmd/jc/enam.c: /sys/src/cmd/jc/j.out.h
+	cd /sys/src/cmd/jc && rc mkenam
+
 # 9obj.$O: /sys/src/cmd/9c/9.out.h
 # uobj.$O: uc/u.out.h
