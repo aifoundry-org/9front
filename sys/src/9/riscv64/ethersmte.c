@@ -192,6 +192,7 @@ struct Ctlr {
 	void	*apmu;		/* APMU MMIO */
 	u32int	apmuoff;
 	int	irq;
+	int attach;
 
 	u32int	rxdelay;
 	u32int	txdelay;
@@ -250,17 +251,7 @@ ethinit(Ether *edev)
 	return 0;
 }
 
-static void
-ethattach(Ether *edev)
-{
-	Ctlr *c;
 
-	c = edev->ctlr;
-	if(c->attach)
-		return;
-	c->attach = 1;
-	kproc("ethproc", ethproc, edev);
-}
 
 static void
 ethprom(void *arg, int on)
@@ -298,13 +289,63 @@ ethifstat(void *arg, char *p, char *e)
 }
 ------------------------------------------------*/
 
+static Ether *thisether;
 
+static void
+ethirq(Ureg *, void *arg)
+{
+	Ether *edev;
+	Ctlr *c;
+	
+	edev = arg;
+	c = edev->ctlr;
+
+	// Check DMA STATUS
+}
+
+static void
+etherclock(void)
+{
+	ethirq(nil, thisether);
+}
+
+static void
+smteonce(Ether *edev)
+{
+	static int beenhere;
+	static Lock l;
+
+	ilock(&l);
+	if (!beenhere && edev != nil) {
+		beenhere = 1;
+		/* simulate interrupts */
+		if (edev->irq < 0) {		/* poll as backup */
+			thisether = edev;
+			addclock0link(etherclock, 1000/HZ);
+			iprint("Polling\n");
+		}
+	}
+	iunlock(&l);
+}
 
 static u32int
 csr32r(uintptr base, uintptr off)
 {
 	coherence();
 	return *(volatile u32int*)(base + off);
+}
+
+static void
+ethattach(Ether *edev)
+{
+	Ctlr *c;
+
+	c = edev->ctlr;
+	if(c->attach)
+		return;
+	c->attach = 1;
+	print("Attached...\n");
+	//kproc("ethproc", ethproc, edev);
 }
 
 static void
@@ -355,6 +396,9 @@ etherpnp(Ether *edev)
 {
 	static Ctlr ct;
 
+	if(ct.irq != 0)		// The first time pass
+		return -1;
+
 	if (check_soc_fingerprint()) {
 		ct.regs 	= vmap(EMAC0_PHYS, EMAC0_SIZE);
 		ct.apmu 	= vmap(APMU_PHYS, APMU_SIZE);
@@ -363,13 +407,23 @@ etherpnp(Ether *edev)
 		ct.rxdelay 	= SMTE_DEFAULT_RXDELAY_PS;
 		ct.txdelay 	= SMTE_DEFAULT_TXDELAY_PS;
 	
-		edev->ctlr 	= &ct;
-		edev->port 	= EMAC0_PHYS;
-		edev->irq 	= EMAC0_IRQ;
-
+		edev->ctlr 		= &ct;
+		edev->port 		= EMAC0_PHYS;
+		//edev->irq 		= EMAC0_IRQ;
+		edev->irq 		= -1;	// Force use poll interrupt with smteonce()
+		edev->attach 	= ethattach;
+		edev->arg 		= edev;
+		edev->mbps 		= 1000;
 		smtereadhwaddr((uintptr)ct.regs, edev->ea);
 	
-		return -1;	/* Unfinish */
+		//intrenable(edev->irq, ethirq, edev, LEVEL, edev->name);
+		//or
+		//intrenable(edev->irq, ethirq, edev, BUSUNKNOWN, edev->name);
+
+		// now poll interrupt
+		smteonce(edev);			/* Based ether9221.c omap architecture */
+
+		return 0;	/* Unfinish */
 	}
 	return -1;
 }
