@@ -50,3 +50,12 @@ fail:
 	FENCE_RW
 	MOV	R11, RARG
 	RET
+
+/* vlong aswapv(Avlong *, vlong) */
+TEXT aswapv(SB), 1, $-4
+    MOV new+XLEN(FP), R9
+    FENCE_RW
+    AMOD(Amoswap, AQ|RL, 9, ARG, ARG)
+    FENCE_RW
+    RET
+
