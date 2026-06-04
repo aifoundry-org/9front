@@ -621,6 +621,11 @@ elf64dotout(int fd, Fhdr *fp, ExecHdr *hp)
 		fp->type = FPOWER64;
 		fp->name = "power64 ELF64 executable";
 		break;
+	case RISCV64:
+		mach = &mriscv64;
+		fp->type = FRISCV64;
+		fp->name = "riscv64 ELF64 executable";
+		break;
 	}
 
 	if(ep->phentsize != sizeof(P64hdr)) {
