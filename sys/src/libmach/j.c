@@ -102,9 +102,9 @@ Mach mriscv64 =
 	"setSB",	/* static base register name */
 	0,		/* static base register value */
 	0x1000,		/* page size */
-	/* these are Sv39 values */
-	0xffffffffc0000000,	/* kernel base */
-	0xfffffffff0000000,	/* kernel text mask for Sv39 and above */
+	/* KZERO=0x80000000; kernel virtual = KZERO+physical, DRAM at 0x80000000 */
+	0x100000000,		/* kernel base (KZERO + DRAM base) */
+	0x100000000,		/* kernel text mask: bit 32 set in kernel, clear in user */
 	0x0000003fffffffff,	/* user stack top */
 	2,		/* quantization of pc */
 	8,		/* szaddr */
