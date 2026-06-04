@@ -1692,6 +1692,8 @@ iself(void)
 	[50]	"IA-64",
 	[62]	"AMD64",
 	[75]	"VAX",
+	[183]	"ARM64",
+	[243]	"riscv64",
 	};
 	static char *type[] = {
 	[1]	"relocatable object",
