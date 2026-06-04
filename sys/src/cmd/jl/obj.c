@@ -139,8 +139,8 @@ main(int argc, char *argv[])
 		if(INITRND == -1)
 			INITRND = 4096;
 		break;
- 	case 5:	/* elf executable */
-		HEADR = rnd(52L+3*32L, 16);
+ 	case 5:	/* elf64 executable */
+		HEADR = rnd(64L+3*56L, 16);
 		if(INITTEXT == -1)
 			INITTEXT = 0;
 		if(INITDAT == -1)
