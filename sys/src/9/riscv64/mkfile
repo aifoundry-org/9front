@@ -1,7 +1,8 @@
 CONF=qemu
 CONFLIST=qemu
 
-loadaddr=0xffffffffc0200000
+#loadaddr=0x80200000
+loadaddr=0x100200000
 
 objtype=riscv64
 </$objtype/mkfile
@@ -40,14 +41,23 @@ PORT=\
 	xalloc.$O\
 	userinit.$O\
 
+# don't forget: l.$O must always be first
 OBJ=\
 	l.$O\
+	archrv.$O\
+	bootargs.$O\
+	strap.$O\
 	main.$O\
 	mmu.$O\
 	mem.$O\
+	plic.$O\
 	trap.$O\
 	clock.$O\
+	fp.$O\
 	fpu.$O\
+	sbi.$O\
+	sbicall.$O\
+	sbiecall.$O\
 	$CONF.root.$O\
 	$CONF.rootc.$O\
 	$DEVS\
@@ -69,6 +79,7 @@ LIB=\
 
 $p$CONF:D:	$OBJ $CONF.$O $LIB
 	$LD -s -l -o $target -H6 -R0x1000 -T$loadaddr $prereq
+	$LD -s -l -o $target.elf -H5 -T4128 -R4 -T$loadaddr $prereq
 
 s$p$CONF:D:	$OBJ $CONF.$O $LIB
 	$LD -l -o $target -R0x1000 -T$loadaddr $prereq
@@ -90,7 +101,7 @@ install:V: /$objtype/$p$CONF
 pciqemu.$O: ../port/pci.h
 
 initcode.out:		init9.$O initcode.$O /$objtype/lib/libc.a
-	$LD -l -R1 -s -o $target $prereq
+	$LD -l -R1  -o $target $prereq
 
 #rebootcode.out:		rebootcode.$O cache.v8.$O
 #	$LD -l -H6 -R1 -T0x40020000 -s -o $target $prereq
