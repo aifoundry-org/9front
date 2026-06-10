@@ -10,17 +10,19 @@ SFILES=\
 	getfcr.s\
 	main9.s\
 	main9p.s\
-	memccpy.s\
-	memchr.s\
-	memcmp.s\
-	memmove.s\
-	memset.s\
 	setjmp.s\
 	sqrt.s\
 	strchr.s\
 	strcmp.s\
 	strcpy.s\
 	tas.s\
+
+NO=\
+	memccpy.s\
+	memchr.s\
+	memcmp.s\
+	memmove.s\
+	memset.s\
 
 # seek.s was included by ../9syscall/mkfile
 CFILES=\
