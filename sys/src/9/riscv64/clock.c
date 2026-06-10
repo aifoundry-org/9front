@@ -17,12 +17,6 @@ clockinit(void)
 {
 }
 
-void
-timerset(uvlong next)
-{
-	// TODO
-}
-
 uvlong
 fastticks(uvlong *hz)
 {

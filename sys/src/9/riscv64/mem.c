@@ -9,8 +9,9 @@
 void
 mmu0init(uintptr *l1)
 {
+	print("mmu0init l1 %p\n", l1);
+#ifdef XXX
 	uintptr va, pa, pe, attr;
-
 	/* VDRAM */
 	attr = PTEREAD | PTEWRITE | PTEEXEC;
 	pe = -KZERO;
@@ -40,22 +41,48 @@ mmu0init(uintptr *l1)
 	if(PTLEVELS > 2)
 	for(va = KSEG0; va != 0; va += PGLSZ(2))
 		l1[PTLX(va, 2)] = PA2PTE((uintptr)&l1[L1TABLEX(va, 1)]) | PTEVALID;
+#endif
 }
 
 void
 meminit(void)
 {
 	char *p;
-	uintptr l = GiB + 128 * MiB;
+	uintptr l = VDRAM + 2ULL * GiB;
+	extern u64int *sv57, *sv48, *sv39, *pGiB;
+	extern uintptr klimit;
 
 	if(p = getconf("*maxmem"))
 		l = strtoull(p, 0, 0);
-	conf.mem[0].base = PGROUND((uintptr)end);
+	print("meminit: end %p, KZERO %p, PGROUND %p\n", end, KZERO, PGROUND((uintptr)end - KTZERO));
+
+	// leave a big hole after end, for now. We need it for this and that. 
+	conf.mem[0].base = ROUND(PGROUND((uintptr)end - KTZERO) + (uintptr)(VDRAM+0x2fffff), 0x200000);
 	conf.mem[0].limit = l;
 
+	print("CONF ZERO BASE is 0x%llx LIMIT is 0x%llx\n", conf.mem[0].base, l);
 	if(l > KLIMIT)
 		l = KLIMIT;
+	if (1) {
+		u64int *cp = (u64int *)conf.mem[0].base;
+		int amt = (conf.mem[0].limit - conf.mem[0].base)/8;
+		print("Zero %d words starting at %p\n", amt, cp);
+		for(int i = 0; i < amt ; i++)
+			cp[i] = 0;
+		for(int i = 0; i < amt; i++)
+			if (cp[i] != 0)
+				print("%p: not zero'd\n", &cp[i]);
+	}
+	print("l is now %#llx\n", l);
+	sv57 = (void *)PGROUND((uintptr)end);
+	sv48 = (void *)PGROUND((uintptr)sv57 + 1);
+	sv39 = (void *)PGROUND((uintptr)sv48 + 1);
+	pGiB = (void *)PGROUND((uintptr)sv39 + 1);
+	print("%p %p %p %p\n", sv57, sv48, sv39, pGiB);
+	memset(sv57, 0, 16384);
 	kmapram(conf.mem[0].base, l);
 
 	conf.mem[0].npage = (conf.mem[0].limit - conf.mem[0].base)/BY2PG;
+	print("fuck 0x%llx 0x%llx\n", (conf.mem[0].limit - conf.mem[0].base),(conf.mem[0].limit - conf.mem[0].base)/BY2PG);
+	print("base %p limit %p npage %lud\n", conf.mem[0].base,  conf.mem[0].limit,conf.mem[0].npage);
 }

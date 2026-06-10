@@ -171,14 +171,17 @@ linectl(Uart *uart, u32int set, u32int clr)
 static void
 kick(Uart *uart)
 {
+	sbiputc('1');
 	u32int *reg = (u32int*)uart->regs;
-
+	sbiputc('2');
 	coherence();
+	sbiputc('3');
 	while((reg[FR] & TXFF) == 0){
-		if(uart->op >= uart->oe && uartstageoutput(uart) == 0)
+	sbiputc('4');		if(uart->op >= uart->oe && uartstageoutput(uart) == 0)
 			break;
-		reg[DR] = *(uart->op++);
+	sbiputc('5');		reg[DR] = *(uart->op++);
 	}
+	sbiputc('6');
 	coherence();
 }
 
@@ -290,11 +293,14 @@ donothing(Uart*, int)
 static void
 putc(Uart *uart, int c)
 {
+	sbiputc((char)c);
+	return;
 	u32int *reg = (u32int*)uart->regs;
 
 	while((reg[FR] & TXFF) != 0)
 		;
 	reg[DR] = c & 0xFF;
+	sbiputc((char)c);
 }
 
 static int
@@ -310,10 +316,14 @@ getc(Uart *uart)
 void
 uartconsinit(void)
 {
+	sbiputc('u');
 	consuart = &qemuuart;
+	sbiputc('V');
 	consuart->console = 1;
+	sbiputc('X');
 	uartctl(consuart, "l8 pn s1");
-	for(;;) putc(consuart, 'A');
+	sbiputc('Y');
+	for(int i = 0; i < 24; i++) putc(consuart, 'A');
 }
 
 PhysUart qemuphysuart = {
