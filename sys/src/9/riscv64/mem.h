@@ -40,24 +40,14 @@
 #define STACKALIGN(sp)	((sp) & ~7)		/* bug: assure with alloc */
 #define TRAPFRAMESIZE	(38*8)
 
-#define VDRAM		(0xFFFFFFFFC0000000ULL)	/* 0x80000000 - */
+//#define VDRAM		(0x0000000080000000ULL)	/* 0x80000000 - */
+#define VDRAM		(0x0000000100000000ULL)	/* 0x80000000 - */
 #define	KTZERO		(VDRAM + 0x200000)	/* 0x80200000 - kernel text start */
 
-#define PHYSIO		0
-#define PHYSIOEND	0x20000000
-
-#define	VIRTIO		(0xFFFFFFFFA0000000ULL)
-
-#define	KZERO		(0xFFFFFFFF40000000ULL)	/* 0x00000000 - kernel address space */
-
-#define VMAP		(0xFFFFFFFF00000000ULL)	/* 0x00000000 - 0x40000000 */
-
-#define KMAPEND		(0xFFFFFFFF00000000ULL)	/* 0x140000000 */
-#define KMAP		(0xFFFFFFFE00000000ULL)	/*  0x40000000 */
-
-#define KLIMIT		(VDRAM - KZERO + KMAPEND - KMAP)	/* 0x140000000 */
-
-#define KSEG0		(0xFFFFFFFE00000000ULL)
+#define	KZERO		(0x0000000000000000ULL)	/* 0x00000000 - kernel address space */
+#define KLIMIT 		klimit
+//#define KLIMIT			(0x800000000000ULL) // half of the hole.
+#define iskern(v) (((uintptr)v)<=UZERO)
 
 /* shared kernel page table for TTBR1 */
 #define L1		(L1TOP-L1SIZE)
@@ -73,9 +63,12 @@
 
 #define	REBOOTADDR	(VDRAM-KZERO + 0x20000)	/* 0x40020000 */
 
-#define	UZERO		0ULL			/* user segment */
-#define	UTZERO		(UZERO+0x10000)		/* user text start */
-#define	USTKTOP		((EVAMASK>>1)-0xFFFF)	/* user segment end +1 */
+// Sv39 max address is 1<<38-1. Choose 1<<36. (1<<32 for now)
+// This gives kernel a lot of memory, and over time,
+// user gets even more.
+#define	UZERO		(0x1000000000ULL)			/* user segment */
+#define	UTZERO		(UZERO)		/* user text start */
+#define	USTKTOP		((UZERO<<1)-BY2PG)	/* user segment end +1 */
 #define	USTKSIZE	(16*1024*1024)		/* user stack size */
 
 #define BLOCKALIGN	64			/* only used in allocb.c */
@@ -99,20 +92,34 @@
 #define PTEWRITE	(1<<2)
 #define PTEEXEC		(1<<3)
 #define PTEUSER		(1<<4)
-#define PTECACHED	0
-#define PTEUNCACHED	0
-#define PTEDEVICE	0		/* FIXME */
+#define PTEGLOBAL	(1<<5)
+#define PTEACCESSED	(1<<6)
+#define PTEDIRTY	(1<<7)
 #define PTERONLY	PTEREAD
+#define PTEATTR		((uintptr)0xf)
+
+#define PTEUSERREAD (PTEVALID | PTEREAD | PTEEXEC | PTEUSER | PTEACCESSED)
+#define PTEUSERWRITE (PTEUSERREAD | PTEWRITE | PTEDIRTY)
+
+/* bogus. */
+#define PTECACHED 0
+#define PTEUNCACHED 0
 
 #define PA2PTE(pa)	((pa>>12)<<10)
 #define PTE2PA(pte)	((pte>>10)<<12)
+#define PTE2ATTR(pa)	((pa)&PTEATTR)
 
 /*
  * Physical machine information from here on.
- *	PHYS addresses as seen from the arm cpu.
+ *	PHYS addresses as seen from the cpu.
  *	BUS  addresses as seen from peripherals
  */
 #define	PHYSDRAM	0
 
 #define MIN(a, b)	((a) < (b)? (a): (b))
 #define MAX(a, b)	((a) > (b)? (a): (b))
+/* from Geoff */
+#define MASK(w)	 ((1u  <<(w)) - 1)
+#define VMASK(w) ((1ull<<(w)) - 1)
+#define HARTMAX 32
+#define SBIALIGN	16LL		/* stack alignment for SBI calls */

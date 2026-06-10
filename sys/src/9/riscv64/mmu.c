@@ -4,51 +4,57 @@
 #include "dat.h"
 #include "fns.h"
 
+enum {
+	Spew = 0,
+};
+
 #define INITMAP	(ROUND((uintptr)end + BY2PG, PGLSZ(1))-KZERO)
+
+// kmax will be computed dynamically in future; for now it is
+// UZERO.
+uintptr klimit = UZERO;
 
 void
 mmu1init(void)
 {
+	extern u64int *sv57, *sv48, *sv39, *pGiB;
 	m->mmutop = mallocalign(L1TOPSIZE, BY2PG, 0, 0);
 	if(m->mmutop == nil)
 		panic("mmu1init: no memory for mmutop");
 	memset(m->mmutop, 0, L1TOPSIZE);
+	memmove(m->mmutop, sv39, L1TOPSIZE);
 	mmuswitch(nil);
 }
 
-/* KZERO maps the first 1GB of ram */
 uintptr
 paddr(void *va)
 {
-	if((uintptr)va >= KZERO)
-		return (uintptr)va-KZERO;
+	if((uintptr)va < KLIMIT)
+		return (uintptr)va;
 	panic("paddr: va=%#p pc=%#p", va, getcallerpc(&va));
 }
 
 uintptr
 cankaddr(uintptr pa)
 {
-	if(pa < (uintptr)-KZERO)
-		return -KZERO - pa;
+//	print("cankaddr %p, -KZ %p\n", pa,(uintptr)-KZERO );
+	if(pa < (uintptr)KLIMIT)
+		return pa;
 	return 0;
 }
 
 void*
 kaddr(uintptr pa)
 {
-	if(pa < (uintptr)-KZERO)
-		return (void*)(pa + KZERO);
+	if(pa < (uintptr)KLIMIT)
+		return (void*)(pa);
 	panic("kaddr: pa=%#p pc=%#p", pa, getcallerpc(&pa));
 }
 
 static void*
 kmapaddr(uintptr pa)
 {
-	if(pa < (uintptr)-KZERO)
-		return (void*)(pa + KZERO);
-	if(pa < (VDRAM - KZERO) || pa >= (VDRAM - KZERO) + (KMAPEND - KMAP))
-		panic("kmapaddr: pa=%#p pc=%#p", pa, getcallerpc(&pa));
-	return (void*)(pa + KMAP - (VDRAM - KZERO));
+	return kaddr(pa);
 }
 
 KMap*
@@ -81,62 +87,42 @@ rampage(void)
 	return KADDR(pa);
 }
 
+// nothing to do.
 static void
 l1map(uintptr va, uintptr pa, uintptr pe, uintptr attr)
 {
-	uintptr *l1, *l0;
-
-	assert(pa < pe);
-
-	va &= -BY2PG;
-	pa &= -BY2PG;
-	pe = PGROUND(pe);
-
-	l1 = (uintptr*)L1;
-
-	while(pa < pe){
-		if(l1[PTL1X(va, 1)] == 0 && (pe-pa) >= PGLSZ(1) && ((va|pa) & PGLSZ(1)-1) == 0){
-			l1[PTL1X(va, 1)] = PTEVALID | PA2PTE(pa) | attr;
-			va += PGLSZ(1);
-			pa += PGLSZ(1);
-			continue;
-		}
-		if(l1[PTL1X(va, 1)] & PTEVALID) {
-//			assert((l1[PTL1X(va, 1)] & PTETABLE) == PTETABLE);
-			l0 = KADDR(l1[PTL1X(va, 1)] & -PGLSZ(0));
-		} else {
-			l0 = rampage();
-			memset(l0, 0, BY2PG);
-			l1[PTL1X(va, 1)] = PTEVALID | PA2PTE(PADDR(l0));
-		}
-		assert(l0[PTLX(va, 0)] == 0);
-		l0[PTLX(va, 0)] = PTEVALID | PA2PTE(pa) | attr;
-		va += BY2PG;
-		pa += BY2PG;
-	}
+	USED(va);
+	USED(pa);
+	USED(pe);
+	USED(attr);
 }
+
+u64int *sv57, *sv48, *sv39, *pGiB;
+u64int mmumode;
 
 void
 kmapram(uintptr base, uintptr limit)
 {
-	if(base < (uintptr)-KZERO && limit > (uintptr)-KZERO){
-		kmapram(base, (uintptr)-KZERO);
-		kmapram((uintptr)-KZERO, limit);
-		return;
+	u64int i;
+	USED(base);
+	USED(limit);
+	sv57[0] = ((((u64int)sv48)>>2)) | 1;
+	if (Spew)print("%p is %p\n", sv57, sv57[0]);
+	sv48[0] = ((((u64int)sv39)>>2)) | 1;
+	/* TODO: handle more complex memory topologies. */
+	for(i = 0; i < 6; i++){
+		sv39[i] = ((0x40000000*i)>>2) | 0xcf;
+		print("sv39:%p is %p\n", &sv39[i], sv39[i]);
 	}
-	if(base < INITMAP)
-		base = INITMAP;
-	if(base >= limit || limit <= INITMAP)
-		return;
 
-	l1map((uintptr)kmapaddr(base), base, limit,
-		PTEWRITE | PTEREAD);
+	wsatp(((uintptr)sv39>>12)|(8ULL<<60));
+
 }
 
 uintptr
 mmukmap(uintptr va, uintptr pa, usize size)
 {
-	uintptr attr, off;
+	uintptr attr = 0, off;
 
 	if(va == 0)
 		return 0;
@@ -159,14 +145,7 @@ mmukmap(uintptr va, uintptr pa, usize size)
 void*
 vmap(uvlong pa, vlong size)
 {
-	static uintptr base = VMAP;
-	uvlong pe = pa + size;
-	uintptr va;
-
-	va = base;
-	base += PGROUND(pe) - (pa & -BY2PG);
-	
-	return (void*)mmukmap(va | PTEDEVICE, pa, size);
+	return (void *)pa;
 }
 
 void
@@ -174,39 +153,102 @@ vunmap(void *, vlong)
 {
 }
 
+/* That macro hackery is just too much for me to look at, and kenc should
+ * inline this function anyway. (it does not, but it could) */
+static u64int vpn(uintptr va, int level)
+{
+	int shift = 12 + 9*level;
+	uintptr val = (va>>shift)&0x1ff;
+	if (0)print("<<<vpn(%p,%d)[shift %d]=%p>>>", va, level, shift, val);
+	return val;
+}
+
+static uintptr 
+ptephys(uintptr pte)
+{
+	return (pte & ~(0xFFFFULL<<48 | BY2PG-1))<<2;
+}
+
+/* there are still a few nasty assumptions in here about
+ * pte not needing left shifts etc. riscv really fucked up
+ * the pte format. Intel did better.
+ */
 static uintptr*
 mmuwalk(uintptr va, int level)
 {
 	uintptr *table, pte;
 	Page *pg;
 	int i, x;
-
-	x = PTLX(va, PTLEVELS-1);
+// In future, PTLEVELS will be dynamic.
+	if (0)print("mmuwalk: va %p, walk to level %d starting from %d,", va, level, PTLEVELS);
+	x = vpn(va, PTLEVELS-1);
+	// N.B.: the assumption here is that mmutop was already set from 
+	// p->mmutop. mmutop[x] will never be non-zero. If it is, it's a bug.
 	table = m->mmutop;
+	if (0)print("MMUWALK m is %p MMUTOP is %p\n", m,  m->mmutop);
 	for(i = PTLEVELS-2; i >= level; i--){
+		if (0)print("%d: table %p, index %d, pte %p: ", i, table, x, table[x]);
 		pte = table[x];
+		if (0)print(" %p %s, points to %p,", pte, pte & PTEVALID ? "valid" : "invalid", (pte>>10)<<12);
 		if(pte & PTEVALID) {
-			if(pte & (0xFFFFULL<<48))
-				iprint("strange pte %#p va %#p\n", pte, va);
-			pte &= ~(0xFFFFULL<<48 | BY2PG-1);
+			if (0){
+				if(pte & (0xFFFFULL<<48))
+					iprint("strange pte %#p va %#p, ", pte, va);
+				pte &= ~(0xFFFFULL<<48 | BY2PG-1);
+				pte <<= 2;
+			}
+			pte = (pte >>10)<<12;
 		} else {
 			pg = up->mmufree;
-			if(pg == nil)
+			if(pg == nil){
+				if (0)print("up->mmufree is empty, return nil\n");
 				return nil;
+			}
 			up->mmufree = pg->next;
 			pg->va = va & -PGLSZ(i+1);
+			if (0)print("page for pte is %p, ", pg->va);
 			if((pg->next = up->mmuhead[i+1]) == nil)
 				up->mmutail[i+1] = pg;
 			up->mmuhead[i+1] = pg;
+			if (0)print("SET up->mmuhead[%d] = %p, pte@ %p\n", i+1, pg, pg->pa);
 			pte = pg->pa;
-			memset(kmapaddr(pte), 0, BY2PG);
+			memset(kmapaddr(pg->pa), 0, BY2PG);
 			coherence();
-			table[x] = pte | PTEVALID;	// XXX: Does this need PA2PTE
+			if (0)print(": SET table %p[%x]@%p = addr %p val%llx\n", table, x, &table[x], pte, ((pte>>12)<<10) | PTEVALID);
+			table[x] = ((pte>>12)<<10) | PTEVALID;	// XXX: Does this need PA2PTE
 		}
 		table = kmapaddr(pte);
-		x = PTLX(va, (uintptr)i);
+		if (0)print("kmapaddr of %p is %p, ", pte, table);
+		x = vpn(va, (uintptr)i);
+		if (0)print("\n");
 	}
+if (0)print("RETURN &%p[0x%x] = ", table, x);
+if (0)print("%p\n", &table[x]);
 	return &table[x];
+}
+
+u64int *
+userpte(void *v)
+{
+	uintptr *pte = mmuwalk((uvlong)v, 0);
+	if (v == nil){
+		print("%p in up %p: not mapped\n", v, up);
+		error("not mapped");
+	}
+	if (Spew)print("userpte %p -> pte %p contains %p phys %p v %p\n", v, pte, *pte, ptephys(*pte), kmapaddr(ptephys(*pte)));
+	return pte;
+}
+
+void *
+usertokernel(void *v)
+{
+	uintptr *pte = mmuwalk((uvlong)v, 0);
+	if (v == nil){
+		if (Spew)print("%p in up %p: not mapped\n", v, up);
+		error("not mapped");
+	}
+	if (Spew)print("usertokernel %p -> pte %p contains %p phys %p v %p\n", v, pte, *pte, ptephys(*pte), kmapaddr(ptephys(*pte)));
+	return kmapaddr((uintptr)pte);
 }
 
 static Proc *asidlist[256];
@@ -278,26 +320,39 @@ putmmu(uintptr va, uintptr pa, Page *pg)
 {
 	uintptr *pte, old;
 	int s;
+	uintptr pteattr = PTE2ATTR(pa) | PTEUSER | PTEACCESSED | PTEEXEC; // hack.
 
+	if (pteattr & PTEWRITE)
+		pteattr |= PTEDIRTY | PTEREAD;
+
+if (Spew)print("pid %lud putmmu(%p, %p, %p)\n", up ? up->pid : 0, va, pa, pg);
 	s = splhi();
 	while((pte = mmuwalk(va, 0)) == nil){
 		spllo();
-		up->mmufree = newpage(0, nil, 0);
+		up->mmufree = newpage(0, nil);
+		if (0)print("putmmu: get a page %p, try again\n", up->mmufree);
 		splhi();
 	}
+	if (up->pid == 5) soft();
 	old = *pte;
 	*pte = 0;
 	if((old & PTEVALID) != 0)
 		flushasidvall((uvlong)up->asid<<48 | va>>12);
 	else
 		flushasidva((uvlong)up->asid<<48 | va>>12);
-	*pte = PA2PTE(pa) | PTEVALID | PTEUSER;
+	*pte = PA2PTE(pa) | pteattr;
+	if (Spew)print("va %p pa %p pte %p *pte %p\n", va, pa, pte, *pte);
 	if(needtxtflush(pg)){
 		cachedwbinvse(kmap(pg), BY2PG);
 		cacheiinvse((void*)va, BY2PG);
 		donetxtflush(pg);
 	}
+	flushalltlb();
+	flushvatlb(va);
+	wsatp(rsatp());
+	if (up->pid == 5) soft();
 	splx(s);
+	if (0)print("putmmu done\n");
 }
 
 static void
@@ -321,12 +376,15 @@ mmuswitch(Proc *p)
 {
 	uintptr va;
 	Page *t;
-
+if (0)	print("SWITCH MMUTOP IS %p, @ 100 is %p\n", m->mmutop, m->mmutop[0x100]);
 	for(va = UZERO; va < USTKTOP; va += PGLSZ(PTLEVELS-1))
 		m->mmutop[PTLX(va, PTLEVELS-1)] = 0;
 
+if (0)	print("p %p for setting tbr?\n", p);
 	if(p == nil){
-		setttbr(PADDR(m->mmutop));
+		// maybe flush the user mode entries? probably
+		if(Spew)print("mmuswitch p is nil what to do?\n");
+		wsatp(((uintptr)m->mmutop>>12)|(8ULL<<60));
 		return;
 	}
 
@@ -334,16 +392,22 @@ mmuswitch(Proc *p)
 		mmufree(p);
 		p->newtlb = 0;
 	}
-
-	if(allocasid(p))
+if (0)	print("allocasid(p) %d\n", allocasid(p));
+	if(allocasid(p)){
+		if (Spew)print("NOT messing with ASID\n");
 		flushasid((uvlong)p->asid<<48);
+	}
 
-	setttbr((uvlong)p->asid<<48 | PADDR(m->mmutop));
+	//print("set tbr to %llx\n", (uvlong)p->asid<<48 | PADDR(m->mmutop));
+	//setttbr((uvlong)p->asid<<48 | PADDR(m->mmutop));
 
 	for(t = p->mmuhead[PTLEVELS-1]; t != nil; t = t->next){
 		va = t->va;
-		m->mmutop[PTLX(va, PTLEVELS-1)] = t->pa | PTEVALID;
+		u64int pte = ((t->pa)>>12) << 10 | PTEVALID; //| PTEUSER;
+if (0)		print("Set mmutop[%llxx] to %llx\n", PTLX(va, PTLEVELS-1), pte );
+		m->mmutop[PTLX(va, PTLEVELS-1)] = pte;
 	}
+	wsatp(((uintptr)m->mmutop>>12)|(8ULL<<60));
 }
 
 void

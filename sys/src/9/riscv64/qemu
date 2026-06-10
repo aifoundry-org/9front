@@ -1,4 +1,5 @@
 dev
+	arch
 	root
 	cons
 	swap
@@ -12,41 +13,43 @@ dev
 	tls
 	cap
 	fs
-#	ether	netif
+	ether	netif
 #	bridge	log
-#	ip	arp chandial ip ipv6 ipaux iproute netlog nullmedium pktmedium inferno
+	ip	arp chandial ip ipv6 ipaux iproute netlog nullmedium pktmedium inferno
 	uart
 #	usb
 #	rtc
-#	pci	pci
+	pci	pci
 	sd
 
-#link
+link
 #	usbxhcipci	pci usbxhci
-#	ethervirtio10	pci
+	ethervirtio10 virtio10mem pci
 #	ethersink
-#	ethermedium
-#	loopbackmedium
+	ethermedium
+	loopbackmedium
 #	netdevmedium
-#	pciqemu		pci
+	pciqemu		pci
 
-#ip
-#	tcp
-#	udp
-#	il
-#	ipifc
-#	icmp
-#	icmp6
-#	igmp
-#	ipmux
+ip
+	tcp
+	udp
+	il
+	ipifc
+	icmp
+	icmp6
+	igmp
+	ipmux
 misc
 #	gic
-	uartqemu
-#	sdvirtio10	pci sdscsi
+	uartsbi
+#	uartqemu
+	sdvirtio10	pci sdscsi
 port
 	int cpuserver = 0;
 bootdir
 	/$objtype/bin/paqfs
+	/$objtype/bin/rc
 	/$objtype/bin/auth/factotum
 	bootfs.paq
 	boot

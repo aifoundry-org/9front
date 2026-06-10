@@ -11,13 +11,17 @@ extern uvlong vcycles(void);
 extern int splfhi(void);
 extern void splflo(void);
 extern void touser(uintptr sp);
-extern void forkret(void);
+extern void sysrforkret(void);
 extern void noteret(void);
 extern void returnto(void*);
+extern void fpconstset(void);
 extern void fpon(void);
 extern void fpoff(void);
+extern int isfpon(void);
 extern void fpsaveregs(void*);
 extern void fploadregs(void*);
+void fpsts2ureg(Ureg*ureg);
+
 extern void hvccall(Ureg*);
 
 extern void setttbr(uintptr pa);
@@ -37,6 +41,9 @@ extern void tlbivmalle1(void);
 
 extern void flushlocaltlb(void);
 extern void tlbivmalle1(void);
+
+extern void sbiputc(uvlong);
+extern int sbigetc(void);
 
 /* cache */
 extern ulong cachesize(int level);
@@ -84,7 +91,6 @@ extern void meminit(void);
 /* clock */
 extern void clockinit(void);
 extern void synccycles(void);
-extern void armtimerset(int);
 extern void clockshutdown(void);
 
 /* fpu */
@@ -97,6 +103,22 @@ extern FPsave* fpukenter(Ureg*);
 extern void fpukexit(Ureg*, FPsave*);
 extern void mathtrap(Ureg*);
 
+/* fpu from 9k */
+void	fpconstset(void);
+void	fpoff(void);
+void	fpon(void);
+int	fpudevprocio(Proc*, void*, long, uintptr, int);
+void	_fpuinit(void);
+void	fpuinit(void);
+void	fptrap(Ureg *, void *);
+void	fpuprocrestore(Proc*);
+void	fpuprocsave(Proc*);
+void	fpurestore(uchar *);
+void	fpusave(uchar *);
+void	fpusysprocsetup(Proc*);
+void	fpusysrforkchild(Proc*, Proc*);
+void	fpusysrfork(Ureg*);
+
 /* trap */
 extern void trapinit(void);
 extern int userureg(Ureg*);
@@ -108,7 +130,6 @@ extern void procsave(Proc*);
 extern void procrestore(Proc *);
 extern void trap(Ureg*);
 extern void syscall(Ureg*);
-extern void faultarm64(Ureg*);
 extern void dumpstack(void);
 extern void dumpregs(Ureg*);
 
@@ -170,3 +191,82 @@ extern void pciintrdisable(int tbdf, void (*f)(Ureg*, void*), void *a);
 
 /* bootargs */
 extern void bootargsinit(void);
+
+// new
+void wsatp(u64int);
+void wstvec(u64int);
+u64int rsatp(void);
+u64int rseed(void);
+void *usertokernel(void *v);
+u64int *userpte(void *v);
+void flushalltlb(void);
+void flushvatlb(uintptr);
+
+// not all implemented
+void	clearipi(void);
+void	clockenable(void);
+void	clockintr(Ureg* ureg, void *);
+void	clockoff(void);
+int	clocksanity(void);
+void	clrreserv(void);
+uintptr	clrsie(uintptr);
+ulong	clrsipbit(ulong);
+void	clrstie(void);
+void	cboinval(void *);
+void	cboflush(void *);
+
+// more good 9k stuff: m mode bits. 
+// Let's keep them until we're sure we don't want them.
+ulong	getfcsr(void);
+ulong	setfcsr(uintptr);
+uintptr	getmie(void);
+uintptr	getmip(void);
+uintptr	getmsts(void);
+void*	getmtvec(void);
+void	putmie(uintptr);
+void	putmip(uintptr);
+void	putmsts(uintptr);
+void*	putmtvec(void *);
+uvlong	rdtime(void);
+uvlong	rdtsc(void);
+void	sbisettimer(uvlong);
+
+/* SBI */
+vlong	sbicall(uvlong, uvlong, uvlong, Sbiret *, uvlong *);
+vlong	sbiclearipi(void);
+vlong	sbiecall(uvlong, uvlong, uvlong, Sbiret *, uvlong *);
+vlong	sbigetimplid(void);
+vlong	sbigetimplvers(void);
+vlong	sbigetmarchid(void);
+vlong	sbigetmvendorid(void);
+vlong	sbihartstart(uvlong hartid, uvlong phys_start, uvlong private);
+vlong	sbihartstatus(uvlong hartid);
+vlong	sbihartsuspend(void);
+vlong	sbiprobeext(uvlong);
+void	sbireset(ulong type, ulong reason);
+vlong	sbisendipi(uvlong map[]);
+void	sbisettimer(uvlong);
+void	sbishutdown(void);
+
+uintptr	getsie(void);
+uintptr	getsip(void);
+uintptr	getsp(void);
+uintptr	getsts(void);
+void*	getstvec(void);
+void	putsie(uintptr);
+void	putsip(uintptr);
+void	putsscratch(uintptr);
+void	putsts(uintptr);
+void*	putstvec(void *);
+
+/* archrv */
+void calibrate(void);
+uint mach2context(Mach *);
+void cpuinit(int);
+
+/* rva23 */
+void wrstimecmp(u64int);
+u64int rdstimecmp(void);
+
+void soft(void);
+int clz(ulong);
