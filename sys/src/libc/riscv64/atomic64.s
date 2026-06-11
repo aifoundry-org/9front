@@ -23,12 +23,12 @@ TEXT asetp+0(SB),1,$0
 /*  inc variants */
 TEXT aincv+0(SB),1,$0
 TEXT aincp+0(SB),1,$0
-	MOV	$1, R9
+	MOV	d+XLEN(FP), R9
 	FENCE_RW	/* flush changes to ram in case releasing a lock */
 	/* after: value before add in R10, value after add in memory */
 	AMOD(Amoadd, AQ|RL, 9, ARG, 10)
 	FENCE_RW
-	ADDW	$1, R10, RARG		/* old value ±1 for ainc/adec */
+	ADD	R9, R10, RARG		/* old value ±1 for ainc/adec */
 	RET
 
 /*  cas variants */
