@@ -20,12 +20,12 @@ TEXT asetl+0(SB),1,$0
 
 /*  inc variants */
 TEXT aincl+0(SB),1,$0
-	MOV	$1, R9
+	MOVW    d+XLEN(FP), R9
 	FENCE_RW	/* flush changes to ram in case releasing a lock */
 	/* after: value before add in R10, value after add in memory */
 	AMOW(Amoadd, AQ|RL, 9, ARG, 10)
 	FENCE_RW
-	ADDW	$1, R10, RARG		/* old value ±1 for ainc/adec */
+	ADDW    R9, R10, RARG		/* old value ±1 for ainc/adec */
 	RET
 
 /*  cas variants */
