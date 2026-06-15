@@ -18,7 +18,7 @@
 /* KEXEC Architecture flag for RISC-V */
 #define KEXEC_ARCH_RISCV (243 << 16)
 
-#include "fdt.c"
+#include "fdt-bpif3.c"
 
 /* 64-byte segment, 32-bit aligned */
 /* Instructions:
@@ -42,19 +42,17 @@ struct kexec_segment {
 
 int main(int argc, char *argv[]) {
 	struct kexec_segment segs[2];
-    
+
 	segs[0].buf = loop_payload;
 	segs[0].bufsz = sizeof(loop_payload);
-	segs[0].mem = (2ULL<<32);
-	segs[0].mem = 0x8000ULL; // 4GB Target
-	segs[0].mem = 0x080200000ULL; // 4GB Target
-	segs[0].mem = 0x100200000ULL; // 4GB Target
+	segs[0].mem = 0x40200000ULL; // BPI-F3: 1GiB + 2MB, matches KTZERO
 	segs[0].memsz = sizeof(loop_payload);
 
-	segs[1].buf = fdt;
-	segs[1].bufsz = sizeof(fdt);
+	segs[1].buf = bpif3_dtb;
+	segs[1].bufsz = sizeof(bpif3_dtb);
 	segs[1].mem = segs[0].mem + segs[0].memsz;
-	segs[1].memsz = sizeof(fdt);
+	/* memsz must be page-aligned or kexec_load returns EADDRNOTAVAIL */
+	segs[1].memsz = (sizeof(bpif3_dtb) + 0xfffUL) & ~0xfffUL;
 
 	if (argc > 1) {
 		int fd = open(argv[1], 0);
@@ -67,30 +65,28 @@ int main(int argc, char *argv[]) {
 			exit(2);
 		}
 	}
- 
+
 	/* 1. Load the segment into the kernel's kexec slots */
-	long load_ret = syscall(__NR_kexec_load, 
+	long load_ret = syscall(__NR_kexec_load,
 				(unsigned long)segs[0].mem, // Entry point
 				2UL,                    // Number of segments
-				&segs, 
+				&segs,
 				(unsigned long)KEXEC_ARCH_RISCV);
 
 	if (load_ret != 0) {
-		perror("fuck");
+		perror("failed to load the segment into the kexec slots");
 		return 1; // Load failed (likely permissions or memory conflict)
 	}
 
 	/* 2. Execute the reboot into the loaded image */
 	/* Note: This requires the LINUX_REBOOT_CMD_KEXEC (0x45584543) magic */
-	syscall(__NR_reboot, 
-		LINUX_REBOOT_MAGIC1, 
-		LINUX_REBOOT_MAGIC2, 
-		LINUX_REBOOT_CMD_KEXEC, 
+	syscall(__NR_reboot,
+		LINUX_REBOOT_MAGIC1,
+		LINUX_REBOOT_MAGIC2,
+		LINUX_REBOOT_CMD_KEXEC,
 		NULL);
 
-	perror("me");
+	perror("failed to reboot into Plan 9 kernel");
 	/* If reboot returns, something went wrong */
 	return 2;
 }
-
-
