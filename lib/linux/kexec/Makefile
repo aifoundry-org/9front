@@ -1,10 +1,14 @@
-# install gcc on the BPI-F3 and build this there
+# Build on the target board.  Needs gcc and libfdt-dev:
+#   apt-get install gcc libfdt-dev
+# Static linking pulls in libfdt's .a from libfdt-dev.
+# Then run it like this on a 2GB BPI-F3:
+# ./kexec -b "*maxmem=0x80000000" 9qemu.elf
+# maxmem can be different if you've got more memory
 
-kexec: kexec.c fdt-bpif3.c
-	gcc -o kexec -static ./kexec.c 
+CFLAGS := -Wall -O2
 
-fdt-bpif3.c:
-	dtc -I fs -O dtb -o bpif3.dtb /proc/device-tree
-	fdtput -t s bpif3.dtb /chosen bootargs "$(fdtget bpif3.dtb /chosen bootargs) *maxmem=0x80000000"
-	xxd -i bpif3.dtb > fdt-bpif3.c
+kexec: kexec.c
+	gcc $(CFLAGS) -o $@ ./kexec.c -lfdt
 
+clean:
+	rm -f kexec
