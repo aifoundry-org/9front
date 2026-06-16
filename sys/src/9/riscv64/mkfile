@@ -1,5 +1,5 @@
 CONF=qemu
-CONFLIST=qemu
+CONFLIST=qemu bpif3
 
 #loadaddr=0x100200000
 loadaddr=0x40200000
