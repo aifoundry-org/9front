@@ -1,0 +1,13 @@
+#!/bin/sh
+# attempt to prevent journal corruption, in case kexec -r is used
+# mount -t tmpfs -o size=64M tmpfs /var/log/journal
+
+# You can override ea=525400deadbe if necessary, but currently
+# U-Boot reads the K1 efuse chip-id, derives the per-port MAC, 
+# writes it into the MAC_ADDR1_HI/ME/LO registers, and the 9 kernel reads it.
+# Assume the right version of kexec is in the path: e.g. put it in /usr/local/bin or so
+# /tmp/9bpif3.elf is good to avoid sd card writes if you are doing kernel dev; otherwise figure out where you want it
+# maxmem is set for the 2GB BPI-F3 here: enlarge as appropriate for your board
+# Several -b args are necessary to make the UART work
+kexec -b "*maxmem=0x80000000" -b "uartbase=0xd4017000 k1plicmask=42 k1ier=0x55 k1fcr=0x41 ether0=smte console=0" /tmp/9bpif3.elf
+
