@@ -28,7 +28,10 @@ uintptr dtbphys = -1;
 static char *confname[MAXCONF];
 static char *confval[MAXCONF];
 static int nconf;
-static char bootargsbuf[BOOTARGSLEN];
+static char maxmem[32];
+static int cpus;
+static int bootargs_set = 0;
+static char consoleport[32];
 
 static int
 findconf(char *k)
@@ -111,13 +114,36 @@ beget4(uchar *p)
 static void
 devtreeprop(char *path, char *key, void *val, int len)
 {
-	if(strncmp(path, "/chosen", 7) == 0 && strcmp(key, "bootargs") == 0){
-		if(len > BOOTARGSLEN-1)
-			len = BOOTARGSLEN-1;
-		memmove(bootargsbuf, val, len);
-		bootargsbuf[len] = '\0';
-		plan9iniinit(bootargsbuf, 1);
+	uvlong addr;
+	uchar *p = val;
+
+	if((strncmp(path, "/memory", 7) == 0 || strncmp(path, "/memory@0", 9) == 0)
+	   && strcmp(key, "reg") == 0){
+		if(findconf("*maxmem") < 0 && len == 16){
+			p += 4;	/* ignore */
+			addr = (uvlong)beget4(p+4)<<32 | beget4(p);
+			addr += beget4(p+8);
+			snprint(maxmem, sizeof(maxmem), "%#llux", addr);
+print("devtreeeprop: maxmem %s\n", maxmem);
+			addconf("*maxmem", maxmem);
+		}
 		return;
+	}
+	if(strncmp(path, "/cpus/cpu", 9) == 0 && strcmp(key, "reg") == 0){
+		cpus++;
+		return;
+	}
+	if(strncmp(path, "/chosen", 7) == 0){
+		if (strcmp(key, "bootargs") == 0){
+			if(len > BOOTARGSLEN)
+				len = BOOTARGSLEN;
+			memmove(BOOTARGS, val, len);
+			bootargs_set = 1;
+			return;
+		} else if (strcmp(key, "stdout_path") == 0){
+			//memmove(consoleport, val, sizeof(consoleport));
+print("serial console %s\n", val);
+		}
 	}
 }
 
@@ -179,6 +205,8 @@ parsedevtree(uchar *base)
 	if(t->stab >= (char*)t->end)
 		return -1;
 	devtreenode(t, base + beget4(base+8), t->path);
+	if (bootargs_set)
+		plan9iniinit(BOOTARGS, 1);
 	return 0;
 }
 
@@ -211,9 +239,43 @@ setconfenv(void)
 {
 	int i;
 
+	if(nconf < 0){
+		/* use defaults when there was no configuration */
+		ksetenv("console", "0", 1);
+		return;
+	}
+
 	for(i = 0; i < nconf; i++){
 		if(confname[i][0] != '*')
 			ksetenv(confname[i], confval[i], 0);
 		ksetenv(confname[i], confval[i], 1);
 	}
+}
+
+void
+writeconf(void)
+{
+	char *p, *q;
+	int n;
+
+	p = getconfenv();
+	if(waserror()) {
+		free(p);
+		nexterror();
+	}
+
+	/* convert to name=value\n format */
+	for(q=p; *q; q++) {
+		q += strlen(q);
+		*q = '=';
+		q += strlen(q);
+		*q = '\n';
+	}
+	n = q - p + 1;
+	if(n >= BOOTARGSLEN)
+		error("kernel configuration too large");
+	memmove(BOOTARGS, p, n);
+	memset(BOOTARGS+n, 0, BOOTARGSLEN-n);
+	poperror();
+	free(p);
 }
