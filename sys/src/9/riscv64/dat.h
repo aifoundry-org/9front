@@ -308,6 +308,11 @@ typedef struct Clint Clint;
 typedef struct Sbiret Sbiret;
 
 struct Soc {
+	/* identification, set early from SBI (mvendorid/marchid/mimpid) */
+	u32int	vendor;		/* JEDEC manuf. id (e.g. 0x710 SpacemiT) */
+	u32int	arch;		/* low 32 bits of marchid (sufficient to discriminate) */
+	u32int	impl;		/* low 32 bits of mimpid */
+
 	/* physical addresses, vmapped to virtual addresses during start-up */
 	uchar	*clint;		/* local intr ctlr also a timer */
 	uchar	*plic;		/* external intr ctlr */
@@ -413,7 +418,7 @@ struct Plic {				/* 64 MB */
 		};
 		struct {
 			/* eic7700x has plic clock disable; on by default.  */
-			uchar	_2_[2*MB - BY2PG];
+			uchar	_2[2*MB - BY2PG];
 			char	eicclkdisable;
 		};
 		struct {
@@ -421,14 +426,14 @@ struct Plic {				/* 64 MB */
 			 * c910 has privilege control at 2MB-4,
 			 * needed to allow S mode access
 			 */
-			uchar	_1_[2*MB - sizeof(ulong)];
+			uchar	_1[2*MB - sizeof(ulong)];
 			ulong	c910privctl;
 		};
 	};
 	struct Plictxt {		/* at +2MB */
 		ulong	priothresh; /* (lower bound of accepted prios)-1 WARL */
 		ulong	claimcompl;	/* claim/complete */
-		uchar	_2_[4096 - 2*sizeof(ulong)];
+		uchar	_2[4096 - 2*sizeof(ulong)];
 	} context[Ncontexts];		/* index by context */
 };
 

@@ -83,6 +83,16 @@ sbigetmarchid(void)
 	return sbiret.status;
 }
 
+vlong
+sbigetmimpid(void)
+{
+	Sbiret sbiret;
+
+	if (sbicall(0x10, 6, 0, &sbiret, nil) < 0)
+		return -1;
+	return sbiret.status;
+}
+
 void
 sbiputc(uvlong c)
 {

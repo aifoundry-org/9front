@@ -281,6 +281,7 @@ main(void)
 	trapinit(); print("DONE 	trapinit();\n");
 	fpuinit(); print("DONE 	fpuinit();\n");
 #endif
+	socidentify();		/* must precede intrinit: sets soc.plic */
 	intrinit(); print("DONE 	intrinit();\n");
 	clockinit(); print("DONE 	clockinit();\n");
 	if(timebase == 0){
