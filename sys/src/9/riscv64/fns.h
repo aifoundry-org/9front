@@ -135,6 +135,7 @@ extern void dumpregs(Ureg*);
 
 /* irq */
 extern void intrinit(void);
+extern void socidentify(void);
 extern void intrcpushutdown(void);
 extern void intrsoff(void);
 extern void intrenable(int, void (*)(Ureg*, void*), void*, int, char*);
@@ -238,6 +239,7 @@ vlong	sbiecall(uvlong, uvlong, uvlong, Sbiret *, uvlong *);
 vlong	sbigetimplid(void);
 vlong	sbigetimplvers(void);
 vlong	sbigetmarchid(void);
+vlong	sbigetmimpid(void);
 vlong	sbigetmvendorid(void);
 vlong	sbihartstart(uvlong hartid, uvlong phys_start, uvlong private);
 vlong	sbihartstatus(uvlong hartid);

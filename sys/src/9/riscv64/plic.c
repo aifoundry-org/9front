@@ -11,10 +11,16 @@
 #include "../port/error.h"
 
 enum {
-	PLICBASE	= 0x0c000000,
 	PLICSIZE	= 0x04000000,
 
-	Suctxt		= 1,		/* S-mode context for hart 0 on qemu-virt */
+	/*
+	 * S-mode context for the boot hart.  Both QEMU-virt (hart 0) and the
+	 * SpacemiT K1 (boot hart phandle 0x10, the first entry in the PLIC's
+	 * interrupts-extended) put M-mode at context 0 and S-mode at context 1.
+	 * If we ever boot a kernel on a non-zero hart this will need to come
+	 * from socidentify() or the DTB.
+	 */
+	Suctxt		= 1,
 	Defprio		= 1,
 };
 
@@ -28,10 +34,20 @@ void
 intrinit(void)
 {
 	uint i;
+	uintptr base;
 
-	plic = (Plic*)vmap(PLICBASE, PLICSIZE);
+	/*
+	 * soc.plic was set by socidentify() to the SoC's PLIC physical base.
+	 * vmap is currently identity, but call it so the type / API survives a
+	 * future MMU rework.
+	 */
+	base = (uintptr)soc.plic;
+	if(base == 0)
+		panic("intrinit: soc.plic not set");
+	plic = (Plic*)vmap(base, PLICSIZE);
 	if(plic == nil)
 		panic("intrinit: plic vmap");
+	soc.plic = (uchar*)plic;
 
 	/* mask every source */
 	for(i = Firstirq; i < Ngintr; i++){
