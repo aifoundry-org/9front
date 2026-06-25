@@ -121,6 +121,42 @@ ourcpu(void)
 */
 }
 
+/*
+ * Identify the SoC via mvendorid/marchid/mimpid (read through the SBI Base
+ * extension, since these CSRs are M-mode read-only) and stash the answers
+ * in soc.  bootargsinit() may already have set soc.plic from the DTB
+ * (preferred — it speaks for the actual board); only fall back to a
+ * vendor-keyed default when the DTB didn't tell us.  Must run before
+ * intrinit(): plic.c's intrinit vmaps soc.plic and writes priority/enable
+ * bits there.
+ */
+void
+socidentify(void)
+{
+	vlong v, a, i;
+
+	v = sbigetmvendorid();
+	a = sbigetmarchid();
+	i = sbigetmimpid();
+	soc.vendor = (u32int)(v < 0? 0: v);
+	soc.arch   = (u32int)(a < 0? 0: a);
+	soc.impl   = (u32int)(i < 0? 0: i);
+
+	if(soc.plic == nil){
+		/* DTB had no PLIC; pick a default by vendor. */
+		switch(soc.vendor){
+		case 0x710:	/* SpacemiT (K1 X60 today; K3 X100 later) */
+			soc.plic = (uchar*)0xe0000000;
+			break;
+		default:	/* QEMU-virt and unknown */
+			soc.plic = (uchar*)0x0c000000;
+			break;
+		}
+	}
+	print("socidentify: vendor %#ux arch %#ux impl %#ux plic %#p\n",
+		soc.vendor, soc.arch, soc.impl, soc.plic);
+}
+
 Mallocs
 cachealloc(uintptr size)		/* unused */
 {
