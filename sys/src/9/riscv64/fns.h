@@ -192,6 +192,11 @@ extern void pciintrdisable(int tbdf, void (*f)(Ureg*, void*), void *a);
 
 /* bootargs */
 extern void bootargsinit(void);
+extern int dtbnuart(void);
+extern Dtbuart *dtbuart(int);
+extern int dtbhasplic(void);
+extern int dtbnether(void);
+extern Dtbether *dtbether(int);
 
 // new
 void wsatp(u64int);

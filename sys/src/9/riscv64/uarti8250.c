@@ -1,47 +1,34 @@
 /*
- * 8250/16550-class UART for the riscv64 kernel.  Based on
- * sys/src/9/mt7688/uarti8250.c, adapted for boards where the UART
- * MMIO base is supplied via getconf rather than hardcoded.
+ * 8250/16550 UART for riscv64.  Register layer adapted from
+ * sys/src/9/mt7688/uarti8250.c; multi-port discovery via pnp()
+ * returning a chained Uart list follows sys/src/9/pc/uartpci.c.
+ * DTB-driven enumeration uses the table built by bootargs.c
+ * (DTB walker derived from sys/src/9/bcm/bootargs.c).
  *
- * Boot config knobs (set via launcher's -b flag, plumbed through
- * DTB /chosen/bootargs and read at init via getconf):
+ * Every node under /soc whose name matches serial@/uart@/r_uart
+ * and whose status = "okay" becomes an eia<N> port, numbered in
+ * /aliases serial<N> order.  The port that /chosen/stdout-path
+ * resolves to is marked as the kernel console.
  *
- *   uartbase=0xd4017000   required; physical address of the UART.
- *   k1ier=0x55            optional; override IER (default UUE only).
- *                         K1 needs 0x55 = RLSI|RDI|RTOIE|UUE for RX.
- *   k1fcr=0x41            optional; override FCR (default 0 = 16450).
- *                         K1 needs 0x41 = FIFO+PXAR8 trigger.
- *   k1plicmask=42         optional; mask given IRQ at K1 PLIC (base
- *                         0xe0000000) by writing priority 0.  Needed
- *                         to prevent IRQ storm when k1ier arms RX
- *                         interrupts that Plan 9's plic.c (which has
- *                         QEMU-virt PLICBASE hardcoded) can't mask.
- *   k1apbc=<mask>         optional; OR mask into APBC+0 at 0xd4015000.
- *                         Theoretically deasserts UART reset; in
- *                         practice the K1 inherits bit 2 = 0 from the
- *                         prior owner's runtime state and writing
- *                         bit 2 = 1 hangs the kernel.  Leave unset.
- *   k1debug=1             optional; dump UART + apbc registers at init.
+ * SoC-specific quirks are gated on the DT "compatible" string.
+ * For "spacemit,*" parts (SpacemiT-family SoCs with the PXA-derived
+ * UART block — BPI-F3's K1 today, K3 once silicon arrives) we
+ * reprogram FCR/IER with the bit patterns the PXA-derived RX
+ * datapath requires: FIFO+8-byte trigger and the unit-enable bit
+ * plus the receive-line/data/timeout interrupt enables.  See the
+ * Marvell PXA TRM, "UART chapter", which the SpacemiT silicon
+ * inherits register-for-register.
  *
- * Proven invocation for BPI-F3 (Spacemit K1, 2 GB):
- *
- *   ./kexec -b "*maxmem=0x80000000 uartbase=0xd4017000 \
- *                k1plicmask=42 k1ier=0x55 k1fcr=0x41 console=0" \
- *           9bpif3.elf
- *
- *   *maxmem caps meminit at the upper RAM bank end (kernel's hardcoded
- *           VDRAM+2GiB span would walk off RAM).
- *   k1plicmask masks UART IRQ 42 at the K1 PLIC so chip-level IRQs
- *           (armed by k1ier=0x55) don't storm us.
- *   k1ier+k1fcr match the PXA-style set_termios values the K1 needs —
- *           together they enable the RX datapath that was dead with
- *           bare IER=UUE.
- *   console=0 tells bootrc's kbdfs to bind /dev/eia0 to /dev/cons so
- *           the bootargs prompt's `dd` reads see typing.
- *
- * Input is polled from a 100-ms clock callback (addclock0link), not
- * driven by interrupts — the riscv64 PLIC base is hardcoded for
- * QEMU virt and a board-portable PLIC is a separate change.
+ * The console UART runs interrupt-driven via intrenable() when its
+ * DTB irq is known; other UARTs and IRQ-less ports stay on the
+ * 100-tick clock-callback polling path.  (Secondary UARTs are gated
+ * off the IRQ path until we confirm their power/clock state is sane
+ * — a mis-clocked port returning 0x00 from IIR would otherwise storm
+ * the PLIC.)  plic.c is now driven by soc.plic — set preferentially
+ * from the DTB by bootargsinit() and otherwise from a vendor-keyed
+ * default in socidentify() — so the chip-level PLIC is properly
+ * masked before the first source is enabled and the per-driver
+ * socplicmask workaround is no longer required.
  */
 
 #include "u.h"
@@ -67,32 +54,27 @@ enum {					/* registers (word index when stride == 4) */
 	Dlm		= 1,		/* Divisor Latch MSB */
 };
 
-enum {					/* Usr (dwapb) */
-	Busy		= 0x01,
-};
-
 enum {					/* Ier */
 	Erda		= 0x01,
 	Ethre		= 0x02,
 	Erls		= 0x04,
 	Ems		= 0x08,
-	/* PXA-style extensions (K1 inherits from Marvell PXA — see
-	 * the Marvell PXA TRM, UART chapter) */
-	Rtoie		= 0x10,		/* Receive Timeout Interrupt Enable */
-	Nrze		= 0x20,		/* NRZ Encoding Enable */
-	UUE		= 0x40,		/* UART Unit Enable */
-	DMAE		= 0x80,		/* DMA Enable */
+	/* PXA-family extensions (per the Marvell PXA TRM, UART chapter) */
+	Ertoi		= 0x10,		/* receive timeout */
+	Iunite		= 0x40,		/* UART unit enable */
+	/* RX-startup IER mask required by the PXA-derived datapath:
+	 * data + line-status + timeout, with the unit enabled. */
+	Pxaier		= Erda|Erls|Ertoi|Iunite,
 };
 
 enum {					/* Iir */
-	Ims		= 0x00,
 	Ip		= 0x01,
-	Ithre		= 0x02,
-	Irda		= 0x04,
-	Irls		= 0x06,
-	Ictoi		= 0x0C,
-	IirMASK		= 0x3F,
-	Ifena		= 0xC0,
+	IirMASK		= 0x0e,
+	Ims		= 0x00,		/* modem status */
+	Ithre		= 0x02,		/* THR empty */
+	Irda		= 0x04,		/* received data available */
+	Irls		= 0x06,		/* receive line status */
+	Ictoi		= 0x0c,		/* character timeout indication */
 };
 
 enum {					/* Fcr */
@@ -103,6 +85,8 @@ enum {					/* Fcr */
 	FIFO4		= 0x40,
 	FIFO8		= 0x80,
 	FIFO14		= 0xC0,
+	/* PXA 8-byte trigger + FIFO enable */
+	Pxafcr		= FIFOena|FIFO4,
 };
 
 enum {					/* Lcr */
@@ -150,11 +134,13 @@ enum {					/* Msr */
 };
 
 typedef struct Ctlr {
-	u32int	*io;
+	uchar	*io;
+	int	regshift;	/* DT reg-shift: 0 for ns16550a, 2 for PXA/DW APB */
 	int	irq;
 	int	tbdf;
 	int	iena;
 	int	poll;
+	int	ispxa;		/* PXA-family UART quirks (FCR/IER) needed */
 
 	uchar	sticky[Scr+1];
 
@@ -167,12 +153,11 @@ typedef struct Ctlr {
 extern PhysUart i8250physuart;
 
 /*
- * Static so uartconsinit() can wire up consuart before bootargsinit()
- * has populated conf[].  Until i8250pnp() runs (which happens later,
- * from devuart's normal init path) and stores a vmap()ped pointer in
- * ctlr->io, putc falls back to sbiputc and getc returns -1.  That way
- * early kernel prints flow via the SBI legacy putchar that works on
- * every board, and only the input path needs MMIO to come up.
+ * Boot-time placeholder used by uartconsinit() before the DTB has been
+ * parsed: putc thunks to sbiputc, getc returns -1.  Once i8250pnp()
+ * runs (from devuart's reset path, after bootargsinit) we either reuse
+ * this slot for the DT-derived console UART or leave it behind as a
+ * passive sbi-only fallback.
  */
 static Ctlr i8250ctlr = {
 	.tbdf	= -1,
@@ -189,9 +174,25 @@ static Uart i8250uart = {
 	.next	= nil,
 };
 
-#define csr8r(c, r)	((c)->io[r])
-#define csr8w(c, r, v)	((c)->io[r] = (c)->sticky[r] | (v))
-#define csr8o(c, r, v)	((c)->io[r] = (v))
+static Ctlr *pollctlr;		/* drained from clock callback */
+
+/*
+ * Two access widths are in play:
+ *   regshift=0: ns16550a-style, byte-addressed, 8-bit MMIO.
+ *   regshift=2: PXA/DW-APB-style, 32-bit-strided, 32-bit MMIO
+ *               (DT says reg-io-width=<4>; byte reads return junk on
+ *               real silicon).  Access width tracks regshift.
+ */
+#define UREG(c, r)	((volatile void*)((c)->io + ((r) << (c)->regshift)))
+#define csr8r(c, r)	((c)->regshift >= 2 \
+			 ? (uchar)*(volatile u32int*)UREG(c, r) \
+			 : *(volatile uchar*)UREG(c, r))
+#define csr8w(c, r, v)	((c)->regshift >= 2 \
+			 ? (*(volatile u32int*)UREG(c, r) = (c)->sticky[r] | (v)) \
+			 : (*(volatile uchar*)UREG(c, r) = (c)->sticky[r] | (v)))
+#define csr8o(c, r, v)	((c)->regshift >= 2 \
+			 ? (*(volatile u32int*)UREG(c, r) = (v)) \
+			 : (*(volatile uchar*)UREG(c, r) = (v)))
 
 static char*
 i8250status(Uart* uart, char *p, char *e)
@@ -201,7 +202,7 @@ i8250status(Uart* uart, char *p, char *e)
 
 	ctlr = uart->regs;
 	mcr = ctlr->sticky[Mcr];
-	msr = csr8r(ctlr, Msr);
+	msr = ctlr->io ? csr8r(ctlr, Msr) : 0;
 	ier = ctlr->sticky[Ier];
 	lcr = ctlr->sticky[Lcr];
 	return seprint(p, e,
@@ -239,7 +240,7 @@ i8250fifo(Uart* uart, int level)
 	Ctlr *ctlr;
 
 	ctlr = uart->regs;
-	if(ctlr->hasfifo == 0)
+	if(ctlr->hasfifo == 0 || ctlr->io == nil)
 		return;
 
 	ilock(ctlr);
@@ -278,7 +279,8 @@ i8250dtr(Uart* uart, int on)
 		ctlr->sticky[Mcr] |= Dtr;
 	else
 		ctlr->sticky[Mcr] &= ~Dtr;
-	csr8w(ctlr, Mcr, 0);
+	if(ctlr->io != nil)
+		csr8w(ctlr, Mcr, 0);
 }
 
 static void
@@ -291,7 +293,8 @@ i8250rts(Uart* uart, int on)
 		ctlr->sticky[Mcr] |= Rts;
 	else
 		ctlr->sticky[Mcr] &= ~Rts;
-	csr8w(ctlr, Mcr, 0);
+	if(ctlr->io != nil)
+		csr8w(ctlr, Mcr, 0);
 }
 
 static void
@@ -303,13 +306,15 @@ i8250modemctl(Uart* uart, int on)
 	ilock(&uart->tlock);
 	if(on){
 		ctlr->sticky[Ier] |= Ems;
-		csr8w(ctlr, Ier, 0);
+		if(ctlr->io != nil)
+			csr8w(ctlr, Ier, 0);
 		uart->modem = 1;
-		uart->cts = csr8r(ctlr, Msr) & Cts;
+		uart->cts = ctlr->io ? (csr8r(ctlr, Msr) & Cts) : 0;
 	}
 	else{
 		ctlr->sticky[Ier] &= ~Ems;
-		csr8w(ctlr, Ier, 0);
+		if(ctlr->io != nil)
+			csr8w(ctlr, Ier, 0);
 		uart->modem = 0;
 		uart->cts = 1;
 	}
@@ -340,7 +345,8 @@ i8250parity(Uart* uart, int parity)
 		return -1;
 	}
 	ctlr->sticky[Lcr] = lcr;
-	csr8w(ctlr, Lcr, 0);
+	if(ctlr->io != nil)
+		csr8w(ctlr, Lcr, 0);
 
 	uart->parity = parity;
 
@@ -366,7 +372,8 @@ i8250stop(Uart* uart, int stop)
 		return -1;
 	}
 	ctlr->sticky[Lcr] = lcr;
-	csr8w(ctlr, Lcr, 0);
+	if(ctlr->io != nil)
+		csr8w(ctlr, Lcr, 0);
 
 	uart->stop = stop;
 
@@ -399,7 +406,8 @@ i8250bits(Uart* uart, int bits)
 		return -1;
 	}
 	ctlr->sticky[Lcr] = lcr;
-	csr8w(ctlr, Lcr, 0);
+	if(ctlr->io != nil)
+		csr8w(ctlr, Lcr, 0);
 
 	uart->bits = bits;
 
@@ -429,6 +437,8 @@ i8250break(Uart* uart, int ms)
 		ms = 200;
 
 	ctlr = uart->regs;
+	if(ctlr->io == nil)
+		return;
 	csr8w(ctlr, Lcr, Brk);
 	tsleep(&up->sleep, return0, 0, ms);
 	csr8w(ctlr, Lcr, 0);
@@ -437,45 +447,34 @@ i8250break(Uart* uart, int ms)
 static void
 i8250kick(Uart* uart)
 {
-	/* See i8250putc: same reasoning, drain the staged output via SBI. */
-	while(uart->op < uart->oe || uartstageoutput(uart) > 0)
-		sbiputc((uchar)*uart->op++);
-}
+	Ctlr *ctlr = uart->regs;
+	int i;
 
-/*
- * Clock-callback polling.  Drains anything in the RX FIFO into uartrecv.
- * Runs from the system clock at 100-tick intervals (≈100 ms at HZ=100 / 10 ms at HZ=1000).
- */
-/*
- * BPI-F3 / K1 "sys-led" kernel-alive heartbeat.  GPIO pin 96 = bank 3
- * bit 0 of the controller at 0xd4019000; bank 3's register block starts
- * at offset 0x100 within the controller (banks 0/1/2 interleave at
- * 4-byte stride before that).  GPSR (atomic set) = +0x18, GPCR (atomic
- * clear) = +0x24.  The prior owner left the pin in output mode driving high.
- */
-static u32int *bpif3gpio;
-static int bpif3ledphase;
-
-static void
-bpif3heartbeat(void)
-{
-	if(bpif3gpio == nil)
+	if(ctlr->io == nil){
+		/* Fall back to SBI legacy putchar for the boot placeholder
+		 * (before DTB-derived MMIO has been mapped). */
+		while(uart->op < uart->oe || uartstageoutput(uart) > 0)
+			sbiputc((uchar)*uart->op++);
 		return;
-	if(++bpif3ledphase & 1)
-		bpif3gpio[(0x100 + 0x18)/4] = 0x1;	/* GPSR3: on */
-	else
-		bpif3gpio[(0x100 + 0x24)/4] = 0x1;	/* GPCR3: off */
+	}
+	while(uart->op < uart->oe || uartstageoutput(uart) > 0){
+		for(i = 0; !(csr8r(ctlr, Lsr) & Thre) && i < 1000; i++)
+			;
+		csr8o(ctlr, Thr, (uchar)*uart->op++);
+	}
 }
 
 static void
 i8250poll(void)
 {
 	Ctlr *ctlr;
+	Uart *uart;
 	int lsr, r, n;
 
-	ctlr = &i8250ctlr;
-	if(ctlr->io == nil)
+	ctlr = pollctlr;
+	if(ctlr == nil || ctlr->io == nil || consuart == nil)
 		return;
+	uart = consuart;
 	lsr = csr8r(ctlr, Lsr);
 	n = 0;
 	while((lsr & Dr) && n < 64){
@@ -483,7 +482,7 @@ i8250poll(void)
 		if(!(lsr & (Bi|Fe|Pe))){
 			if(r == '\r')
 				r = '\n';
-			uartrecv(&i8250uart, (u8int)r);
+			uartrecv(uart, (u8int)r);
 		}
 		lsr = csr8r(ctlr, Lsr);
 		n++;
@@ -501,82 +500,108 @@ i8250disable(Uart* uart)
 
 	ctlr = uart->regs;
 	ctlr->sticky[Ier] = 0;
-	csr8w(ctlr, Ier, 0);
+	if(ctlr->io != nil)
+		csr8w(ctlr, Ier, 0);
+}
+
+/*
+ * PLIC-driven RX/TX.  Modelled on mt7688/uarti8250.c#i8250interrupt:
+ * loop reading IIR until "no interrupt pending", dispatching by the
+ * IIR ID field.  On the PXA-derived block a receive-timeout indication
+ * (Ictoi) is the natural "drain me" event for sub-FIFO chunks; the
+ * standard 16550 only ever raises Irda for that case.
+ */
+static void
+i8250interrupt(Ureg*, void* arg)
+{
+	Uart *uart;
+	Ctlr *ctlr;
+	int iir, lsr, r, trips;
+
+	uart = arg;
+	ctlr = uart->regs;
+	if(ctlr->io == nil)
+		return;
+
+	/*
+	 * Cap the iteration count so a stuck IIR can't pin this CPU.  An
+	 * unpowered or mis-clocked PXA UART can return 0x00 from every
+	 * read (no Ip bit, ID=000=Ims), which would otherwise loop forever
+	 * with reads of Msr that never settle.  64 passes is enough to
+	 * drain any sensible burst.
+	 */
+	trips = 64;
+	for(iir = csr8r(ctlr, Iir); !(iir & Ip) && trips-- > 0;
+	    iir = csr8r(ctlr, Iir)){
+		switch(iir & IirMASK){
+		case Ims:		/* modem status: just clear */
+			(void)csr8r(ctlr, Msr);
+			break;
+		case Ithre:		/* THR empty: kick TX */
+			uartkick(uart);
+			break;
+		case Irda:		/* RX data available */
+		case Irls:		/* RX line status (errors latched in LSR) */
+		case Ictoi:		/* RX timeout (FIFO has stuck bytes) */
+			/*
+			 * Always read LSR first to clear any latched error
+			 * bits (Oe/Pe/Fe/Bi/FIFOerr); otherwise an Irls without
+			 * Dr=1 would re-assert IIR forever.
+			 */
+			lsr = csr8r(ctlr, Lsr);
+			if(lsr & (FIFOerr|Oe))
+				uart->oerr++;
+			if(lsr & Pe)
+				uart->perr++;
+			if(lsr & Fe)
+				uart->ferr++;
+			while(lsr & Dr){
+				r = csr8r(ctlr, Rbr);
+				if(!(lsr & (Bi|Fe|Pe))){
+					if(r == '\r')
+						r = '\n';
+					uartrecv(uart, (u8int)r);
+				}
+				lsr = csr8r(ctlr, Lsr);
+				if(lsr & (FIFOerr|Oe))
+					uart->oerr++;
+				if(lsr & Pe)
+					uart->perr++;
+				if(lsr & Fe)
+					uart->ferr++;
+			}
+			break;
+		default:
+			/* not all IIR codes are documented for every variant; just clear */
+			(void)csr8r(ctlr, Lsr);
+			(void)csr8r(ctlr, Rbr);
+			break;
+		}
+	}
 }
 
 static void
 i8250enable(Uart* uart, int ie)
 {
 	Ctlr *ctlr;
-	char *p;
-	ulong apbcset;
 
 	ctlr = uart->regs;
-	if(ctlr->io == nil){
-		print("uarti8250: enable called but uartbase not set\n");
+	if(ctlr->io == nil)
 		return;
-	}
-
-	apbcset = 0;
-	if((p = getconf("k1apbc")) != nil)
-		apbcset = strtoul(p, nil, 0);
 
 	/*
-	 * K1 PLIC is at 0xe0000000, not the QEMU virt 0x0c000000 that
-	 * our plic.c hardcodes.  The prior owner left it programmed to
-	 * route the UART IRQ to the CPU.  If we now enable chip-level interrupts
-	 * in IER (k1ier=0x55), they'd fire forever because Plan 9's
-	 * plic.c can't see or mask the real PLIC.
-	 *
-	 * Mask the UART IRQ at the K1 PLIC by writing priority 0 to its
-	 * source register: base + irq*4.  UART IRQ = 42 (DTS interrupts
-	 * = <0x2a>).  Opt-in via -b "k1plicmask=42".
+	 * Force the UART back to a known PIO-mode state after the prior
+	 * stage hands off (it may have left DMA or FIFOs armed).  The
+	 * enable-then-clear-then-reprogram sequence is the standard
+	 * 16550 reset: arm the FIFO so the clear bits are honored, drop
+	 * both RX and TX queues, then either leave it disabled (generic
+	 * 16550) or set the PXA 8-byte trigger we need for medium baud.
 	 */
-	if((p = getconf("k1plicmask")) != nil){
-		int irq = strtoul(p, nil, 0);
-		u32int *plic;
-
-		plic = (u32int*)vmap(0xe0000000ULL, BY2PG);
-		if(plic != nil && irq > 0 && irq < 1024){
-			plic[irq] = 0;	/* priority 0 = masked */
-			coherence();
-		}
-	}
-
-	/*
-	 * PXA-style startup so the UART comes back to a known PIO-mode
-	 * state after kexec.
-	 *
-	 * K1 apbc experimentation:  At kexec time we observe APBC+0 (0xd4015000)
-	 * = 0x13 = bits 0+1+4 set, bit 2 clear.  The prior owner ran the UART
-	 * successfully with bit 2 = 0, which suggests bit 2 = 0 is actually the
-	 * OPERATIONAL state — opposite of what the BSP's "deassert_val=BIT(2)"
-	 * reset-controller naming would imply.  Writing 0x7 (setting bit 2)
-	 * hung the kernel, consistent with that putting the UART INTO reset.
-	 *
-	 * Tunable via boot arg: -b "k1apbc=<hex>" gives an OR mask applied to
-	 * the existing APBC+0 value.  Useful values to try:
-	 *    k1apbc not set — skip the write entirely
-	 *    k1apbc=0       — write existing value back (sanity check: writes work?)
-	 *    k1apbc=0x4     — set bit 2 (the BSP "deassert" semantic; previously
-	 *                     hung the kernel — but we now do this AFTER setting
-	 *                     IER=UUE so DMA can't fire as the UART unhalts)
-	 *    k1apbc=0x3     — force clocks on
-	 */
-
-	/* Enable FIFO, clear both RX/TX, then by default DISABLE FIFO so
-	 * the UART runs in 16450 mode (no DMA hand-off).  The K1 PXA-style
-	 * set_termios re-enables it with PXAR8 trigger (FCR=0x41) for medium
-	 * baud rates after startup; override here via -b "k1fcr=N" if 16450
-	 * mode turns out not to work for RX on the K1. */
 	csr8o(ctlr, Fcr, FIFOena);
 	csr8o(ctlr, Fcr, FIFOena|FIFOrclr|FIFOtclr);
-	if((p = getconf("k1fcr")) != nil)
-		csr8o(ctlr, Fcr, strtoul(p, nil, 0));
-	else
-		csr8o(ctlr, Fcr, 0);
+	csr8o(ctlr, Fcr, ctlr->ispxa ? Pxafcr : 0);
 
-	/* Drain any stale interrupt state. */
+	/* Drain any stale state. */
 	(void)csr8r(ctlr, Lsr);
 	(void)csr8r(ctlr, Rbr);
 	(void)csr8r(ctlr, Iir);
@@ -586,151 +611,180 @@ i8250enable(Uart* uart, int ie)
 	ctlr->sticky[Lcr] = Wls8;
 	csr8o(ctlr, Lcr, Wls8);
 
-	/* MCR: DTR + RTS + Out2 (Out2 routes the UART IRQ to the system —
-	 * the PXA convention sets it unconditionally even in polled use). */
+	/* MCR: DTR + RTS + Out2.  Out2 is required by PXA-family parts
+	 * to route the chip-level IRQ out even in polled operation. */
 	ctlr->sticky[Mcr] = Dtr|Rts|Out2;
 	csr8o(ctlr, Mcr, Dtr|Rts|Out2);
 
-	/* IER: default UUE only (no DMA, no IRQs).  The K1 PXA-style
-	 * startup sets RLSI|RDI|RTOIE|UUE (= 0x55) — try that with
-	 * -b "k1ier=0x55" if just-UUE doesn't get RX working.  Note PLIC
-	 * doesn't route the UART IRQ to us by default (we never called
-	 * intrenable), so device-level interrupts SHOULD just sit pending
-	 * harmlessly in the chip without causing a storm. */
-	if((p = getconf("k1ier")) != nil)
-		csr8o(ctlr, Ier, strtoul(p, nil, 0));
-	else
-		csr8o(ctlr, Ier, UUE);
-
-	/* Sys-led GPIO for kernel-alive heartbeat.  Mapped before the
-	 * apbc write so we can see beacons even if the deassert hangs. */
-	bpif3gpio = (u32int*)vmap(0xd4019000ULL, BY2PG);
-
 	/*
-	 * Conditional apbc write — only if -b "k1apbc=..." was passed.
-	 * Default boot path skips this and inherits whatever state the
-	 * prior owner left (which lets the kernel finish booting; just
-	 * with RX dead).
-	 *
-	 * IER=UUE was set above before this, so the UART can't fire DMA
-	 * requests if/when it transitions out of reset here.
-	 *
-	 * LED beacons surround the write so we can detect a hang at the
-	 * exact transition.  Pattern: 1 blink before, 2 blinks after.
+	 * IER: PXA-family needs the unit-enable bit plus data/line/timeout
+	 * enables before RX bytes land in the FIFO.  A generic 16550 starts
+	 * with interrupts off and gets Erda once we've successfully wired
+	 * an intrenable below; if we end up in the polling fallback we
+	 * leave it at 0 so the line never asserts spuriously.
 	 */
-	if(getconf("k1apbc") != nil && bpif3gpio != nil){
-		u32int *apbc;
-		u32int pre, post;
-
-		/* 1 blink: about to write apbc. */
-		bpif3gpio[(0x100 + 0x24)/4] = 0x1;
-		delay(150);
-		bpif3gpio[(0x100 + 0x18)/4] = 0x1;
-		delay(150);
-
-		apbc = (u32int*)vmap(0xd4015000ULL, BY2PG);
-		pre = post = 0;
-		if(apbc != nil){
-			pre = apbc[0];
-			apbc[0] = pre | apbcset;
-			coherence();
-			delay(10);	/* let UART settle if reset just toggled */
-			post = apbc[0];
-		}
-
-		/* 2 blinks: write completed.  If we never see them, the write
-		 * (or the resulting UART state) hung the kernel. */
-		bpif3gpio[(0x100 + 0x24)/4] = 0x1;
-		delay(150);
-		bpif3gpio[(0x100 + 0x18)/4] = 0x1;
-		delay(150);
-		bpif3gpio[(0x100 + 0x24)/4] = 0x1;
-		delay(150);
-		bpif3gpio[(0x100 + 0x18)/4] = 0x1;
-		delay(150);
-
-		print("uarti8250: apbc[0] pre=%#ux mask=%#lux post=%#ux\n",
-			pre, apbcset, post);
-	}
-
-	/* Final drain — UART is now alive, clear any state that may have
-	 * accumulated during the reset transition. */
-	(void)csr8r(ctlr, Lsr);
-	(void)csr8r(ctlr, Rbr);
-	(void)csr8r(ctlr, Iir);
-	(void)csr8r(ctlr, Msr);
-
-	/*
-	 * Diagnostic dump on -b "k1debug=1".  Reads the UART's standard
-	 * 16550 registers plus the baud divisor (requires DLAB toggle) and
-	 * a few PXA-specific registers, plus the APBC clock register.
-	 * Useful for the next RX-debug session — particularly DLL/DLM,
-	 * since if the prior owner's shutdown lost the baud divisor we'd
-	 * see start bits ignored at the wrong rate.
-	 */
-	if(getconf("k1debug") != nil){
-		u32int *apbc;
-		uchar dll, dlm, savelcr;
-
-		print("uarti8250: dump LCR=%#ux MCR=%#ux LSR=%#ux MSR=%#ux IER=%#ux IIR=%#ux SCR=%#ux\n",
-			csr8r(ctlr, Lcr) & 0xff, csr8r(ctlr, Mcr) & 0xff,
-			csr8r(ctlr, Lsr) & 0xff, csr8r(ctlr, Msr) & 0xff,
-			csr8r(ctlr, Ier) & 0xff, csr8r(ctlr, Iir) & 0xff,
-			csr8r(ctlr, Scr) & 0xff);
-		/* Toggle DLAB to read baud divisor. */
-		savelcr = csr8r(ctlr, Lcr) & 0xff;
-		csr8o(ctlr, Lcr, savelcr | Dlab);
-		dll = csr8r(ctlr, Dll) & 0xff;
-		dlm = csr8r(ctlr, Dlm) & 0xff;
-		csr8o(ctlr, Lcr, savelcr);
-		print("uarti8250: baud divisor DLL=%#ux DLM=%#ux (combined %d)\n",
-			dll, dlm, dlm<<8 | dll);
-		apbc = (u32int*)vmap(0xd4015000ULL, BY2PG);
-		if(apbc != nil)
-			print("uarti8250: apbc[0]=%#ux\n", apbc[0]);
-	}
-
-	/* Hand off to the continuous heartbeat callback. */
-	if(bpif3gpio != nil)
-		addclock0link(bpif3heartbeat, 500);
+	ctlr->sticky[Ier] = ctlr->ispxa ? Pxaier : 0;
+	csr8o(ctlr, Ier, ctlr->sticky[Ier]);
 
 	if(ie && ctlr->iena == 0){
-		ctlr->poll = 1;
-		addclock0link(i8250poll, 100);
-		ctlr->iena = 1;
-		print("uarti8250: input polling enabled\n");
+		/*
+		 * Only the console UART gets the IRQ-driven path for now.
+		 * Secondary UARTs enumerated from the DTB may be in odd power
+		 * states (eia2 on the K1 is "okay" in the DT but the chip
+		 * itself may not be fully clocked at the moment) and a misread
+		 * IIR there would storm the PLIC.  When we trust the per-UART
+		 * clock/power state, this gate can drop.
+		 */
+		if(ctlr->irq > 0 && uart->console){
+			intrenable(ctlr->irq, i8250interrupt, uart, BUSUNKNOWN, uart->name);
+			ctlr->poll = 0;
+			ctlr->iena = 1;
+			/* generic 16550: enable RX-data-available now that an ISR exists */
+			if(!ctlr->ispxa){
+				ctlr->sticky[Ier] = Erda;
+				csr8o(ctlr, Ier, ctlr->sticky[Ier]);
+			}
+			print("uarti8250: irq-driven on %s irq %d\n",
+				uart->name, ctlr->irq);
+		} else if(uart->console){
+			/*
+			 * No IRQ from the DTB — fall back to the 100-tick clock
+			 * callback polling path so the console is still usable.
+			 */
+			ctlr->poll = 1;
+			pollctlr = ctlr;
+			addclock0link(i8250poll, 100);
+			ctlr->iena = 1;
+			print("uarti8250: input polling enabled on %s\n", uart->name);
+		}
 	}
+}
+
+static int issupportedcompat(char *s)
+{
+	return strcmp(s, "spacemit,pxa-uart") == 0
+	    || strncmp(s, "spacemit,rcpu-pxa-uart", 22) == 0
+	    || strcmp(s, "ns16550a") == 0
+	    || strcmp(s, "ns16550") == 0
+	    || strcmp(s, "snps,dw-apb-uart") == 0;
+}
+
+static Uart*
+allocuart(Dtbuart *du, int aliasidx)
+{
+	Ctlr *ctlr;
+	Uart *u;
+	void *va;
+	char *name;
+
+	va = vmap(du->base, BY2PG);
+	if(va == nil){
+		print("uarti8250: vmap(%#llux) failed for %s\n", du->base, du->path);
+		return nil;
+	}
+
+	if(du->isconsole){
+		/* Reuse the static placeholder so consuart stays valid
+		 * through the transition from sbi-only early prints to MMIO. */
+		ctlr = &i8250ctlr;
+		u = &i8250uart;
+	} else {
+		ctlr = malloc(sizeof(Ctlr));
+		u = malloc(sizeof(Uart));
+		if(ctlr == nil || u == nil){
+			free(ctlr);
+			free(u);
+			return nil;
+		}
+		memset(ctlr, 0, sizeof(*ctlr));
+		memset(u, 0, sizeof(*u));
+		ctlr->tbdf = -1;
+		u->regs = ctlr;
+		u->phys = &i8250physuart;
+	}
+	ctlr->io = (uchar*)va;
+	ctlr->regshift = du->regshift;
+	ctlr->irq = du->irq;
+	ctlr->poll = 1;
+	ctlr->ispxa = strncmp(du->compatible, "spacemit,", 9) == 0;
+
+	name = malloc(16);
+	if(name != nil){
+		snprint(name, 16, "eia%d", aliasidx);
+		u->name = name;
+	}
+	u->console = du->isconsole;
+	u->next = nil;
+	print("uarti8250: %s at %#llux irq %d compat %q%s\n",
+		u->name, du->base, du->irq, du->compatible,
+		du->isconsole ? " [console]" : "");
+	return u;
 }
 
 static Uart*
 i8250pnp(void)
 {
-	char *p;
-	uvlong pa;
-	void *va;
+	static int done;
+	Uart *head, *tail, *u;
+	Dtbuart *du;
+	int i, j, n;
 
-	if(i8250ctlr.io != nil)
-		return &i8250uart;	/* already mapped */
+	if(done)
+		return i8250uart.next != nil || i8250ctlr.io != nil ? &i8250uart : nil;
+	done = 1;
 
-	p = getconf("uartbase");
-	if(p == nil){
-		/* No uartbase yet — return the uart anyway so consuart wiring
-		 * works; putc will fall through to sbiputc. */
+	n = dtbnuart();
+	head = tail = nil;
+
+	/* Iterate aliases in order so eia<N> matches DT serial<N>. */
+	for(i = 0; i < 32; i++){
+		du = nil;
+		for(j = 0; j < n; j++){
+			Dtbuart *d = dtbuart(j);
+			if(d != nil && d->aliasidx == i){
+				du = d;
+				break;
+			}
+		}
+		if(du == nil || !du->ok || du->base == 0)
+			continue;
+		if(du->compatible[0] && !issupportedcompat(du->compatible))
+			continue;
+		u = allocuart(du, i);
+		if(u == nil)
+			continue;
+		if(head == nil)
+			head = u;
+		else
+			tail->next = u;
+		tail = u;
+	}
+
+	/* Also catch any okay uart-like nodes that lack a serial<N> alias. */
+	for(j = 0; j < n; j++){
+		du = dtbuart(j);
+		if(du == nil || du->aliasidx >= 0)
+			continue;
+		if(!du->ok || du->base == 0)
+			continue;
+		if(du->compatible[0] && !issupportedcompat(du->compatible))
+			continue;
+		u = allocuart(du, 32 + j);
+		if(u == nil)
+			continue;
+		if(head == nil)
+			head = u;
+		else
+			tail->next = u;
+		tail = u;
+	}
+
+	if(head == nil){
+		/* No DTB UARTs — leave the static placeholder so consuart
+		 * keeps sbi-thunking putc. */
 		return &i8250uart;
 	}
-	pa = strtoull(p, nil, 0);
-	if(pa == 0){
-		print("uarti8250: bad uartbase %q\n", p);
-		return &i8250uart;
-	}
-	va = vmap(pa, BY2PG);
-	if(va == nil){
-		print("uarti8250: vmap(%#llux) failed\n", pa);
-		return &i8250uart;
-	}
-	i8250ctlr.io = (u32int*)va;
-	print("uarti8250: eia0 at %#llux -> %#p\n", pa, va);
-	return &i8250uart;
+	return head;
 }
 
 static int
@@ -747,15 +801,18 @@ i8250getc(Uart* uart)
 }
 
 static void
-i8250putc(Uart*, int c)
+i8250putc(Uart *uart, int c)
 {
-	/*
-	 * Output via SBI legacy putchar even after MMIO is mapped.
-	 * On this board legacy putchar works reliably; bypassing SBI for
-	 * TX gains us nothing and just gives us a way to hang on a
-	 * dodgy Thre status.  The point of this driver is input.
-	 */
-	sbiputc((uchar)c);
+	Ctlr *ctlr = uart->regs;
+	int i;
+
+	if(ctlr->io == nil){
+		sbiputc((uchar)c);
+		return;
+	}
+	for(i = 0; !(csr8r(ctlr, Lsr) & Thre) && i < 1000; i++)
+		;
+	csr8o(ctlr, Thr, (uchar)c);
 }
 
 void
@@ -764,10 +821,10 @@ uartconsinit(void)
 	/*
 	 * Wire consuart now so early prints have somewhere to go.  The
 	 * actual MMIO mapping comes later from i8250pnp() once bootargsinit
-	 * has populated conf[] with uartbase=... ; until then putc falls
-	 * back to sbiputc and getc returns -1.  Don't call uartctl here:
-	 * it would call csr8w which touches ctlr->io.  We trust whatever
-	 * baud/format U-Boot or OpenSBI left configured.
+	 * has populated the DTB UART table; until then putc falls back to
+	 * sbiputc and getc returns -1.  Don't call uartctl here: it would
+	 * call csr8w which touches ctlr->io.  We trust whatever baud/format
+	 * U-Boot or OpenSBI left configured.
 	 */
 	consuart = &i8250uart;
 	consuart->console = 1;

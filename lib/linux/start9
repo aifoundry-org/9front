@@ -8,6 +8,5 @@
 # Assume the right version of kexec is in the path: e.g. put it in /usr/local/bin or so
 # /tmp/9bpif3.elf is good to avoid sd card writes if you are doing kernel dev; otherwise figure out where you want it
 # maxmem comes from DTB but can be overridden
-# Several -b args are necessary to make the UART work
-kexec -b "uartbase=0xd4017000 k1plicmask=42 k1ier=0x55 k1fcr=0x41 ether0=smte console=0" /tmp/9bpif3.elf
+kexec -b "ether0=smte console=0" /tmp/9bpif3.elf
 
