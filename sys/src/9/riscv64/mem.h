@@ -40,8 +40,17 @@
 #define STACKALIGN(sp)	((sp) & ~7)		/* bug: assure with alloc */
 #define TRAPFRAMESIZE	(38*8)
 
-//#define VDRAM		(0x0000000100000000ULL)	/* 0x80000000 - */
-#define VDRAM		(0x0000000040000000ULL)	/* BPI-F3: above lower-bound check */
+/*
+ * VDRAM is the physical DRAM base of the target board; KTZERO is where
+ * l.s self-relocates the kernel image before main() runs.  The mkfile
+ * injects -DVDRAM=... per CONF (0x40000000 for bpif3, 0x100000000 for
+ * rv64 — see reference_riscv_load_address.md).  The fallback here just
+ * matches the default rv64 build so building without -DVDRAM still
+ * yields a sensible kernel.
+ */
+#ifndef VDRAM
+#define VDRAM		(0x0000000100000000ULL)
+#endif
 #define	KTZERO		(VDRAM + 0x200000)	/* kernel text start */
 
 #define	KZERO		(0x0000000000000000ULL)	/* 0x00000000 - kernel address space */
