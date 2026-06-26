@@ -1,23 +1,47 @@
 /*
- * 8250/16550-class UART for the riscv64 kernel.
+ * 8250/16550-class UART for the riscv64 kernel.  Based on
+ * sys/src/9/mt7688/uarti8250.c, adapted for boards where the UART
+ * MMIO base is supplied via getconf rather than hardcoded.
  *
- * Based on sys/src/9/mt7688/uarti8250.c (which itself derives from the
- * generic 8250 driver), adapted for boards where the UART MMIO base is
- * not known at build time.  The base address (and IRQ, when interrupts
- * are wired) come from the boot-time config via getconf:
+ * Boot config knobs (set via launcher's -b flag, plumbed through
+ * DTB /chosen/bootargs and read at init via getconf):
  *
- *   uartbase=0xd4017000          # required; physical address of the UART
- *   uartstride=4                 # optional; bytes per register (default 4)
+ *   uartbase=0xd4017000   required; physical address of the UART.
+ *   k1ier=0x55            optional; override IER (default UUE only).
+ *                         K1 needs 0x55 = RLSI|RDI|RTOIE|UUE for RX.
+ *   k1fcr=0x41            optional; override FCR (default 0 = 16450).
+ *                         K1 needs 0x41 = FIFO+PXAR8 trigger.
+ *   k1plicmask=42         optional; mask given IRQ at K1 PLIC (base
+ *                         0xe0000000) by writing priority 0.  Needed
+ *                         to prevent IRQ storm when k1ier arms RX
+ *                         interrupts that Plan 9's plic.c (which has
+ *                         QEMU-virt PLICBASE hardcoded) can't mask.
+ *   k1apbc=<mask>         optional; OR mask into APBC+0 at 0xd4015000.
+ *                         Theoretically deasserts UART reset; in
+ *                         practice the K1 inherits bit 2 = 0 from the
+ *                         prior owner's runtime state and writing
+ *                         bit 2 = 1 hangs the kernel.  Leave unset.
+ *   k1debug=1             optional; dump UART + apbc registers at init.
  *
- * The launcher (lib/linux/kexec/kexec) appends these to /chosen/bootargs
- * with its -b flag, e.g.:
+ * Proven invocation for BPI-F3 (Spacemit K1, 2 GB):
  *
- *   ./kexec -b "uartbase=0xd4017000" 9bpif3.elf
+ *   ./kexec -b "*maxmem=0x80000000 uartbase=0xd4017000 \
+ *                k1plicmask=42 k1ier=0x55 k1fcr=0x41 console=0" \
+ *           9bpif3.elf
  *
- * Input is polled from the system clock callback (addclock0link), not
- * driven by a PLIC interrupt — the riscv64 PLIC base is currently
- * hardcoded for QEMU virt and a board-portable PLIC is a separate
- * change.  The 100-tick poll interval matches uartsbi.c.
+ *   *maxmem caps meminit at the upper RAM bank end (kernel's hardcoded
+ *           VDRAM+2GiB span would walk off RAM).
+ *   k1plicmask masks UART IRQ 42 at the K1 PLIC so chip-level IRQs
+ *           (armed by k1ier=0x55) don't storm us.
+ *   k1ier+k1fcr match the PXA-style set_termios values the K1 needs —
+ *           together they enable the RX datapath that was dead with
+ *           bare IER=UUE.
+ *   console=0 tells bootrc's kbdfs to bind /dev/eia0 to /dev/cons so
+ *           the bootargs prompt's `dd` reads see typing.
+ *
+ * Input is polled from a 100-ms clock callback (addclock0link), not
+ * driven by interrupts — the riscv64 PLIC base is hardcoded for
+ * QEMU virt and a board-portable PLIC is a separate change.
  */
 
 #include "u.h"
@@ -52,6 +76,12 @@ enum {					/* Ier */
 	Ethre		= 0x02,
 	Erls		= 0x04,
 	Ems		= 0x08,
+	/* PXA-style extensions (K1 inherits from Marvell PXA — see
+	 * the Marvell PXA TRM, UART chapter) */
+	Rtoie		= 0x10,		/* Receive Timeout Interrupt Enable */
+	Nrze		= 0x20,		/* NRZ Encoding Enable */
+	UUE		= 0x40,		/* UART Unit Enable */
+	DMAE		= 0x80,		/* DMA Enable */
 };
 
 enum {					/* Iir */
@@ -416,6 +446,27 @@ i8250kick(Uart* uart)
  * Clock-callback polling.  Drains anything in the RX FIFO into uartrecv.
  * Runs from the system clock at 100-tick intervals (≈100 ms at HZ=100 / 10 ms at HZ=1000).
  */
+/*
+ * BPI-F3 / K1 "sys-led" kernel-alive heartbeat.  GPIO pin 96 = bank 3
+ * bit 0 of the controller at 0xd4019000; bank 3's register block starts
+ * at offset 0x100 within the controller (banks 0/1/2 interleave at
+ * 4-byte stride before that).  GPSR (atomic set) = +0x18, GPCR (atomic
+ * clear) = +0x24.  The prior owner left the pin in output mode driving high.
+ */
+static u32int *bpif3gpio;
+static int bpif3ledphase;
+
+static void
+bpif3heartbeat(void)
+{
+	if(bpif3gpio == nil)
+		return;
+	if(++bpif3ledphase & 1)
+		bpif3gpio[(0x100 + 0x18)/4] = 0x1;	/* GPSR3: on */
+	else
+		bpif3gpio[(0x100 + 0x24)/4] = 0x1;	/* GPCR3: off */
+}
+
 static void
 i8250poll(void)
 {
@@ -457,6 +508,8 @@ static void
 i8250enable(Uart* uart, int ie)
 {
 	Ctlr *ctlr;
+	char *p;
+	ulong apbcset;
 
 	ctlr = uart->regs;
 	if(ctlr->io == nil){
@@ -464,28 +517,188 @@ i8250enable(Uart* uart, int ie)
 		return;
 	}
 
-	/*
-	 * Reset and re-enable both FIFOs.  The previous stage (U-Boot
-	 * or Linux's serial8250_shutdown) may have left the RX FIFO in
-	 * a stale state.  Single MMIO store, no spinning.
-	 */
-	csr8o(ctlr, Fcr, FIFOena|FIFOrclr|FIFOtclr);
+	apbcset = 0;
+	if((p = getconf("k1apbc")) != nil)
+		apbcset = strtoul(p, nil, 0);
 
 	/*
-	 * Don't touch LCR/MCR/IER beyond what bits/parity/stop already did.
-	 * On the K1 (and likely other dwapb-derivatives) the RX FIFO never
-	 * fills with characters typed from the serial cable even though
-	 * direct MMIO writes to THR do reach the cable.  Probably a pinmux
-	 * or RX-enable bit somewhere outside the standard 16550 register
-	 * set.  TODO: figure that out, or move the kernel to M-mode so we
-	 * own the UART traps directly.
+	 * K1 PLIC is at 0xe0000000, not the QEMU virt 0x0c000000 that
+	 * our plic.c hardcodes.  The prior owner left it programmed to
+	 * route the UART IRQ to the CPU.  If we now enable chip-level interrupts
+	 * in IER (k1ier=0x55), they'd fire forever because Plan 9's
+	 * plic.c can't see or mask the real PLIC.
+	 *
+	 * Mask the UART IRQ at the K1 PLIC by writing priority 0 to its
+	 * source register: base + irq*4.  UART IRQ = 42 (DTS interrupts
+	 * = <0x2a>).  Opt-in via -b "k1plicmask=42".
 	 */
+	if((p = getconf("k1plicmask")) != nil){
+		int irq = strtoul(p, nil, 0);
+		u32int *plic;
+
+		plic = (u32int*)vmap(0xe0000000ULL, BY2PG);
+		if(plic != nil && irq > 0 && irq < 1024){
+			plic[irq] = 0;	/* priority 0 = masked */
+			coherence();
+		}
+	}
+
+	/*
+	 * PXA-style startup so the UART comes back to a known PIO-mode
+	 * state after kexec.
+	 *
+	 * K1 apbc experimentation:  At kexec time we observe APBC+0 (0xd4015000)
+	 * = 0x13 = bits 0+1+4 set, bit 2 clear.  The prior owner ran the UART
+	 * successfully with bit 2 = 0, which suggests bit 2 = 0 is actually the
+	 * OPERATIONAL state — opposite of what the BSP's "deassert_val=BIT(2)"
+	 * reset-controller naming would imply.  Writing 0x7 (setting bit 2)
+	 * hung the kernel, consistent with that putting the UART INTO reset.
+	 *
+	 * Tunable via boot arg: -b "k1apbc=<hex>" gives an OR mask applied to
+	 * the existing APBC+0 value.  Useful values to try:
+	 *    k1apbc not set — skip the write entirely
+	 *    k1apbc=0       — write existing value back (sanity check: writes work?)
+	 *    k1apbc=0x4     — set bit 2 (the BSP "deassert" semantic; previously
+	 *                     hung the kernel — but we now do this AFTER setting
+	 *                     IER=UUE so DMA can't fire as the UART unhalts)
+	 *    k1apbc=0x3     — force clocks on
+	 */
+
+	/* Enable FIFO, clear both RX/TX, then by default DISABLE FIFO so
+	 * the UART runs in 16450 mode (no DMA hand-off).  The K1 PXA-style
+	 * set_termios re-enables it with PXAR8 trigger (FCR=0x41) for medium
+	 * baud rates after startup; override here via -b "k1fcr=N" if 16450
+	 * mode turns out not to work for RX on the K1. */
+	csr8o(ctlr, Fcr, FIFOena);
+	csr8o(ctlr, Fcr, FIFOena|FIFOrclr|FIFOtclr);
+	if((p = getconf("k1fcr")) != nil)
+		csr8o(ctlr, Fcr, strtoul(p, nil, 0));
+	else
+		csr8o(ctlr, Fcr, 0);
+
+	/* Drain any stale interrupt state. */
+	(void)csr8r(ctlr, Lsr);
+	(void)csr8r(ctlr, Rbr);
+	(void)csr8r(ctlr, Iir);
+	(void)csr8r(ctlr, Msr);
+
+	/* 8N1 line config. */
+	ctlr->sticky[Lcr] = Wls8;
+	csr8o(ctlr, Lcr, Wls8);
+
+	/* MCR: DTR + RTS + Out2 (Out2 routes the UART IRQ to the system —
+	 * the PXA convention sets it unconditionally even in polled use). */
+	ctlr->sticky[Mcr] = Dtr|Rts|Out2;
+	csr8o(ctlr, Mcr, Dtr|Rts|Out2);
+
+	/* IER: default UUE only (no DMA, no IRQs).  The K1 PXA-style
+	 * startup sets RLSI|RDI|RTOIE|UUE (= 0x55) — try that with
+	 * -b "k1ier=0x55" if just-UUE doesn't get RX working.  Note PLIC
+	 * doesn't route the UART IRQ to us by default (we never called
+	 * intrenable), so device-level interrupts SHOULD just sit pending
+	 * harmlessly in the chip without causing a storm. */
+	if((p = getconf("k1ier")) != nil)
+		csr8o(ctlr, Ier, strtoul(p, nil, 0));
+	else
+		csr8o(ctlr, Ier, UUE);
+
+	/* Sys-led GPIO for kernel-alive heartbeat.  Mapped before the
+	 * apbc write so we can see beacons even if the deassert hangs. */
+	bpif3gpio = (u32int*)vmap(0xd4019000ULL, BY2PG);
+
+	/*
+	 * Conditional apbc write — only if -b "k1apbc=..." was passed.
+	 * Default boot path skips this and inherits whatever state the
+	 * prior owner left (which lets the kernel finish booting; just
+	 * with RX dead).
+	 *
+	 * IER=UUE was set above before this, so the UART can't fire DMA
+	 * requests if/when it transitions out of reset here.
+	 *
+	 * LED beacons surround the write so we can detect a hang at the
+	 * exact transition.  Pattern: 1 blink before, 2 blinks after.
+	 */
+	if(getconf("k1apbc") != nil && bpif3gpio != nil){
+		u32int *apbc;
+		u32int pre, post;
+
+		/* 1 blink: about to write apbc. */
+		bpif3gpio[(0x100 + 0x24)/4] = 0x1;
+		delay(150);
+		bpif3gpio[(0x100 + 0x18)/4] = 0x1;
+		delay(150);
+
+		apbc = (u32int*)vmap(0xd4015000ULL, BY2PG);
+		pre = post = 0;
+		if(apbc != nil){
+			pre = apbc[0];
+			apbc[0] = pre | apbcset;
+			coherence();
+			delay(10);	/* let UART settle if reset just toggled */
+			post = apbc[0];
+		}
+
+		/* 2 blinks: write completed.  If we never see them, the write
+		 * (or the resulting UART state) hung the kernel. */
+		bpif3gpio[(0x100 + 0x24)/4] = 0x1;
+		delay(150);
+		bpif3gpio[(0x100 + 0x18)/4] = 0x1;
+		delay(150);
+		bpif3gpio[(0x100 + 0x24)/4] = 0x1;
+		delay(150);
+		bpif3gpio[(0x100 + 0x18)/4] = 0x1;
+		delay(150);
+
+		print("uarti8250: apbc[0] pre=%#ux mask=%#lux post=%#ux\n",
+			pre, apbcset, post);
+	}
+
+	/* Final drain — UART is now alive, clear any state that may have
+	 * accumulated during the reset transition. */
+	(void)csr8r(ctlr, Lsr);
+	(void)csr8r(ctlr, Rbr);
+	(void)csr8r(ctlr, Iir);
+	(void)csr8r(ctlr, Msr);
+
+	/*
+	 * Diagnostic dump on -b "k1debug=1".  Reads the UART's standard
+	 * 16550 registers plus the baud divisor (requires DLAB toggle) and
+	 * a few PXA-specific registers, plus the APBC clock register.
+	 * Useful for the next RX-debug session — particularly DLL/DLM,
+	 * since if the prior owner's shutdown lost the baud divisor we'd
+	 * see start bits ignored at the wrong rate.
+	 */
+	if(getconf("k1debug") != nil){
+		u32int *apbc;
+		uchar dll, dlm, savelcr;
+
+		print("uarti8250: dump LCR=%#ux MCR=%#ux LSR=%#ux MSR=%#ux IER=%#ux IIR=%#ux SCR=%#ux\n",
+			csr8r(ctlr, Lcr) & 0xff, csr8r(ctlr, Mcr) & 0xff,
+			csr8r(ctlr, Lsr) & 0xff, csr8r(ctlr, Msr) & 0xff,
+			csr8r(ctlr, Ier) & 0xff, csr8r(ctlr, Iir) & 0xff,
+			csr8r(ctlr, Scr) & 0xff);
+		/* Toggle DLAB to read baud divisor. */
+		savelcr = csr8r(ctlr, Lcr) & 0xff;
+		csr8o(ctlr, Lcr, savelcr | Dlab);
+		dll = csr8r(ctlr, Dll) & 0xff;
+		dlm = csr8r(ctlr, Dlm) & 0xff;
+		csr8o(ctlr, Lcr, savelcr);
+		print("uarti8250: baud divisor DLL=%#ux DLM=%#ux (combined %d)\n",
+			dll, dlm, dlm<<8 | dll);
+		apbc = (u32int*)vmap(0xd4015000ULL, BY2PG);
+		if(apbc != nil)
+			print("uarti8250: apbc[0]=%#ux\n", apbc[0]);
+	}
+
+	/* Hand off to the continuous heartbeat callback. */
+	if(bpif3gpio != nil)
+		addclock0link(bpif3heartbeat, 500);
+
 	if(ie && ctlr->iena == 0){
 		ctlr->poll = 1;
 		addclock0link(i8250poll, 100);
 		ctlr->iena = 1;
-		print("uarti8250: input polling enabled (RX currently dead, "
-			"see TODO in driver)\n");
+		print("uarti8250: input polling enabled\n");
 	}
 }
 
