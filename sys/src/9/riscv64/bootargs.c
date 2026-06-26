@@ -133,6 +133,16 @@ print("devtreeeprop: maxmem %s\n", maxmem);
 		cpus++;
 		return;
 	}
+	/*
+	 * /cpus/timebase-frequency = CLINT mtime tick rate in Hz.  All
+	 * kernel timer math (HZ scheduling, tsleep, IP-stack retransmit
+	 * timers) depends on this being correct.  On the K1 it's 24 MHz;
+	 * hard-coding 10 MHz makes every kernel timer fire 2.4x too
+	 * quickly, which warps everything downstream including ping RTT.
+	 */
+	if(strcmp(path, "/cpus") == 0
+	   && strcmp(key, "timebase-frequency") == 0 && len >= 4)
+		timebase = beget4(p);
 	if(strncmp(path, "/chosen", 7) == 0){
 		if (strcmp(key, "bootargs") == 0){
 			if(len > BOOTARGSLEN)
