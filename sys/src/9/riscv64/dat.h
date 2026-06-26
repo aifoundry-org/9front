@@ -306,6 +306,34 @@ typedef uvlong Mpl;
 typedef uvlong Mreg;
 typedef struct Clint Clint;
 typedef struct Sbiret Sbiret;
+typedef struct Dtbuart Dtbuart;
+typedef struct Dtbether Dtbether;
+
+struct Dtbuart {
+	char	path[64];	/* DT node path, e.g. "/soc/serial@d4017000" */
+	char	compatible[32];
+	uvlong	base;		/* MMIO physical base */
+	int	irq;		/* interrupt number (PLIC source) */
+	int	regshift;	/* register stride = 1 << regshift */
+	int	ok;		/* status = "okay" */
+	int	isconsole;	/* /chosen/stdout-path resolves here */
+	int	aliasidx;	/* serial<N>; -1 if no alias */
+};
+
+struct Dtbether {
+	char	path[64];	/* DT node path, e.g. "/soc/ethernet@cac80000" */
+	char	compatible[32];
+	uvlong	base;		/* MMIO physical base */
+	uvlong	size;		/* MMIO region size */
+	uvlong	apmubase;	/* SpacemiT "k1x,apmu-base-reg" if present */
+	u32int	ctrlregoff;	/* SpacemiT "ctrl-reg": APMU offset for clk/reset */
+	u32int	dlineregoff;	/* SpacemiT "dline-reg": APMU offset for RGMII delays */
+	int	irq;
+	int	ok;
+	int	aliasidx;	/* ethernet<N>; -1 if no alias */
+	uchar	mac[6];		/* local-mac-address; all-zero if unset */
+	int	hasmac;
+};
 
 struct Soc {
 	/* identification, set early from SBI (mvendorid/marchid/mimpid) */
