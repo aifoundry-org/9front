@@ -64,21 +64,58 @@ intrinit(void)
 /*
  *  called by trap.c to handle external interrupts from the plic.
  *  returns 0; the plic never delivers clock interrupts.
+ *
+ *  Iteration is bounded so a stuck/spurious source can't pin the cpu
+ *  in the claim/complete loop forever (which would also keep sstatus.SIE=0
+ *  and silently stop the clock).  Per the PLIC spec the gateway re-forwards
+ *  a level-triggered source after each completion as long as the source
+ *  line stays high, so a misbehaving device drives this loop indefinitely
+ *  unless we break out and disable the source.
  */
 int
 irq(Ureg *ureg)
 {
 	Vctl *v;
 	uint id;
+	int trips;
 
 	m->intr++;
+	trips = 64;
 	while((id = plic->context[Suctxt].claimcompl) != 0){
 		if(id < Ngintr){
-			for(v = vctl[id]; v != nil; v = v->next)
-				v->f(ureg, v->a);
+			v = vctl[id];
+			if(v == nil){
+				/*
+				 * Spurious: a source asserted with no handler.  If
+				 * we just complete and loop, the gateway will re-
+				 * forward it forever.  Mask the source so the cpu
+				 * can keep running and the report below is visible.
+				 */
+				plic->prio[id] = 0;
+				plic->enabits[Suctxt][id/32] &= ~(1u << (id & 31));
+				coherence();
+				iprint("plic: spurious irq %ud, masking\n", id);
+			} else
+				for(; v != nil; v = v->next)
+					v->f(ureg, v->a);
 		}
 		plic->context[Suctxt].claimcompl = id;
 		coherence();
+		if(--trips <= 0){
+			/*
+			 * Either a real storm or a handler that isn't actually
+			 * de-asserting the source.  Mask this source and bail so
+			 * the rest of the system can keep running long enough to
+			 * print and reboot.
+			 */
+			if(id < Ngintr){
+				plic->prio[id] = 0;
+				plic->enabits[Suctxt][id/32] &= ~(1u << (id & 31));
+				coherence();
+			}
+			iprint("plic: irq %ud storm, masking source\n", id);
+			break;
+		}
 	}
 	return 0;
 }
