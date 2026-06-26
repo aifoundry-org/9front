@@ -1,3 +1,22 @@
+/*
+ * Driver for the SpacemiT K1 Ethernet controller (EMAC/smte)
+ * for 9front / Plan 9 from Bell Labs
+ *
+ * Based on:
+ *   OpenBSD if_smte.c   - Patrick Wildt, Mark Kettenis
+ *   9front ethercycv.c  - general driver structure
+ *
+ * Hardware:
+ *   0x0000-0x002c  DMA registers
+ *   0x0100-0x01e4  MAC/GMAC registers
+ *   separate APMU  RGMII delay lines
+ *
+ * riscv64/K1 notes:
+ *   - cleandse/invaldse not yet available on riscv64: omitted
+ *   - intrenable not yet available: addclock0link used for polling
+ *   - SoC identified via SDHC_VID_PID (vendor 0xa1312)
+ */
+
 #include "u.h"
 #include "../port/lib.h"
 #include "mem.h"
@@ -7,301 +26,482 @@
 #include "../port/netif.h"
 #include "../port/etherif.h"
 
-/* Physical address and IRQ */
+#define Rbsz	ROUNDUP(sizeof(Etherpkt)+16, 64)
+
+/* Physical addresses */
 enum {
-	EMAC0_PHYS		= 0xcac80000UL,
-	EMAC0_SIZE		= 0x420,
-	EMAC0_IRQ		= 141, 
-	EMAC0_APMU_OFF	= 0x0000,
+	EMAC0_PHYS	= 0xcac80000UL,
+	EMAC0_SIZE	= 0x420,
+	EMAC0_IRQ	= 141,
 
-	APMU_PHYS		= 0xd4282800UL,
-	APMU_SIZE		= 0x400,
+	APMU_PHYS	= 0xd4282800UL,
+	APMU_SIZE	= 0x400,
 
-	/* Default RGMII delays: 1560 ps = 100 × 15.6 ps (vendor DTS default) */
-	SMTE_DEFAULT_RXDELAY_PS	= 1560,
-	SMTE_DEFAULT_TXDELAY_PS	= 1560,
+	/* RGMII delays: 1560 ps = 100 steps x 15.6 ps (from vendor DTS) */
+	SMTE_DEFAULT_RXDELAY	= 100,
+	SMTE_DEFAULT_TXDELAY	= 100,
+
+	/* SDH used for SoC fingerprinting */
+	SDH1_PHYS	= 0xD4280000,
+	SDH1_SIZE	= 0x1000,
+	SDHC_VID_PID	= 0x100,
+	K1_VENDOR_ID	= 0xa1312,
 };
 
-/* DMA/MAC registers */
+/* DMA registers (byte offset) */
 enum {
-	DMA_CONFIG						= 0x0000,
-	DMA_CONFIG_DMA_64BIT_MODE		= (1U << 18),
-	DMA_CONFIG_STRICT_BURST			= (1U << 17),
-	DMA_CONFIG_BURST_LENGTH_MASK	= (0x7f << 1),
-	DMA_CONFIG_BURST_LENGTH_16		= (0x10 << 1),
+	DMA_CONFIG				= 0x0000,
 	DMA_CONFIG_SOFTWARE_RESET		= (1U << 0),
+	DMA_CONFIG_BURST_LENGTH_16		= (0x10 << 1),
+	DMA_CONFIG_STRICT_BURST			= (1U << 17),
+	DMA_CONFIG_DMA_64BIT_MODE		= (1U << 18),
 
-	DMA_CTRL						= 0x0004,
-	DMA_CTRL_START_STOP_RX_DMA		= (1U << 1),
+	DMA_CTRL				= 0x0004,
 	DMA_CTRL_START_STOP_TX_DMA		= (1U << 0),
+	DMA_CTRL_START_STOP_RX_DMA		= (1U << 1),
 
-	DMA_STATUS_IRQ						= 0x0008,
-	DMA_STATUS_IRQ_RX_MISSED_FRAME		= (1U << 7),
-	DMA_STATUS_IRQ_RX_DMA_STOPPED		= (1U << 6),
-	DMA_STATUS_IRQ_RX_DES_UNAVAILABLE	= (1U << 5),
-	DMA_STATUS_IRQ_RX_TRANSFER_DONE		= (1U << 4),
+	DMA_STATUS_IRQ				= 0x0008,	/* W1C */
 	DMA_STATUS_IRQ_TX_TRANSFER_DONE		= (1U << 0),
+	DMA_STATUS_IRQ_RX_TRANSFER_DONE	= (1U << 4),
+	DMA_STATUS_IRQ_RX_DES_UNAVAILABLE	= (1U << 5),
+	DMA_STATUS_IRQ_RX_DMA_STOPPED		= (1U << 6),
+	DMA_STATUS_IRQ_RX_MISSED_FRAME		= (1U << 7),
 
-	DMA_INTR_ENABLE						= 0x000c,
-	DMA_INTR_ENABLE_RX_MISSED_FRAME		= (1U << 7),
-	DMA_INTR_ENABLE_RX_DMA_STOPPED		= (1U << 6),
-	DMA_INTR_ENABLE_RX_DES_UNAVAILABLE	= (1U << 5),
-	DMA_INTR_ENABLE_RX_TRANSFER_DONE	= (1U << 4),
+	DMA_INTR_ENABLE				= 0x000c,
 	DMA_INTR_ENABLE_TX_TRANSFER_DONE	= (1U << 0),
+	DMA_INTR_ENABLE_RX_TRANSFER_DONE	= (1U << 4),
+	DMA_INTR_ENABLE_RX_DES_UNAVAILABLE	= (1U << 5),
+	DMA_INTR_ENABLE_RX_DMA_STOPPED		= (1U << 6),
+	DMA_INTR_ENABLE_RX_MISSED_FRAME		= (1U << 7),
 
 	DMA_TRANSMIT_AUTO_POLL_COUNTER		= 0x0010,
-	DMA_TRANSMIT_POLL_DEMAND			= 0x0014,
-	DMA_RECEIVE_POLL_DEMAND				= 0x0018,
-	DMA_TRANSMIT_BASE_ADDRESS			= 0x001c,
-	DMA_RECEIVE_BASE_ADDRESS			= 0x0020,
+	DMA_TRANSMIT_POLL_DEMAND		= 0x0014,
+	DMA_RECEIVE_POLL_DEMAND			= 0x0018,
+	DMA_TRANSMIT_BASE_ADDRESS		= 0x001c,
+	DMA_RECEIVE_BASE_ADDRESS		= 0x0020,
 
-	DMA_RECEIVE_IRQ_MITIGATION							= 0x002c,
-	DMA_RECEIVE_IRQ_MITIGATION_FRAME_COUNTER_SHIFT 		= 0,
-	DMA_RECEIVE_IRQ_MITIGATION_TIMEOUT_COUNTER_SHIFT 	= 8,
-	DMA_RECEIVE_IRQ_MITIGATION_MITIGATION_ENABLE 		= (1U << 31),
+	DMA_RECEIVE_IRQ_MITIGATION		= 0x002c,
+	DMA_RECEIVE_IRQ_MITIGATION_ENABLE	= (1U << 31),
+};
 
-	MAC_GLOBAL_CTRL					= 0x0100,
-	MAC_GLOBAL_CTRL_DUPLEX_MODE		= (1U << 2),
+/* MAC registers (byte offset) */
+enum {
+	MAC_GLOBAL_CTRL				= 0x0100,
 	MAC_GLOBAL_CTRL_SPEED_MASK		= (0x3 << 0),
 	MAC_GLOBAL_CTRL_SPEED_10		= (0x0 << 0),
 	MAC_GLOBAL_CTRL_SPEED_100		= (0x1 << 0),
 	MAC_GLOBAL_CTRL_SPEED_1000		= (0x2 << 0),
+	MAC_GLOBAL_CTRL_DUPLEX_MODE		= (1U << 2),
 
-	MAC_TRANSMIT_CTRL				= 0x0104,
-	MAC_TRANSMIT_CTRL_IFG_LEN_MASK	= (0x7 << 4),
-	MAC_TRANSMIT_CTRL_TX_AUTO_RETRY	= (1U << 3),
+	MAC_TRANSMIT_CTRL			= 0x0104,
 	MAC_TRANSMIT_CTRL_TX_ENABLE		= (1U << 0),
+	MAC_TRANSMIT_CTRL_TX_AUTO_RETRY		= (1U << 3),
 
-	MAC_RECEIVE_CTRL				= 0x0108,
-	MAC_RECEIVE_CTRL_STORE_FORWARD	= (1U << 3),
+	MAC_RECEIVE_CTRL			= 0x0108,
 	MAC_RECEIVE_CTRL_RX_ENABLE		= (1U << 0),
+	MAC_RECEIVE_CTRL_STORE_FORWARD		= (1U << 3),
 
 	MAC_MAXIMUM_FRAME_SIZE			= 0x010c,
 	MAC_TRANSMIT_JABBER_SIZE		= 0x0110,
 	MAC_RECEIVE_JABBER_SIZE			= 0x0114,
 
-	MAC_ADDR_CTRL					= 0x0118,
-	MAC_ADDR_CTRL_PROMISCUOUS_MODE	= (1U << 8),
-	MAC_ADDR_CTRL_MAC_ADDR1_ENABLE	= (1U << 0),
+	MAC_ADDR_CTRL				= 0x0118,
+	MAC_ADDR_CTRL_MAC_ADDR1_ENABLE		= (1U << 0),
 
 	MAC_ADDR1_HI				= 0x0120,
 	MAC_ADDR1_ME				= 0x0124,
 	MAC_ADDR1_LO				= 0x0128,
 
-	MAC_MULTICAST_HASH_TABLE1		= 0x0150,
-	MAC_MULTICAST_HASH_TABLE2		= 0x0154,
-	MAC_MULTICAST_HASH_TABLE3		= 0x0158,
-	MAC_MULTICAST_HASH_TABLE4		= 0x015c,
-
-	MAC_MDIO_CTRL							= 0x01a0,
-	MAC_MDIO_CTRL_START_MDIO_TRANS			= (1U << 15),
-	MAC_MDIO_CTRL_MDIO_READ_WRITE			= (1U << 10),
+	MAC_MDIO_CTRL				= 0x01a0,
+	MAC_MDIO_CTRL_START_MDIO_TRANS		= (1U << 15),
+	MAC_MDIO_CTRL_MDIO_READ_WRITE		= (1U << 10),
 	MAC_MDIO_CTRL_REGISTER_ADDRESS_SHIFT	= 5,
-	MAC_MDIO_CTRL_PHY_ADDRESS_SHIFT			= 0,
+	MAC_MDIO_CTRL_PHY_ADDRESS_SHIFT		= 0,
 
-	MAC_MDIO_DATA						= 0x01a4,
+	MAC_MDIO_DATA				= 0x01a4,
 
 	MAC_TRANSMIT_FIFO_ALMOST_FULL		= 0x01c0,
 	MAC_TRANSMIT_PACKET_START_THRESHOLD	= 0x01c4,
 	MAC_RECEIVE_PACKET_START_THRESHOLD	= 0x01c8,
 
-	MAC_INTR_ENABLE						= 0x01e4,
+	MAC_INTR_ENABLE				= 0x01e4,
 };
 
-/* APMU registers */
+/* APMU registers (byte offset) */
 enum {
 	APMU_EMAC_CLK_RST_CTRL			= 0x0000,
 	APMU_EMAC_AXI_MST_ID			= (1U << 13),
-	APMU_EMAC_PHY_INTR_EN			= (1U << 12),
-	APMU_EMAC_RGMII_TXC_SRC_SEL		= (1U << 8),
 
 	APMU_EMAC_RGMII_DLINE			= 0x0004,
-
-	APMU_EMAC_RGMII_DLINE_TX_DELAY_MASK		= (0xff << 24),
-	APMU_EMAC_RGMII_DLINE_TX_DELAY_SHIFT	= 8,
-
-	APMU_EMAC_RGMII_DLINE_TX_STEP_MASK	= (0x3 << 20),
-	APMU_EMAC_RGMII_DLINE_TX_STEP_15P6	= (0x0 << 20),
-
-	APMU_EMAC_RGMII_DLINE_TX_EN		= (1U << 16),
-
-	APMU_EMAC_RGMII_DLINE_RX_DELAY_MASK		= (0xff << 8),
-	APMU_EMAC_RGMII_DLINE_RX_DELAY_SHIFT	= 8,
-
-	APMU_EMAC_RGMII_DLINE_RX_STEP_MASK	= (0x3 << 4),
-	APMU_EMAC_RGMII_DLINE_RX_STEP_15P6	= (0x0 << 4),
-
 	APMU_EMAC_RGMII_DLINE_RX_EN		= (1U << 0),
+	APMU_EMAC_RGMII_DLINE_RX_STEP_15P6	= (0U << 4),
+	APMU_EMAC_RGMII_DLINE_RX_DELAY_SHIFT	= 8,
+	APMU_EMAC_RGMII_DLINE_TX_EN		= (1U << 16),
+	APMU_EMAC_RGMII_DLINE_TX_STEP_15P6	= (0U << 20),
+	APMU_EMAC_RGMII_DLINE_TX_DELAY_SHIFT	= 24,
 };
 
-/* Descriptors */
-typedef struct SmteDesc SmteDesc;
-
-struct SmteDesc {
-	u32int	sd_desc0;
-	u32int	sd_desc1;
-	u32int	sd_addr1;
-	u32int	sd_addr2;
-};
-
-/* Rx bits */
+/* RX descriptors */
 enum {
 	RX_DESC0_FRAME_PACKET_LENGTH_MASK	= (0x3fff << 0),
-	RX_DESC0_FRAME_PACKET_LENGTH_SHIFT	= 0,
-	RX_DESC0_FRAME_RUNT					= (1U << 15),
-	RX_DESC0_FRAME_CRC_ERR				= (1U << 20),
-	RX_DESC0_FRAME_MAX_LEN_ERR			= (1U << 21),
-	RX_DESC0_FRAME_JABBER_ERR			= (1U << 22),
-	RX_DESC0_FRAME_LENGTH_ERR			= (1U << 23),
-	RX_DESC0_OWN						= (1U << 31),
-
+	RX_DESC0_FRAME_RUNT			= (1U << 15),
+	RX_DESC0_FRAME_CRC_ERR			= (1U << 20),
+	RX_DESC0_FRAME_MAX_LEN_ERR		= (1U << 21),
+	RX_DESC0_FRAME_JABBER_ERR		= (1U << 22),
+	RX_DESC0_FRAME_LENGTH_ERR		= (1U << 23),
+	RX_DESC0_OWN				= (1U << 31),
 	RX_DESC1_SIZE1_MASK			= (0xfffff << 0),
-	RX_DESC1_SIZE1_SHIFT		= 0,
-	RX_DESC1_SIZE2_MASK			= (0xfffff << 12),
-	RX_DESC1_SIZE2_SHIFT		= 12,
 	RX_DESC1_END_RING			= (1U << 26),
 };
 
-/* Tx bits */
+/* TX descriptors */
 enum {
 	TX_DESC0_OWN				= (1U << 31),
-
 	TX_DESC1_SIZE1_MASK			= (0xfff << 0),
-	TX_DESC1_SIZE1_SHIFT		= 0,
-
-	TX_DESC1_SIZE2_MASK			= (0xfff << 12),
-	TX_DESC1_SIZE2_SHIFT		= 12,
-
-	TX_DESC1_END_RING					= (1U << 26),
-	TX_DESC1_FIRST_SEGMENT				= (1U << 29),
-	TX_DESC1_LAST_SEGMENT				= (1U << 30),
+	TX_DESC1_END_RING			= (1U << 26),
+	TX_DESC1_FIRST_SEGMENT			= (1U << 29),
+	TX_DESC1_LAST_SEGMENT			= (1U << 30),
 	TX_DESC1_INTERRUPT_ON_COMPLETION	= (1U << 31),
 };
 
-/* SDH data for check Vendor_ID Spacemit Soc */
+/* Standard MII registers */
 enum {
-	SDH1_PHYS		= 0xD4280000,
-	SDH1_SIZE		= 0x1000,
-	SDHC_VID_PID	= 0x100,
+	MII_BMCR	= 0,
+	MII_BMSR	= 1,
+	MII_PHYSID1	= 2,
+	MII_PHYSID2	= 3,
+	MII_ANLPAR	= 5,
+	MII_GBSR	= 10,
+
+	BMCR_ANENABLE	= (1U << 12),
+	BMCR_ANRESTART	= (1U << 9),
+
+	BMSR_ANEGCOMPLETE	= (1U << 5),
+	BMSR_LSTATUS		= (1U << 2),
+
+	LPA_100FULL	= (1U << 8),
+	LPA_100HALF	= (1U << 7),
+	LPA_10FULL	= (1U << 6),
+	LPA_10HALF	= (1U << 5),
+
+	GBSR_LP1000FULL	= (1U << 11),
+	GBSR_LP1000HALF	= (1U << 10),
+
+	PHY_ADDR	= 1,
+	Linkdelay	= 500,
+};
+
+enum {
+	RXRING	= 512,
+	TXRING	= 512,
 };
 
 typedef struct Ctlr Ctlr;
-
 struct Ctlr {
-	void	*regs;		/* MAC/DMA MMIO */
-	void	*apmu;		/* APMU MMIO */
-	u32int	apmuoff;
-	int	irq;
-	int attach;
-
-	u32int	rxdelay;
-	u32int	txdelay;
+	ulong	*regs;
+	ulong	*apmu;
+	u32int	*rxr, *txr;
+	Block	**rxs, **txs;
+	int	rxprodi, rxconsi, txi;
+	u32int	rxdelay, txdelay;
+	int	attach;
+	Lock	txlock;
 };
 
-/*------------------------------------------------
-static void
-mdwrite(Ctlr *c, int r, u16int v)
+/* MMIO access ---------------------------------------------------------------- */
+
+static u32int
+csr32r(ulong *base, uintptr off)
 {
-// RGMII
-// MDIO write control PHY RTL8211
+	coherence();
+	return *(volatile u32int*)((uintptr)base + off);
+}
+
+static void
+csr32w(ulong *base, uintptr off, u32int v)
+{
+	*(volatile u32int*)((uintptr)base + off) = v;
+	coherence();
+}
+
+/* MDIO ----------------------------------------------------------------------- */
+
+static void
+mdwrite(Ctlr *c, int reg, u16int v)
+{
+	csr32w(c->regs, MAC_MDIO_DATA, v);
+	csr32w(c->regs, MAC_MDIO_CTRL,
+		MAC_MDIO_CTRL_START_MDIO_TRANS
+		| (reg & 0x1f) << MAC_MDIO_CTRL_REGISTER_ADDRESS_SHIFT
+		| (PHY_ADDR & 0x1f) << MAC_MDIO_CTRL_PHY_ADDRESS_SHIFT);
+	while(csr32r(c->regs, MAC_MDIO_CTRL) & MAC_MDIO_CTRL_START_MDIO_TRANS)
+		tsleep(&up->sleep, return0, nil, 1);
 }
 
 static u16int
-mdread(Ctlr *c, int r)
+mdread(Ctlr *c, int reg)
 {
-// RGMII
-//MDIO read control PHY RTL8211
+	csr32w(c->regs, MAC_MDIO_DATA, 0);
+	csr32w(c->regs, MAC_MDIO_CTRL,
+		MAC_MDIO_CTRL_START_MDIO_TRANS | MAC_MDIO_CTRL_MDIO_READ_WRITE
+		| (reg & 0x1f) << MAC_MDIO_CTRL_REGISTER_ADDRESS_SHIFT
+		| (PHY_ADDR & 0x1f) << MAC_MDIO_CTRL_PHY_ADDRESS_SHIFT);
+	while(csr32r(c->regs, MAC_MDIO_CTRL) & MAC_MDIO_CTRL_START_MDIO_TRANS)
+		tsleep(&up->sleep, return0, nil, 1);
+	return csr32r(c->regs, MAC_MDIO_DATA) & 0xffff;
 }
+
+/* PHY kproc ------------------------------------------------------------------ */
 
 static void
 ethproc(void *ved)
 {
+	Ether *edev;
+	Ctlr *c;
+	u16int bmsr, lpa, gbsr, id1, id2;
+	u32int ctrl;
+	int speed;
+	char *dup;
 
+	edev = ved;
+	c    = edev->ctlr;
+
+	id1 = mdread(c, MII_PHYSID1);
+	id2 = mdread(c, MII_PHYSID2);
+	print("smte: PHY addr=%d oui=0x%06ux model=0x%02ux rev=0x%01ux\n",
+		PHY_ADDR,
+		((u32int)id1 << 6) | (id2 >> 10),
+		(id2 >> 4) & 0x3f,
+		id2 & 0xf);
+
+	print("smte: PHY starting autonegotiation\n");
+	mdwrite(c, MII_BMCR, BMCR_ANENABLE | BMCR_ANRESTART);
+
+	for(;;){
+		bmsr = mdread(c, MII_BMSR);
+		if((bmsr & BMSR_LSTATUS) == 0){
+			print("smte: link down (BMSR=0x%04ux)\n", bmsr);
+			ethersetlink(edev, 0);
+			csr32w(c->regs, MAC_TRANSMIT_CTRL, 0);
+			csr32w(c->regs, MAC_RECEIVE_CTRL, 0);
+			print("smte: MAC TX/RX disabled, waiting for link\n");
+			while((mdread(c, MII_BMSR) & BMSR_LSTATUS) == 0)
+				tsleep(&up->sleep, return0, nil, Linkdelay);
+			print("smte: physical link detected\n");
+		}
+
+		print("smte: waiting for autoneg (BMSR=0x%04ux)\n", mdread(c, MII_BMSR));
+		while((mdread(c, MII_BMSR) & BMSR_ANEGCOMPLETE) == 0)
+			tsleep(&up->sleep, return0, nil, Linkdelay);
+
+		lpa  = mdread(c, MII_ANLPAR);
+		gbsr = mdread(c, MII_GBSR);
+		print("smte: autoneg complete ANLPAR=0x%04ux GBSR=0x%04ux\n", lpa, gbsr);
+
+		ctrl = csr32r(c->regs, MAC_GLOBAL_CTRL)
+			& ~(MAC_GLOBAL_CTRL_SPEED_MASK | MAC_GLOBAL_CTRL_DUPLEX_MODE);
+		dup  = "HD";
+
+		if(gbsr & GBSR_LP1000FULL){
+			ctrl |= MAC_GLOBAL_CTRL_SPEED_1000 | MAC_GLOBAL_CTRL_DUPLEX_MODE;
+			speed = 1000; dup = "FD";
+		} else if(gbsr & GBSR_LP1000HALF){
+			ctrl |= MAC_GLOBAL_CTRL_SPEED_1000;
+			speed = 1000;
+		} else if(lpa & LPA_100FULL){
+			ctrl |= MAC_GLOBAL_CTRL_SPEED_100 | MAC_GLOBAL_CTRL_DUPLEX_MODE;
+			speed = 100; dup = "FD";
+		} else if(lpa & LPA_100HALF){
+			ctrl |= MAC_GLOBAL_CTRL_SPEED_100;
+			speed = 100;
+		} else if(lpa & LPA_10FULL){
+			ctrl |= MAC_GLOBAL_CTRL_SPEED_10 | MAC_GLOBAL_CTRL_DUPLEX_MODE;
+			speed = 10; dup = "FD";
+		} else {
+			ctrl |= MAC_GLOBAL_CTRL_SPEED_10;
+			speed = 10;
+		}
+
+		csr32w(c->regs, MAC_GLOBAL_CTRL, ctrl);
+		csr32w(c->regs, MAC_TRANSMIT_CTRL,
+			MAC_TRANSMIT_CTRL_TX_ENABLE | MAC_TRANSMIT_CTRL_TX_AUTO_RETRY);
+		csr32w(c->regs, MAC_RECEIVE_CTRL,
+			MAC_RECEIVE_CTRL_RX_ENABLE | MAC_RECEIVE_CTRL_STORE_FORWARD);
+
+		print("smte: link up %dMbps %s\n", speed, dup);
+		print("smte:   MAC_GLOBAL_CTRL=0x%08ux\n", ctrl);
+		print("smte:   MAC_TX_CTRL=0x%08ux MAC_RX_CTRL=0x%08ux\n",
+			csr32r(c->regs, MAC_TRANSMIT_CTRL),
+			csr32r(c->regs, MAC_RECEIVE_CTRL));
+
+		ethersetspeed(edev, speed);
+		ethersetlink(edev, 1);
+
+		while((mdread(c, MII_BMSR) & BMSR_LSTATUS) != 0)
+			tsleep(&up->sleep, return0, nil, Linkdelay);
+	}
 }
+
+/* RX ring -------------------------------------------------------------------- */
 
 static int
 replenish(Ctlr *c)
 {
+	Block *bp;
+	u32int *r;
+	uintptr pa;
+	int i;
 
+	/* always leave one free slot between prod and cons to distinguish
+	 * a full ring from an empty one */
+	while(((c->rxprodi + 1) & (RXRING - 1)) != c->rxconsi){
+		i  = c->rxprodi;
+		bp = iallocb(Rbsz);
+		if(bp == nil){
+			print("smte: replenish: out of memory (prod=%d cons=%d)\n",
+				c->rxprodi, c->rxconsi);
+			return -1;
+		}
+		c->rxs[i] = bp;
+		r  = &c->rxr[4 * i];
+		pa = PADDR(bp->rp);		/* physical address for DMA */
+		if(i < 4)
+        	print("RX buf[%d] pa=%#llux\n", i, pa);
+		r[0] = 0;
+		r[1] = Rbsz & RX_DESC1_SIZE1_MASK;
+		if(i == RXRING - 1)
+			r[1] |= RX_DESC1_END_RING;
+		r[2] = (u32int)pa;
+		r[3] = 0;
+		coherence();
+		r[0] = RX_DESC0_OWN;
+		coherence();
+		c->rxprodi = (c->rxprodi + 1) & (RXRING - 1);
+	}
+	csr32w(c->regs, DMA_RECEIVE_POLL_DEMAND, 1);
 	return 0;
 }
+
+/* ethrx --------------------------------------------------------------------- */
 
 static void
 ethrx(Ether *edev)
 {
+	Ctlr *c;
+	u32int *r;
+	Block *bp;
+	u32int s;
+	int len;
 
+	static int once;
+
+    if(once++ < 10)
+        print("ethrx called\n");
+
+	c = edev->ctlr;
+	while((r = &c->rxr[4 * c->rxconsi]), (r[0] & RX_DESC0_OWN) == 0){
+		s   = r[0];
+		len = s & RX_DESC0_FRAME_PACKET_LENGTH_MASK;
+		bp  = c->rxs[c->rxconsi];
+		c->rxs[c->rxconsi] = nil;
+
+		if(len < 4 || s & (RX_DESC0_FRAME_RUNT   | RX_DESC0_FRAME_CRC_ERR |
+		                    RX_DESC0_FRAME_MAX_LEN_ERR | RX_DESC0_FRAME_JABBER_ERR |
+		                    RX_DESC0_FRAME_LENGTH_ERR)){
+			print("smte: RX error slot=%d desc0=0x%08ux len=%d\n",
+				c->rxconsi, s, len);
+			freeb(bp);
+		} else {
+			bp->wp = bp->rp + len - 4;
+			etheriq(edev, bp);
+		}
+		c->rxconsi = (c->rxconsi + 1) & (RXRING - 1);
+		replenish(c);
+	}
 }
+
+/* ethtx --------------------------------------------------------------------- */
 
 static void
 ethtx(Ether *edev)
 {
+	Ctlr *c;
+	u32int *r;
+	Block *bp;
+	uintptr pa;
 
-}
+	static int once;
 
-static void
-ethirq(Ureg *, void *arg)
-{
+    if(once++ < 10)
+        print("ethtx called\n");
 
-}
-
-static int
-ethinit(Ether *edev)
-{
-
-	return 0;
-}
-
-
-
-static void
-ethprom(void *arg, int on)
-{
-
-}
-
-static void
-sethash(uchar *ea, ulong *hash)
-{
-	ulong crc;
-	int i;
-	uchar n;
-	
-	crc = ethercrc(ea, 6);
-	n = 0;
-	for(i = 0; i < 8; i++){
-		n = n << 1 | crc & 1;
-		crc >>= 1;
+	c = edev->ctlr;
+	ilock(&c->txlock);
+	for(;;){
+		r = &c->txr[4 * c->txi];
+		if(r[0] & TX_DESC0_OWN){
+			print("smte: TX ring full (txi=%d)\n", c->txi);
+			break;
+		}
+		if(c->txs[c->txi] != nil){
+			freeb(c->txs[c->txi]);
+			c->txs[c->txi] = nil;
+		}
+		bp = qget(edev->oq);
+		if(bp == nil)
+			break;
+		c->txs[c->txi] = bp;
+		pa  = PADDR(bp->rp);		/* physical address for DMA */
+		r[1] = (BLEN(bp) & TX_DESC1_SIZE1_MASK)
+			| TX_DESC1_FIRST_SEGMENT | TX_DESC1_LAST_SEGMENT
+			| TX_DESC1_INTERRUPT_ON_COMPLETION;
+		if(c->txi == TXRING - 1)
+			r[1] |= TX_DESC1_END_RING;
+		r[2] = (u32int)pa;
+		r[3] = 0;
+		coherence();
+		r[0] = TX_DESC0_OWN;
+		coherence();
+		csr32w(c->regs, DMA_TRANSMIT_POLL_DEMAND, 1);
+		c->txi = (c->txi + 1) & (TXRING - 1);
 	}
-	n ^= 0xff;
-	hash[n>>5] |= (1<<(n & 31));
+	iunlock(&c->txlock);
 }
 
-static void
-ethmcast(void *arg, uchar *ea, int on)
-{
-
-}
-
-static char*
-ethifstat(void *arg, char *p, char *e)
-{
-
-}
-------------------------------------------------*/
-
-static Ether *thisether;
+/* IRQ / polling -------------------------------------------------------------- */
 
 static void
 ethirq(Ureg *, void *arg)
 {
 	Ether *edev;
 	Ctlr *c;
-	
-	edev = arg;
-	c = edev->ctlr;
+	u32int fl;
 
-	// Check DMA STATUS
+	edev = arg;
+	c    = edev->ctlr;
+	fl   = csr32r(c->regs, DMA_STATUS_IRQ);
+	if(fl == 0)
+		return;
+
+	csr32w(c->regs, DMA_STATUS_IRQ, fl);	/* W1C: clear handled bits */
+
+	if(fl & DMA_STATUS_IRQ_RX_MISSED_FRAME)
+		print("smte: WARNING DMA RX missed frames "
+			"(status=0x%08ux rxring prod=%d cons=%d)\n",
+			fl, c->rxprodi, c->rxconsi);
+	if(fl & DMA_STATUS_IRQ_RX_DMA_STOPPED){
+		print("smte: WARNING DMA RX stopped, restarting\n");
+		csr32w(c->regs, DMA_RECEIVE_POLL_DEMAND, 1);
+	}
+	if(fl & (DMA_STATUS_IRQ_RX_TRANSFER_DONE |
+	         DMA_STATUS_IRQ_RX_DES_UNAVAILABLE |
+	         DMA_STATUS_IRQ_RX_MISSED_FRAME))
+		ethrx(edev);
+	if(fl & DMA_STATUS_IRQ_TX_TRANSFER_DONE)
+		ethtx(edev);
 }
+
+static Ether *thisether;
 
 static void
 etherclock(void)
@@ -309,31 +509,7 @@ etherclock(void)
 	ethirq(nil, thisether);
 }
 
-static void
-smteonce(Ether *edev)
-{
-	static int beenhere;
-	static Lock l;
-
-	ilock(&l);
-	if (!beenhere && edev != nil) {
-		beenhere = 1;
-		/* simulate interrupts */
-		if (edev->irq < 0) {		/* poll as backup */
-			thisether = edev;
-			addclock0link(etherclock, 1000/HZ);
-			iprint("Polling\n");
-		}
-	}
-	iunlock(&l);
-}
-
-static u32int
-csr32r(uintptr base, uintptr off)
-{
-	coherence();
-	return *(volatile u32int*)(base + off);
-}
+/* Attach --------------------------------------------------------------------- */
 
 static void
 ethattach(Ether *edev)
@@ -344,92 +520,258 @@ ethattach(Ether *edev)
 	if(c->attach)
 		return;
 	c->attach = 1;
-	print("Attached...\n");
-	//kproc("ethproc", ethproc, edev);
+	print("smte: attach ok, starting PHY kproc\n");
+	kproc("smteproc", ethproc, edev);
 }
 
-static void
-smtereadhwaddr(uintptr base, uchar ea[Eaddrlen])
+/* ethinit -------------------------------------------------------------------- */
+
+static int
+ethinit(Ether *edev)
 {
-	u32int hi, me, lo;
+	Ctlr *c;
+	u32int v;
 
-	hi = csr32r(base, MAC_ADDR1_HI);
-	me = csr32r(base, MAC_ADDR1_ME);
-	lo = csr32r(base, MAC_ADDR1_LO);
+	c = edev->ctlr;
 
-	ea[0] = hi & 0xff;
-	ea[1] = (hi >> 8) & 0xff;
-	ea[2] = me & 0xff;
-	ea[3] = (me >> 8) & 0xff;
-	ea[4] = lo & 0xff;
-	ea[5] = (lo >> 8) & 0xff;
+	/* stop everything */
+	csr32w(c->regs, MAC_INTR_ENABLE,   0);
+	csr32w(c->regs, DMA_INTR_ENABLE,   0);
+	csr32w(c->regs, MAC_TRANSMIT_CTRL, 0);
+	csr32w(c->regs, MAC_RECEIVE_CTRL,  0);
+	csr32w(c->regs, DMA_CTRL,          0);
+	print("smte: MAC/DMA stopped\n");
 
-	print("MAC Address: %02X:%02X:%02X:%02X:%02X:%02X\n", ea[0], ea[1], ea[2], ea[3], ea[4], ea[5]);
+	/* APMU: enable AXI master ID */
+	v = csr32r(c->apmu, APMU_EMAC_CLK_RST_CTRL) | APMU_EMAC_AXI_MST_ID;
+	csr32w(c->apmu, APMU_EMAC_CLK_RST_CTRL, v);
+	print("smte: APMU CLK_RST=0x%08ux\n",
+		csr32r(c->apmu, APMU_EMAC_CLK_RST_CTRL));
+
+	/* APMU: RGMII delay lines */
+	v = APMU_EMAC_RGMII_DLINE_RX_EN   | APMU_EMAC_RGMII_DLINE_TX_EN
+	  | APMU_EMAC_RGMII_DLINE_RX_STEP_15P6 | APMU_EMAC_RGMII_DLINE_TX_STEP_15P6
+	  | c->rxdelay << APMU_EMAC_RGMII_DLINE_RX_DELAY_SHIFT
+	  | c->txdelay << APMU_EMAC_RGMII_DLINE_TX_DELAY_SHIFT;
+	csr32w(c->apmu, APMU_EMAC_RGMII_DLINE, v);
+	print("smte: APMU DLINE=0x%08ux (rx=%d tx=%d steps x 15.6ps)\n",
+		v, c->rxdelay, c->txdelay);
+
+	/* MAC address */
+	csr32w(c->regs, MAC_ADDR1_HI, edev->ea[1]<<8 | edev->ea[0]);
+	csr32w(c->regs, MAC_ADDR1_ME, edev->ea[3]<<8 | edev->ea[2]);
+	csr32w(c->regs, MAC_ADDR1_LO, edev->ea[5]<<8 | edev->ea[4]);
+	csr32w(c->regs, MAC_ADDR_CTRL, MAC_ADDR_CTRL_MAC_ADDR1_ENABLE);
+	print("smte: MAC %02X:%02X:%02X:%02X:%02X:%02X programmed\n",
+		edev->ea[0], edev->ea[1], edev->ea[2],
+		edev->ea[3], edev->ea[4], edev->ea[5]);
+
+	/* FIFO thresholds and frame size limits */
+	csr32w(c->regs, MAC_TRANSMIT_FIFO_ALMOST_FULL,        0x1f8);
+	csr32w(c->regs, MAC_TRANSMIT_PACKET_START_THRESHOLD,  1518);
+	csr32w(c->regs, MAC_RECEIVE_PACKET_START_THRESHOLD,   12);
+	csr32w(c->regs, MAC_MAXIMUM_FRAME_SIZE,               1514);
+	csr32w(c->regs, MAC_TRANSMIT_JABBER_SIZE,             1514+18);
+	csr32w(c->regs, MAC_RECEIVE_JABBER_SIZE,              1514+18);
+	print("smte: FIFO thresholds and frame sizes programmed\n");
+
+	/* RX interrupt coalescing: up to 64 frames or ~600 us */
+	v = (64 << 0) | ((600*312) << 8) | DMA_RECEIVE_IRQ_MITIGATION_ENABLE;
+	csr32w(c->regs, DMA_RECEIVE_IRQ_MITIGATION, v);
+
+	/* reset DMA engine */
+	csr32w(c->regs, DMA_CONFIG, DMA_CONFIG_SOFTWARE_RESET);
+	microdelay(10000);
+	csr32w(c->regs, DMA_CONFIG, 0);
+	microdelay(10000);
+	/*
+	 * DMA_64BIT: enables 64-bit buffer addresses in descriptors
+	 * (d2=bits[31:0] + d3=bits[63:32] per buffer). Required because
+	 * iallocb() returns blocks above 4 GB on this system.
+	 * The ring BASE address is still 32-bit (DMA_RECEIVE_BASE_ADDRESS),
+	 * so descriptor rings must stay below 4 GB.
+	 */
+	v = DMA_CONFIG_DMA_64BIT_MODE | DMA_CONFIG_STRICT_BURST | DMA_CONFIG_BURST_LENGTH_16;
+	csr32w(c->regs, DMA_CONFIG, v);
+	print("smte: DMA reset, DMA_CONFIG=0x%08ux (64-bit mode enabled for buffers)\n",
+		csr32r(c->regs, DMA_CONFIG));
+
+	/* IMP - k1 uses 32-bit addresses for DMA access */
+	c->rxr = xspanalloc(sizeof(u32int) * 4 * RXRING, 16, 0);
+	c->txr = xspanalloc(sizeof(u32int) * 4 * TXRING, 16, 0);
+	memset(c->rxr, 0, 4 * RXRING * sizeof(u32int));
+	memset(c->txr, 0, 4 * TXRING * sizeof(u32int));
+	
+	print("rxring bytes=%d\n",
+      4 * RXRING * sizeof(u32int));
+
+	print("txring bytes=%d\n",
+      4 * TXRING * sizeof(u32int));
+
+	c->rxs = mallocz(sizeof(Block*) * RXRING, 1);
+	c->txs = mallocz(sizeof(Block*) * TXRING, 1);
+	if(c->rxs == nil || c->txs == nil){
+		print("smte: ERROR mallocz failed\n");
+		return -1;
+	}
+	print("smte: anillos rxr=%p txr=%p (%d/%d slots, %d bytes/buf)\n",
+		c->rxr, c->txr, RXRING, TXRING, Rbsz);
+
+	/* fill the entire RX ring (condition: prod+1 != cons)
+	 * with rxcons=0 and RXRING=512, 511 slots are filled (1 kept free) */
+	c->rxprodi = 0;
+	c->rxconsi = 0;
+	replenish(c);
+	//wbflush();	/* ensure descriptors are in DRAM before starting DMA */
+	print("smte: RX ring full (prod=%d cons=%d free=%d)\n",
+		c->rxprodi, c->rxconsi,
+		(c->rxprodi - c->rxconsi + RXRING) & (RXRING-1));
+
+	c->txi = 0;
+
+	uintptr rxpa, txpa;
+	rxpa = PADDR(c->rxr);
+	txpa = PADDR(c->txr);
+	print("RX phys=%#llux TX phys=%#llux\n", rxpa, txpa);
+	print("DMA RX low=%#ux\n", (u32int)rxpa);
+	print("DMA TX low=%#ux\n", (u32int)txpa);
+	print("smte: DMA base RX phys=0x%08lux TX phys=0x%08lux\n",
+		(ulong)rxpa, (ulong)txpa);
+	csr32w(c->regs, DMA_RECEIVE_BASE_ADDRESS, (u32int)rxpa);
+	csr32w(c->regs, DMA_TRANSMIT_BASE_ADDRESS, (u32int)txpa);
+
+	/* verify the hardware accepted the addresses */
+	print("smte: DMA_RX_BASE read=0x%08ux DMA_TX_BASE read=0x%08ux\n",
+		csr32r(c->regs, DMA_RECEIVE_BASE_ADDRESS),
+		csr32r(c->regs, DMA_TRANSMIT_BASE_ADDRESS));
+
+	/* clear and enable DMA interrupts */
+	csr32w(c->regs, DMA_STATUS_IRQ, ~0U);
+	csr32w(c->regs, MAC_INTR_ENABLE, 0);
+	v = DMA_INTR_ENABLE_TX_TRANSFER_DONE  |
+	    DMA_INTR_ENABLE_RX_TRANSFER_DONE  |
+	    DMA_INTR_ENABLE_RX_DES_UNAVAILABLE|
+	    DMA_INTR_ENABLE_RX_MISSED_FRAME;
+	csr32w(c->regs, DMA_INTR_ENABLE, v);
+	print("smte: DMA_INTR_ENABLE=0x%08ux\n", v);
+
+	/* start DMA (MAC TX/RX are enabled in ethproc after autoneg) */
+	v = DMA_CTRL_START_STOP_TX_DMA | DMA_CTRL_START_STOP_RX_DMA;
+	csr32w(c->regs, DMA_CTRL, v);
+	print("smte: DMA started DMA_CTRL=0x%08ux\n",
+		csr32r(c->regs, DMA_CTRL));
+
+	/* dump first descriptor to confirm hardware can see it */
+	print("smte: desc[0] d0=0x%08ux d1=0x%08ux d2=0x%08ux d3=0x%08ux\n",
+		c->rxr[0], c->rxr[1], c->rxr[2], c->rxr[3]);
+	/* d0 must be 0x80000000 (RX_DESC0_OWN=1) if writes reached DRAM */
+
+	return 0;
 }
 
-int
-check_soc_fingerprint(void)
+/* SoC fingerprint ------------------------------------------------------------ */
+
+static int
+checksoc(void)
 {
-    uintptr sdh_mem;
-    u32int val, vendor_id;
+	ulong *sdh;
+	u32int val, vendor;
 
-    sdh_mem = (uintptr)vmap(SDH1_PHYS, SDH1_SIZE);
+	print("smte: probing SoC (SDH1 @ 0x%08ux)\n", SDH1_PHYS);
+	sdh = (ulong*)vmap(SDH1_PHYS, SDH1_SIZE);
+	if(sdh == nil){
+		print("smte: ERROR vmap SDH failed\n");
+		return 0;
+	}
+	val    = csr32r(sdh, SDHC_VID_PID);
+	vendor = val & 0xFFFFF;
+	vunmap(sdh, SDH1_SIZE);
 
-    val = csr32r(sdh_mem, SDHC_VID_PID);
-    
-    // VENDOR_ID bits [19:0]
-    vendor_id = val & 0xFFFFF;
-
-    print("k1: SDHC_VID_PID register: 0x%ux\n", val);
-    print("k1: Detected VENDOR_ID: 0x%ux\n", vendor_id);
-
-    if(vendor_id == 0xa1312) {
-        print("k1: Hardware fingerprint confirmed: SpacemiT SoC\n");
-        return 1;
-    }
-    print("k1: Warning: SOC Vendor ID mismatch (Expected 0xa1312)\n");
-    return 0;
+	print("smte: SDHC_VID_PID=0x%08ux vendor=0x%05ux\n", val, vendor);
+	if(vendor == K1_VENDOR_ID){
+		print("smte: SoC SpacemiT K1 confirmed\n");
+		return 1;
+	}
+	print("smte: unknown vendor 0x%05ux (expected 0x%05ux)\n",
+		vendor, K1_VENDOR_ID);
+	return 0;
 }
+
+/* Plug-and-play -------------------------------------------------------------- */
 
 static int
 etherpnp(Ether *edev)
 {
 	static Ctlr ct;
 
-	if(ct.irq != 0)		// The first time pass
+	print("smte: etherpnp\n");
+
+	if(ct.regs != nil){
+		print("smte: already registered\n");
+		return -1;
+	}
+
+	if(!checksoc())
 		return -1;
 
-	if (check_soc_fingerprint()) {
-		ct.regs 	= vmap(EMAC0_PHYS, EMAC0_SIZE);
-		ct.apmu 	= vmap(APMU_PHYS, APMU_SIZE);
-		ct.apmuoff 	= EMAC0_APMU_OFF;
-		ct.irq     	= EMAC0_IRQ;
-		ct.rxdelay 	= SMTE_DEFAULT_RXDELAY_PS;
-		ct.txdelay 	= SMTE_DEFAULT_TXDELAY_PS;
-	
-		edev->ctlr 		= &ct;
-		edev->port 		= EMAC0_PHYS;
-		//edev->irq 		= EMAC0_IRQ;
-		edev->irq 		= -1;	// Force use poll interrupt with smteonce()
-		edev->attach 	= ethattach;
-		edev->arg 		= edev;
-		edev->mbps 		= 1000;
-		smtereadhwaddr((uintptr)ct.regs, edev->ea);
-	
-		//intrenable(edev->irq, ethirq, edev, LEVEL, edev->name);
-		//or
-		//intrenable(edev->irq, ethirq, edev, BUSUNKNOWN, edev->name);
-
-		// now poll interrupt
-		smteonce(edev);			/* Based ether9221.c omap architecture */
-
-		return 0;	/* Unfinish */
+	ct.regs = (ulong*)vmap(EMAC0_PHYS, EMAC0_SIZE);
+	ct.apmu = (ulong*)vmap(APMU_PHYS,  APMU_SIZE);
+	if(ct.regs == nil || ct.apmu == nil){
+		print("smte: ERROR vmap failed regs=%p apmu=%p\n", ct.regs, ct.apmu);
+		return -1;
 	}
-	return -1;
+	print("smte: regs=%p (phys=0x%08ux) apmu=%p (phys=0x%08ux)\n",
+		ct.regs, EMAC0_PHYS, ct.apmu, APMU_PHYS);
+
+	ct.rxdelay = SMTE_DEFAULT_RXDELAY;
+	ct.txdelay = SMTE_DEFAULT_TXDELAY;
+
+	edev->ctlr     = &ct;
+	edev->port     = EMAC0_PHYS;
+	edev->irq      = -1;		/* intrenable not yet available */
+	edev->attach   = ethattach;
+	edev->transmit = ethtx;
+	edev->arg      = edev;
+	edev->mbps     = 1000;
+
+	/* read MAC address from hardware */
+	{
+		u32int hi, me, lo;
+		hi = csr32r(ct.regs, MAC_ADDR1_HI);
+		me = csr32r(ct.regs, MAC_ADDR1_ME);
+		lo = csr32r(ct.regs, MAC_ADDR1_LO);
+		edev->ea[0] = hi & 0xff;  edev->ea[1] = (hi>>8) & 0xff;
+		edev->ea[2] = me & 0xff;  edev->ea[3] = (me>>8) & 0xff;
+		edev->ea[4] = lo & 0xff;  edev->ea[5] = (lo>>8) & 0xff;
+		print("smte: MAC read from hardware: %02X:%02X:%02X:%02X:%02X:%02X\n",
+			edev->ea[0], edev->ea[1], edev->ea[2],
+			edev->ea[3], edev->ea[4], edev->ea[5]);
+	}
+
+	if(ethinit(edev) < 0){
+		print("smte: ERROR ethinit failed\n");
+		edev->ctlr = nil;
+		return -1;
+	}
+
+	/*
+	 * When intrenable becomes available, replace addclock0link with:
+	 *   intrenable(EMAC0_IRQ, ethirq, edev, LEVEL, edev->name);
+	 */
+	thisether = edev;
+	addclock0link(etherclock, 1000/HZ);
+	print("smte: polling via addclock0link (HZ=%d tick=%dms)\n",
+		HZ, 1000/HZ);
+
+	print("smte: driver ready\n");
+	return 0;
 }
+
+/* Driver registration -------------------------------------------------------- */
 
 void
 ethersmtelink(void)
 {
-	addethercard("eth", etherpnp);
+	print("smte: registering driver\n");
+	addethercard("smte", etherpnp);
 }
