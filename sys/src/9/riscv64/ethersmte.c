@@ -94,18 +94,19 @@ enum {
 
 	/*
 	 * DMA_INTR_ENABLE — per-source enables at the same bit positions
-	 * as DMA_STATUS_IRQ.  We intentionally do NOT enable the two
-	 * "descriptor unavailable" sources: they re-assert immediately
-	 * after W1C if the ring stays starved, which produces an IRQ
-	 * storm.  Replenishment is driven by completion events anyway,
-	 * so descriptor-unavailable is redundant.
+	 * as DMA_STATUS_IRQ.  RX_DES_UNAVAILABLE fires the moment the chip
+	 * enters Suspended (no chip-owned descriptor at its pointer); the
+	 * mask-while-busy pattern in ethirq drains the ring and POLL_DEMAND
+	 * kicks the chip back to Running before we restore INTR_ENABLE, so
+	 * no storm in practice.  TX_DES_UNAVAILABLE stays off — TX submit
+	 * already POLL_DEMANDs and IRQ on dequeue is enough.
 	 */
 	DMA_INTR_ENABLE				= 0x000c,
 	DMA_INTR_ENABLE_TX_TRANSFER_DONE	= (1U << 0),
 	DMA_INTR_ENABLE_TX_DES_UNAVAILABLE	= (1U << 1),	/* not safe to enable */
 	DMA_INTR_ENABLE_TX_DMA_STOPPED		= (1U << 2),
 	DMA_INTR_ENABLE_RX_TRANSFER_DONE	= (1U << 4),
-	DMA_INTR_ENABLE_RX_DES_UNAVAILABLE	= (1U << 5),	/* not safe to enable */
+	DMA_INTR_ENABLE_RX_DES_UNAVAILABLE	= (1U << 5),
 	DMA_INTR_ENABLE_RX_DMA_STOPPED		= (1U << 6),
 	DMA_INTR_ENABLE_RX_MISSED_FRAME		= (1U << 7),
 
@@ -265,9 +266,12 @@ enum {
 
 /*
  * K1 DMA is non-coherent (dma-noncoherent in the vendor DT).
- * Software must writeback CPU caches before HW reads and invalidate
- * after HW writes. cbo.flush does clean+invalidate, which is safe
- * for both directions.
+ * CPU→HW: cbo.flush (writeback + invalidate) — push fresh data to DRAM.
+ * HW→CPU: cbo.inval (invalidate only) — must NOT writeback or a stale
+ * CPU-cached descriptor (e.g. OWN=host from an old replenish that the
+ * line later re-prefetched) would clobber the chip's just-written
+ * OWN=chip update in DRAM, stranding the frame in a slot ethrx never
+ * sees.  Symptom: RX missed frame + ring stuck at prod=cons-1.
  */
 static void
 smtecacheflush(void *va, int len)
@@ -278,6 +282,18 @@ smtecacheflush(void *va, int len)
 	last = ((uintptr)va + len + SMTE_CBSZ - 1) & ~(uintptr)(SMTE_CBSZ - 1);
 	for(; a < last; a += SMTE_CBSZ)
 		cboflush((void*)a);
+	coherence();
+}
+
+static void
+smtecacheinval(void *va, int len)
+{
+	uintptr a, last;
+
+	a    = (uintptr)va & ~(uintptr)(SMTE_CBSZ - 1);
+	last = ((uintptr)va + len + SMTE_CBSZ - 1) & ~(uintptr)(SMTE_CBSZ - 1);
+	for(; a < last; a += SMTE_CBSZ)
+		cboinval((void*)a);
 	coherence();
 }
 
@@ -450,6 +466,7 @@ ethproc(void *ved)
 		csr32w(c->regs, DMA_INTR_ENABLE,
 			DMA_INTR_ENABLE_TX_TRANSFER_DONE
 			| DMA_INTR_ENABLE_TX_DMA_STOPPED
+			| DMA_INTR_ENABLE_RX_DES_UNAVAILABLE
 			| DMA_INTR_ENABLE_RX_DMA_STOPPED
 			| DMA_INTR_ENABLE_RX_MISSED_FRAME);
 		/* readback drains the posted write */
@@ -481,9 +498,13 @@ replenish(Ctlr *c)
 	uintptr pa;
 	int i;
 
-	/* always leave one free slot between prod and cons to distinguish
-	 * a full ring from an empty one */
-	while(((c->rxprodi + 1) & (RXRING - 1)) != c->rxconsi){
+	/* Refill every slot ethrx has freed (rxs[i] == nil).  Bookkeeping
+	 * is rxs[]-based rather than the classic prod/cons gap because the
+	 * gap creates a structural lockstep once the chip catches up to it:
+	 * the chip suspends on the OWN=host gap, the loop refuses to refill
+	 * it, and POLL_DEMAND just bounces off.  With all RXRING slots
+	 * usable, replenish can always close the loop. */
+	while(c->rxs[c->rxprodi] == nil){
 		i  = c->rxprodi;
 		bp = iallocb(Rbsz);
 		if(bp == nil){
@@ -503,9 +524,9 @@ replenish(Ctlr *c)
 		r[3] = 0;
 		coherence();
 		r[0] = RX_DESC0_OWN;
-		/* push descriptor + invalidate data buffer for HW write */
+		/* push descriptor, drop any stale buffer cache so HW writes win */
 		smtecacheflush(r, 16);
-		smtecacheflush(bp->rp, Rbsz);
+		smtecacheinval(bp->rp, Rbsz);
 		c->rxprodi = (c->rxprodi + 1) & (RXRING - 1);
 	}
 	/*
@@ -535,7 +556,7 @@ ethrx(Ether *edev)
 	c = edev->ctlr;
 	for(;;){
 		r = &c->rxr[4 * c->rxconsi];
-		smtecacheflush(r, 16);		/* invalidate before reading HW status */
+		smtecacheinval(r, 16);		/* discard stale cache before reading HW status */
 		if(r[0] & RX_DESC0_OWN)
 			break;
 		s   = r[0];
@@ -543,7 +564,7 @@ ethrx(Ether *edev)
 		bp  = c->rxs[c->rxconsi];
 		c->rxs[c->rxconsi] = nil;
 		if(bp != nil && len > 0)
-			smtecacheflush(bp->rp, len);
+			smtecacheinval(bp->rp, len);
 
 		if(len < 4 || s & (RX_DESC0_FRAME_RUNT   | RX_DESC0_FRAME_CRC_ERR |
 		                    RX_DESC0_FRAME_MAX_LEN_ERR | RX_DESC0_FRAME_JABBER_ERR |
@@ -602,7 +623,7 @@ ethtx(Ether *edev)
 	ilock(&c->txlock);
 	for(;;){
 		r = &c->txr[4 * c->txi];
-		smtecacheflush(r, 16);		/* invalidate before reading HW status */
+		smtecacheinval(r, 16);		/* discard stale cache before reading HW status */
 		if(r[0] & TX_DESC0_OWN){
 			dprint("smte: TX ring full (txi=%d)\n", c->txi);
 			break;
@@ -689,10 +710,15 @@ ethirq(Ureg *, void *arg)
 		 * level once intrenable() wires us up; print() can block on
 		 * the output queue, which is not legal here.
 		 */
-		if(fl & DMA_STATUS_IRQ_RX_MISSED_FRAME)
+		if(fl & DMA_STATUS_IRQ_RX_DES_UNAVAILABLE)
+			/* chip just entered Suspended; silent kick (fires often) */
+			csr32w(c->regs, DMA_RECEIVE_POLL_DEMAND, 0xFF);
+		if(fl & DMA_STATUS_IRQ_RX_MISSED_FRAME){
 			iprint("smte: %s RX missed frame (status=%#08ux "
 				"prod=%d cons=%d)\n",
 				edev->name, fl, c->rxprodi, c->rxconsi);
+			csr32w(c->regs, DMA_RECEIVE_POLL_DEMAND, 0xFF);
+		}
 		if(fl & DMA_STATUS_IRQ_RX_DMA_STOPPED){
 			iprint("smte: %s RX DMA stopped, restarting\n", edev->name);
 			csr32w(c->regs, DMA_RECEIVE_POLL_DEMAND, 0xFF);
@@ -745,7 +771,7 @@ etherserve(Ether *edev)
 		ndone = 0;
 		for(i = 0; i < c->txi && i < TXRING; i++){
 			u32int *tr = &c->txr[4*i];
-			smtecacheflush(tr, 16);
+			smtecacheinval(tr, 16);
 			if((tr[0] & TX_DESC0_OWN) == 0 && c->txs[i] != nil)
 				ndone++;
 		}
@@ -927,7 +953,7 @@ ethinit(Ether *edev)
 	dprint("smte: rings rxr=%p txr=%p (%d/%d slots, %d bytes/buf)\n",
 		c->rxr, c->txr, RXRING, TXRING, Rbsz);
 
-	/* fill the RX ring (one slot held back to distinguish full/empty) */
+	/* fill all RXRING slots (rxs[] starts all nil from mallocz) */
 	c->rxprodi = 0;
 	c->rxconsi = 0;
 	replenish(c);
