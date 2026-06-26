@@ -8,7 +8,7 @@
  * each pair into conf[].  bootrc and friends then see them as ordinary kernel
  * env via getconf()/setconfenv().
  */
-#include "u.h"
+#include "u.h" 
 #include "../port/lib.h"
 #include "mem.h"
 #include "dat.h"
@@ -31,7 +31,78 @@ static int nconf;
 static char maxmem[32];
 static int cpus;
 static int bootargs_set = 0;
-static char consoleport[32];
+
+/*
+ * Per-UART information harvested from the DTB.  Filled in by devtreeprop()
+ * as it walks uart-like nodes (serial@..., uart@..., r_uart...).  After
+ * the whole DTB is parsed, applyaliases() correlates them with the
+ * /aliases section so serial0 → eia0, etc., and resolvedtbconsole()
+ * picks the entry referenced by /chosen/stdout-path.
+ */
+#define MAXDTBUARTS 16
+#define MAXDTBETHERS 4
+
+static Dtbuart dtbuarts[MAXDTBUARTS];
+static int ndtbuarts;
+static Dtbether dtbethers[MAXDTBETHERS];
+static int ndtbethers;
+static char dtbalias[MAXDTBUARTS][64];	/* serial<N> → DT node path */
+static char dtbethalias[MAXDTBETHERS][64]; /* ethernet<N> → DT node path */
+static char dtbstdout[64];
+static int dtbhasplic_;			/* root interrupt controller is a PLIC */
+
+/*
+ * Interrupt-controller node candidates harvested during the DTB walk.
+ * Properties of a node can appear in any order, and the property we
+ * use to recognise a PLIC ("compatible" = "riscv,plic*") may show up
+ * before or after the "reg" we want to read; so we cache reg for any
+ * node whose name shape is "interrupt-controller@..." or "plic@..."
+ * and resolve the PLIC at end-of-parse.
+ */
+#define MAXDTBINTC 4
+typedef struct Dtbintc Dtbintc;
+struct Dtbintc {
+	char	path[64];
+	uvlong	base;
+	uvlong	size;
+};
+static Dtbintc dtbintc[MAXDTBINTC];
+static int ndtbintc;
+static char dtbplicpath[64];		/* path of the node whose compatible = riscv,plic* */
+
+int
+dtbnuart(void)
+{
+	return ndtbuarts;
+}
+
+Dtbuart*
+dtbuart(int i)
+{
+	if(i < 0 || i >= ndtbuarts)
+		return nil;
+	return &dtbuarts[i];
+}
+
+int
+dtbhasplic(void)
+{
+	return dtbhasplic_;
+}
+
+int
+dtbnether(void)
+{
+	return ndtbethers;
+}
+
+Dtbether*
+dtbether(int i)
+{
+	if(i < 0 || i >= ndtbethers)
+		return nil;
+	return &dtbethers[i];
+}
 
 static int
 findconf(char *k)
@@ -111,6 +182,120 @@ beget4(uchar *p)
 	return (u32int)p[0]<<24 | (u32int)p[1]<<16 | (u32int)p[2]<<8 | (u32int)p[3];
 }
 
+static int
+isuartnode(char *path)
+{
+	char *base;
+
+	base = strrchr(path, '/');
+	if(base == nil)
+		return 0;
+	base++;
+	return strncmp(base, "serial@", 7) == 0
+	    || strncmp(base, "uart@", 5) == 0
+	    || strncmp(base, "r_uart", 6) == 0;
+}
+
+static int
+isethernetnode(char *path)
+{
+	char *base;
+
+	base = strrchr(path, '/');
+	if(base == nil)
+		return 0;
+	base++;
+	/* A grandchild like mdio-bus/phy@0 must NOT match. */
+	return strncmp(base, "ethernet@", 9) == 0;
+}
+
+static int
+isintcnode(char *path)
+{
+	char *base;
+
+	base = strrchr(path, '/');
+	if(base == nil)
+		return 0;
+	base++;
+	/*
+	 * On K1 the PLIC node is named interrupt-controller@<addr>;
+	 * other RISC-V boards prefer plic@<addr>.  Accept either.
+	 */
+	return strncmp(base, "interrupt-controller@", 21) == 0
+	    || strncmp(base, "plic@", 5) == 0;
+}
+
+static Dtbintc*
+findorallocintc(char *path)
+{
+	int i, n;
+	Dtbintc *ic;
+
+	for(i = 0; i < ndtbintc; i++)
+		if(strcmp(dtbintc[i].path, path) == 0)
+			return &dtbintc[i];
+	if(ndtbintc >= MAXDTBINTC)
+		return nil;
+	ic = &dtbintc[ndtbintc++];
+	memset(ic, 0, sizeof(*ic));
+	n = strlen(path);
+	if(n >= (int)sizeof(ic->path))
+		n = sizeof(ic->path) - 1;
+	memmove(ic->path, path, n);
+	ic->path[n] = 0;
+	return ic;
+}
+
+static Dtbether*
+findorallocether(char *path)
+{
+	int i, n;
+	Dtbether *e;
+
+	for(i = 0; i < ndtbethers; i++)
+		if(strcmp(dtbethers[i].path, path) == 0)
+			return &dtbethers[i];
+	if(ndtbethers >= MAXDTBETHERS)
+		return nil;
+	e = &dtbethers[ndtbethers++];
+	memset(e, 0, sizeof(*e));
+	n = strlen(path);
+	if(n >= (int)sizeof(e->path))
+		n = sizeof(e->path) - 1;
+	memmove(e->path, path, n);
+	e->path[n] = 0;
+	e->irq = -1;
+	e->aliasidx = -1;
+	e->ok = 1;		/* per DT spec §2.3.4, absent status = enabled */
+	return e;
+}
+
+static Dtbuart*
+findorallocuart(char *path)
+{
+	int i, n;
+	Dtbuart *u;
+
+	for(i = 0; i < ndtbuarts; i++)
+		if(strcmp(dtbuarts[i].path, path) == 0)
+			return &dtbuarts[i];
+	if(ndtbuarts >= MAXDTBUARTS)
+		return nil;
+	u = &dtbuarts[ndtbuarts++];
+	memset(u, 0, sizeof(*u));
+	n = strlen(path);
+	if(n >= (int)sizeof(u->path))
+		n = sizeof(u->path) - 1;
+	memmove(u->path, path, n);
+	u->path[n] = 0;
+	u->irq = -1;
+	u->regshift = 0;	/* ns16550 binding default; PXA/DW APB set reg-shift=<2> */
+	u->aliasidx = -1;
+	u->ok = 1;		/* per DT spec §2.3.4, absent status = enabled */
+	return u;
+}
+
 static void
 devtreeprop(char *path, char *key, void *val, int len)
 {
@@ -144,16 +329,154 @@ print("devtreeeprop: maxmem %s\n", maxmem);
 	   && strcmp(key, "timebase-frequency") == 0 && len >= 4)
 		timebase = beget4(p);
 	if(strncmp(path, "/chosen", 7) == 0){
-		if (strcmp(key, "bootargs") == 0){
+		if(strcmp(key, "bootargs") == 0){
 			if(len > BOOTARGSLEN)
 				len = BOOTARGSLEN;
 			memmove(BOOTARGS, val, len);
 			bootargs_set = 1;
 			return;
-		} else if (strcmp(key, "stdout_path") == 0){
-			//memmove(consoleport, val, sizeof(consoleport));
-print("serial console %s\n", val);
 		}
+		if(strcmp(key, "stdout-path") == 0 || strcmp(key, "stdout_path") == 0){
+			int n = len;
+			if(n >= (int)sizeof(dtbstdout))
+				n = sizeof(dtbstdout) - 1;
+			memmove(dtbstdout, val, n);
+			dtbstdout[n] = 0;
+			return;
+		}
+	}
+	if(strcmp(path, "/aliases") == 0 && strncmp(key, "serial", 6) == 0){
+		int n = atoi(key + 6);
+		int ln = len;
+		if(n < 0 || n >= MAXDTBUARTS)
+			return;
+		if(ln >= (int)sizeof(dtbalias[0]))
+			ln = sizeof(dtbalias[0]) - 1;
+		memmove(dtbalias[n], val, ln);
+		dtbalias[n][ln] = 0;
+		return;
+	}
+	if(strcmp(path, "/aliases") == 0 && strncmp(key, "ethernet", 8) == 0){
+		int n = atoi(key + 8);
+		int ln = len;
+		if(n < 0 || n >= MAXDTBETHERS)
+			return;
+		if(ln >= (int)sizeof(dtbethalias[0]))
+			ln = sizeof(dtbethalias[0]) - 1;
+		memmove(dtbethalias[n], val, ln);
+		dtbethalias[n][ln] = 0;
+		return;
+	}
+	if(isethernetnode(path)){
+		Dtbether *e = findorallocether(path);
+		int n;
+		if(e == nil)
+			return;
+		if(strcmp(key, "reg") == 0 && len >= 16){
+			e->base = ((uvlong)beget4(p) << 32) | beget4(p + 4);
+			e->size = ((uvlong)beget4(p + 8) << 32) | beget4(p + 12);
+		} else if(strcmp(key, "interrupts") == 0 && len >= 4){
+			e->irq = beget4(p);
+		} else if(strcmp(key, "interrupts-extended") == 0 && len >= 8){
+			/* <phandle irq> — second cell is the source number */
+			e->irq = beget4(p + 4);
+		} else if(strcmp(key, "compatible") == 0){
+			n = len;
+			if(n >= (int)sizeof(e->compatible))
+				n = sizeof(e->compatible) - 1;
+			memmove(e->compatible, val, n);
+			e->compatible[n] = 0;
+		} else if(strcmp(key, "status") == 0){
+			e->ok = (len >= 5 && strcmp((char*)val, "okay") == 0);
+		} else if(strcmp(key, "local-mac-address") == 0 && len == 6){
+			memmove(e->mac, val, 6);
+			e->hasmac = 1;
+		} else if(strcmp(key, "mac-address") == 0 && len == 6 && !e->hasmac){
+			memmove(e->mac, val, 6);
+			e->hasmac = 1;
+		} else if(strcmp(key, "k1x,apmu-base-reg") == 0 && len >= 4){
+			/* SpacemiT extension: APMU MMIO base shared by all EMACs. */
+			e->apmubase = beget4(p);
+		} else if(strcmp(key, "ctrl-reg") == 0 && len >= 4){
+			/* SpacemiT extension: per-EMAC offset into APMU for
+			 * clock/reset control. */
+			e->ctrlregoff = beget4(p);
+		} else if(strcmp(key, "dline-reg") == 0 && len >= 4){
+			/* SpacemiT extension: per-EMAC offset into APMU for
+			 * the RGMII delay-line register. */
+			e->dlineregoff = beget4(p);
+		}
+		return;
+	}
+	if(strcmp(key, "compatible") == 0){
+		/*
+		 * Spot the SoC's external interrupt controller.  A "riscv,plic*"
+		 * compatible means plic.c can drive it; the PLIC's reg base is
+		 * captured separately (see isintcnode branch below).  APLIC /
+		 * IMSIC / MSI-only parts (e.g. K3) need a different driver and
+		 * we leave dtbhasplic_ false for them.
+		 */
+		char *c;
+		int rem = len;
+		int n;
+		for(c = (char*)val; rem > 0; ){
+			int sl = strlen(c) + 1;
+			if(strncmp(c, "riscv,plic", 10) == 0){
+				dtbhasplic_ = 1;
+				n = strlen(path);
+				if(n >= (int)sizeof(dtbplicpath))
+					n = sizeof(dtbplicpath) - 1;
+				memmove(dtbplicpath, path, n);
+				dtbplicpath[n] = 0;
+			}
+			c += sl;
+			rem -= sl;
+		}
+	}
+	if(isintcnode(path) && strcmp(key, "reg") == 0 && len >= 8){
+		Dtbintc *ic = findorallocintc(path);
+		if(ic != nil){
+			/*
+			 * /soc on K1 is #address-cells=2 #size-cells=2, so reg is
+			 * 16 bytes; older qemu-virt uses 8.  Cover both.
+			 */
+			if(len >= 16){
+				ic->base = ((uvlong)beget4(p) << 32) | beget4(p + 4);
+				ic->size = ((uvlong)beget4(p + 8) << 32) | beget4(p + 12);
+			} else {
+				ic->base = beget4(p);
+				ic->size = len >= 8? beget4(p + 4): 0;
+			}
+		}
+	}
+	if(isuartnode(path)){
+		Dtbuart *u = findorallocuart(path);
+		int n;
+		if(u == nil)
+			return;
+		if(strcmp(key, "reg") == 0 && len >= 8){
+			/*
+			 * Assume #address-cells=2, #size-cells=2 (true for /soc on K1).
+			 * base = upper 64 bits; the next 64 bits are size, which we don't need.
+			 */
+			if(len >= 16)
+				u->base = ((uvlong)beget4(p) << 32) | beget4(p + 4);
+			else
+				u->base = beget4(p);
+		} else if(strcmp(key, "interrupts") == 0 && len >= 4){
+			u->irq = beget4(p);
+		} else if(strcmp(key, "reg-shift") == 0 && len == 4){
+			u->regshift = beget4(p);
+		} else if(strcmp(key, "compatible") == 0){
+			n = len;
+			if(n >= (int)sizeof(u->compatible))
+				n = sizeof(u->compatible) - 1;
+			memmove(u->compatible, val, n);
+			u->compatible[n] = 0;
+		} else if(strcmp(key, "status") == 0){
+			u->ok = (len >= 5 && strcmp((char*)val, "okay") == 0);
+		}
+		return;
 	}
 }
 
@@ -198,6 +521,73 @@ devtreenode(Devtree *t, uchar *p, char *cp)
 	return p+4;
 }
 
+/*
+ * After the whole tree is walked, link each Dtbuart back to its serial<N>
+ * alias, mark the entry that /chosen/stdout-path picks as the console, and
+ * resolve the SoC PLIC physical base from the candidates we cached on the
+ * way through.  soc.plic ends up holding the PLIC base if and only if the
+ * DTB told us where it is; otherwise socidentify() falls back to a vendor-
+ * specific default.
+ */
+static void
+finishdtbuarts(void)
+{
+	int i, j, n;
+	char name[32], *path, *colon;
+
+	if(dtbhasplic_ && dtbplicpath[0] != 0){
+		for(i = 0; i < ndtbintc; i++)
+			if(strcmp(dtbintc[i].path, dtbplicpath) == 0){
+				soc.plic = (uchar*)(uintptr)dtbintc[i].base;
+				break;
+			}
+	}
+
+	for(i = 0; i < MAXDTBUARTS; i++){
+		if(dtbalias[i][0] == 0)
+			continue;
+		for(j = 0; j < ndtbuarts; j++){
+			if(strcmp(dtbuarts[j].path, dtbalias[i]) == 0){
+				dtbuarts[j].aliasidx = i;
+				break;
+			}
+		}
+	}
+	for(i = 0; i < MAXDTBETHERS; i++){
+		if(dtbethalias[i][0] == 0)
+			continue;
+		for(j = 0; j < ndtbethers; j++){
+			if(strcmp(dtbethers[j].path, dtbethalias[i]) == 0){
+				dtbethers[j].aliasidx = i;
+				break;
+			}
+		}
+	}
+
+	if(dtbstdout[0] == 0)
+		return;
+	n = strlen(dtbstdout);
+	if(n >= (int)sizeof(name))
+		n = sizeof(name) - 1;
+	memmove(name, dtbstdout, n);
+	name[n] = 0;
+	if((colon = strchr(name, ':')) != nil)
+		*colon = 0;
+	if(strncmp(name, "serial", 6) == 0){
+		int a = atoi(name + 6);
+		if(a < 0 || a >= MAXDTBUARTS || dtbalias[a][0] == 0)
+			return;
+		path = dtbalias[a];
+	} else {
+		path = name;
+	}
+	for(j = 0; j < ndtbuarts; j++)
+		if(strcmp(dtbuarts[j].path, path) == 0){
+			dtbuarts[j].isconsole = 1;
+			return;
+		}
+}
+
 static int
 parsedevtree(uchar *base)
 {
@@ -215,6 +605,7 @@ parsedevtree(uchar *base)
 	if(t->stab >= (char*)t->end)
 		return -1;
 	devtreenode(t, base + beget4(base+8), t->path);
+	finishdtbuarts();
 	if (bootargs_set)
 		plan9iniinit(BOOTARGS, 1);
 	return 0;
@@ -231,7 +622,8 @@ bootargsinit(void)
 		print("bootargsinit: no usable DTB at %#p\n", (void*)dtbphys);
 		return;
 	}
-	print("bootargsinit: %d entries from DTB /chosen/bootargs\n", nconf);
+	print("bootargsinit: %d entries from DTB /chosen/bootargs, %d uart %d ether nodes\n",
+		nconf, ndtbuarts, ndtbethers);
 }
 
 char*
