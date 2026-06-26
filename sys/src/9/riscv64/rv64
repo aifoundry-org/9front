@@ -43,8 +43,9 @@ ip
 	ipmux
 misc
 #	gic
-	uartsbi
+#	uartsbi
 #	uartqemu
+	uarti8250
 	sdvirtio10	pci sdscsi
 port
 	int cpuserver = 0;
