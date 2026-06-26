@@ -7,7 +7,12 @@
 #include "ureg.h"
 #include "sysreg.h"
 
-/* Fixed tick frequency in QEMU */
+/*
+ * CLINT tick rate.  Set from the global `timebase` (harvested from the
+ * DTB's /cpus/timebase-frequency in bootargs.c, or defaulted to 10 MHz
+ * in main.c for QEMU-virt).  We keep a private copy so fastticks() is
+ * branch-free and works even if called before clockinit runs.
+ */
 static uvlong freq = 10000000;
 
 extern uvlong rdtime(void);
@@ -15,6 +20,8 @@ extern uvlong rdtime(void);
 void
 clockinit(void)
 {
+	if(timebase != 0)
+		freq = timebase;
 }
 
 uvlong

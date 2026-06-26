@@ -546,13 +546,13 @@ calibrate(void)
 	sys->nsthresh = (Minns * sys->clintsperµs) / 1000;
 
 	/*
-	/* min. interval until intr; was /(100*HZ) but made too many intrs.
-	 * Does minclints need to be less than timebase/HZ?  It allows
-	 * shorter and more precise sleep intervals, e.g., for clock0link
-	 * polling.  To keep the interrupt load and interactive response
-	 * manageable, it needs to be somewhat > 0.
+	/* Minimum interval until next timer interrupt.  Was /(100*HZ) and
+	 * that made too many intrs; was /(5*HZ) = 2ms which was too coarse
+	 * for sub-tick polling (e.g. the 1ms etherclock backstop).  At
+	 * /(10*HZ) we get 1ms resolution and ~1000 clock interrupts/sec
+	 * worst case, which is well under 1% of CPU on a 1.6GHz K1.
 	 */
-	sys->minclints = timebase / (5*HZ);
+	sys->minclints = timebase / (10*HZ);
 
 }
 
@@ -569,38 +569,44 @@ clockoff(void)
  *  set next timer interrupt for time next, in fastticks (clint ticks).
  *  we won't go longer than 1/HZ s. without a clock interrupt.
  *  as a special case, next==0 requests a small interval (e.g., 1/HZ s.).
+ *
+ *  On RISC-V the supervisor timer pending bit (sip.STIP) is asserted by
+ *  hardware whenever mtime ≥ stimecmp and can only be cleared by
+ *  advancing stimecmp past mtime — csr writes to sip have no effect on
+ *  it (the trap.c comment "this does not work for interrupt 0x20 (STIP)"
+ *  is talking about exactly this).  So we must unconditionally write
+ *  stimecmp to a strictly-future deadline; otherwise the trap returns,
+ *  STIP is still set, and we immediately re-trap.  Previously this
+ *  function only wrote stimecmp under two narrow conditions (deadline
+ *  in the past, or > 0x1000000 ticks in the future), which meant the
+ *  ordinary case left stimecmp at its passed-deadline value and the
+ *  whole timer subsystem ran on a 43.7 ms cadence (set by the safety
+ *  net in trap.c:traplocalintr).  That capped sub-tick polling like
+ *  the ethersmte 1 ms backstop and showed up as ~18 ms / 12 ms-mdev
+ *  ping latency on the K1.
  */
 void
 timerset(uvlong next)
 {
 	Mpl pl;
-	vlong fticks, curticks, newticks;
+	vlong fticks;
+	uvlong now;
 
-if (0)	print("tinmerset %#llx clinstprehz %#llx\n", next,sys->clintsperhz);
 	pl = splhi();
 	if (sys->clintsperhz == 0)
 		panic("timerset: sys->clintsperhz not yet set");
+	now = rdtime();
 	if (next == 0)
 		fticks = sys->clintsperhz;
 	else {
-		fticks = next - fastticks(nil);
-		/* enforce sane bounds: 1/(5*HZ) ≤ s. ≤ 1/HZ */
+		fticks = (vlong)next - (vlong)now;
+		/* clamp: minclints (1 ms) ≤ fticks ≤ clintsperhz (10 ms) */
 		if (fticks < (vlong)sys->minclints)
-			/* don't interrupt immediately or in the past */
 			fticks = sys->minclints;
 		else if (fticks > (vlong)sys->clintsperhz)
 			fticks = sys->clintsperhz;
 	}
-	/* extinguish current intr source and set new deadline */
-	/* don't delay past already scheduled time */
-	newticks = rdstimecmp() + fticks;
-	curticks = rdtime();
-	if (0)print("timerset: fticks %#llx newticks %#llx curticks %#llx\n", fticks, newticks, curticks);
-	if (newticks < curticks)
-		wrstimecmp(newticks);
-	if (newticks > curticks + 0x1000000)
-		wrstimecmp(curticks + 0x1000000);
-	clrsipbit(Stie);		/* dismiss current intr */
+	wrstimecmp(now + (uvlong)fticks);
 	clockenable();
 	splx(pl);
 }

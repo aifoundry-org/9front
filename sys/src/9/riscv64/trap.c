@@ -751,16 +751,21 @@ if (0)sbiputc('-');
 	default:
 		panic("trap: unknown local interrupt %d", cp->cause);
 	}
-	// NOTE: this does not work for interrupt 0x20 (STIP); that only gets reset
-	// by advancing the timer. Somehow that's not getting done correctly elsewhere.
-	if (1 || (clrsipbit(1<<cp->cause) & (1<<cause)) != 0) {
-		uvlong next = rdtime();
-		if (0)print("clrsipbit(%x): did not clear bit\n", 1<<cp->cause);
-		if (0)print("rdtsc %p and %p\n", next, rdtsc());
-		wrstimecmp(next + 0x100000);
-		if (0)panic("set timer");
-		if (0)print("clrsipbit is now %lux\n", clrsipbit(1<<cp->cause));
-	}
+	/*
+	 * STIP (sip.5) is asserted by hardware whenever mtime ≥ stimecmp,
+	 * and csr writes to sip cannot clear it — the only way to deassert
+	 * STIP is to advance stimecmp past mtime.  timerset() now does that
+	 * unconditionally on its way out, but for non-timer local interrupts
+	 * (sw IPI) timerset hasn't run, so STIP may still be pending here.
+	 * If it is, advance stimecmp by one HZ tick so the trap can return
+	 * without immediately re-firing on STIP; the real next deadline
+	 * will be re-armed by timerintr the next time it runs.  This used
+	 * to be an unconditional wrstimecmp(now + 0x100000) (43.7 ms at the
+	 * K1's 24 MHz timebase), which clamped every periodic-timer cadence
+	 * — including sub-HZ addclock0link() backstops — to ~43 ms.
+	 */
+	if ((vlong)(rdstimecmp() - rdtime()) <= 0)
+		wrstimecmp(rdtime() + sys->clintsperhz);
 	if (TrapSpew) print("IMPLEMENT vecacct(vctl[cp->vno]);\n");
 	if (TrapSpew) print("IMPLEMENENT intrtime(m, cp->vno);\n");
 	if (!soc.plic)

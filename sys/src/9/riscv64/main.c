@@ -283,7 +283,11 @@ main(void)
 #endif
 	intrinit(); print("DONE 	intrinit();\n");
 	clockinit(); print("DONE 	clockinit();\n");
-	timebase = 10*Mhz;
+	if(timebase == 0){
+		print("timebase not in DTB, falling back to 10MHz\n");
+		timebase = 10*Mhz;
+	} else
+		print("timebase from DTB: %lld Hz\n", timebase);
 	calibrate(); print("DONE calibrate\n");
 	clocksanity(); print("DONE clocksanity\n");
 	cpuidprint(); print("DONE 	cpuidprint();\n"); 
