@@ -28,6 +28,7 @@ link
 #	ethersink
 	ethermedium
 	loopbackmedium
+	ethersmte
 #	netdevmedium
 	pciqemu		pci
 
