@@ -68,6 +68,7 @@ OBJ=\
 	sbicall.$O\
 	sbiecall.$O\
 	ethersmte.$O\
+	k1reset.$O\
 	$CONF.root.$O\
 	$CONF.rootc.$O\
 	$DEVS\

@@ -313,21 +313,20 @@ main(void)
 void
 exit(int)
 {
-#ifdef XXX
-	Ureg u = { .r0 = 0x84000002 };	/* CPU_OFF */
-
-	cpushutdown();
-	splfhi();
-
+	splhi();
+	/* TODO: cpushutdown() to halt other harts cleanly via SBI HSM */
 	if(m->machno == 0){
 		/* clear secrets */
 		zeroprivatepages();
 		poolreset(secrmem);
-
-		u.r0 = 0x84000009;	/* SYSTEM RESET */
 	}
-	hvccall(&u);
-#endif
+	sbireset(1, 0);		/* SRSTCOLD: works on QEMU; ignored on K1 */
+	if (rvreset)
+		rvreset();	/* board-specific reset, e.g. K1 WDT */
+	sbireset(2, 0);		/* SRSTWARM */
+	sbishutdown();		/* legacy ext 8 */
+	for(;;)
+		;
 }
 
 static void
