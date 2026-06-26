@@ -1,11 +1,20 @@
-CONF=qemu
-CONFLIST=qemu bpif3
+CONF=rv64
+CONFLIST=rv64 bpif3
 
-#loadaddr=0x100200000
-loadaddr=0x40200000
+# Per-CONF physical memory layout.  loadaddr is the link address
+# (passed to $LD via -T) and must equal VDRAM+0x200000, since l.s
+# self-relocates the kernel image to KTZERO before main() runs.
+# bpif3 is for the 2 GB BPI-F3 only (DRAM at 0x40000000); rv64 covers
+# K3, larger BPI-F3 SKUs, and QEMU virt with -m 6G or more (where
+# 0x100000000 falls inside DRAM).
+loadaddr=`{if(~ $CONF bpif3) echo 0x40200000; if not echo 0x100200000}
+vdram=`{if(~ $CONF bpif3) echo 0x40000000; if not echo 0x100000000}
 
 objtype=riscv64
 </$objtype/mkfile
+
+CFLAGS=$CFLAGS '-DVDRAM='$vdram'ULL'
+AFLAGS=$AFLAGS '-DVDRAM='$vdram'ULL'
 p=9
 
 DEVS=`{rc ../port/mkdevlist $CONF}

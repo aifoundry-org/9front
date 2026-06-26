@@ -62,7 +62,7 @@ struct L2cache {
 		struct {
 			/* le bytes: banks, ways, lg sets, lg cb bytes (ro) */
 			ulong	config;
-			ulong	_1_;
+			ulong	_1;
 			ulong	wayenable; /* low byte: ways enabled - 1 */
 		};
 	};
