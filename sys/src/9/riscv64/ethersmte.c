@@ -880,7 +880,7 @@ ethinit(Ether *edev)
 	csr32w(c->regs, MAC_TRANSMIT_FIFO_ALMOST_FULL,        0x1f8);
 	csr32w(c->regs, MAC_TRANSMIT_PACKET_START_THRESHOLD,  192);
 	csr32w(c->regs, MAC_RECEIVE_PACKET_START_THRESHOLD,   12);
-	csr32w(c->regs, MAC_MAXIMUM_FRAME_SIZE,               1514);
+	csr32w(c->regs, MAC_MAXIMUM_FRAME_SIZE,               1536);
 	csr32w(c->regs, MAC_TRANSMIT_JABBER_SIZE,             1514+18);
 	csr32w(c->regs, MAC_RECEIVE_JABBER_SIZE,              1514+18);
 	dprint("smte: FIFO thresholds and frame sizes programmed\n");
