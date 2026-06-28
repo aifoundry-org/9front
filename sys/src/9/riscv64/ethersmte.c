@@ -516,7 +516,8 @@ replenish(Ctlr *c)
 		c->rxs[i] = bp;
 		r  = &c->rxr[4 * i];
 		pa = PADDR(bp->rp);		/* physical address for DMA */
-		r[0] = 0;
+		/* don't pre-clear r[0]: leaving it OWN=0 in the dirty cache
+		 * line races chip-side reads — see ethrx skip handling */
 		r[1] = Rbsz & RX_DESC1_SIZE1_MASK;
 		if(i == RXRING - 1)
 			r[1] |= RX_DESC1_END_RING;
