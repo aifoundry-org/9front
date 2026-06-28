@@ -7,7 +7,7 @@ char root[] = "/root";
 void
 main(int, char *argv[])
 {
-	char buf[32];
+	char buf[64];
 
 	/* setup the boot namespace */
 	bind("/boot", bin, MAFTER);
