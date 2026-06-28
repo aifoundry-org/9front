@@ -13,7 +13,7 @@ main(int, char *argv[])
 	bind("/boot", bin, MAFTER);
 
 	if(fork() == 0){
-		execl("/bin/paqfs", "-qa", "-c", "8", "-m", root, "/boot/bootfs.paq", nil);
+		execl("/bin/paqfs", "paqfs", "-qa", "-c", "8", "-m", root, "/boot/bootfs.paq", nil);
 		goto Err;
 	}
 	if(await(buf, sizeof(buf)) < 0)
