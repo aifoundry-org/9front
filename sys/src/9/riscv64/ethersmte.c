@@ -557,8 +557,39 @@ ethrx(Ether *edev)
 	for(;;){
 		r = &c->rxr[4 * c->rxconsi];
 		smtecacheinval(r, 16);		/* discard stale cache before reading HW status */
-		if(r[0] & RX_DESC0_OWN)
-			break;
+		if(r[0] & RX_DESC0_OWN){
+			/*
+			 * The K1 RX engine occasionally lands frames in later
+			 * descriptors while leaving an earlier slot's OWN bit
+			 * set.  Scan forward; if any nearby slot is OWN-clear,
+			 * the chip skipped us — drop the stuck buffers so they
+			 * can be refilled on the next ring pass.
+			 */
+			int k, found;
+			u32int *rn;
+			found = -1;
+			for(k = 1; k < 64; k++){
+				rn = &c->rxr[4 * ((c->rxconsi + k) & (RXRING - 1))];
+				smtecacheinval(rn, 16);
+				if((rn[0] & RX_DESC0_OWN) == 0){
+					found = k;
+					break;
+				}
+			}
+			if(found < 0)
+				break;
+			dprint("smte: RX skip %d stuck slots starting=%d\n",
+				found, c->rxconsi);
+			for(k = 0; k < found; k++){
+				bp = c->rxs[c->rxconsi];
+				c->rxs[c->rxconsi] = nil;
+				if(bp != nil)
+					freeb(bp);
+				c->rxconsi = (c->rxconsi + 1) & (RXRING - 1);
+			}
+			replenish(c);
+			continue;
+		}
 		s   = r[0];
 		len = s & RX_DESC0_FRAME_PACKET_LENGTH_MASK;
 		bp  = c->rxs[c->rxconsi];
