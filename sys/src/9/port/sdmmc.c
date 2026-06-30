@@ -580,6 +580,10 @@ mmconline(SDunit *unit)
 	identify(card);
 	unit->secsize = card->secsize;
 	unit->sectors = card->sectors[unit->subno];
+	print("%s: detected %s %d.%2.2d, %llud x %lud bytes\n",
+		unit->name, card->ismmc? "MMC": "SD",
+		card->specver/100, card->specver%100,
+		unit->sectors, unit->secsize);
 
 	(*io->cmd)(io, &SET_BLOCKLEN, card->secsize, r);
 
