@@ -1,5 +1,5 @@
 /*
- * SpacemiT K1 SD host (eMMC at 0xd4281000)
+ * SpacemiT K1 SD host (eMMC at 0xd4281000, microSD at 0xd4280000)
  *
  * derived from zynq/emmc.c
  */
@@ -52,6 +52,9 @@ enum {
 	 Rxbiasctl		= 1<<5,
 
 	/* Control0 */
+	V3_3			= 7<<9,
+	Buspower		= 1<<8,
+	Hispeed			= 1<<2,
 	Dwidth4			= 1<<1,
 	Dwidth1			= 0<<1,
 
@@ -122,33 +125,38 @@ enum {
 	Cmdinhibit	= 1<<0,
 
 	/* K1 SoC */
-	SDH_PHYS	= 0xd4281000UL,	/* eMMC */
 	SDH_SIZE	= 0x200,
-	SDH_IRQ		= 101,
+	SD_PHYS		= 0xd4280000UL,
+	SD_IRQ		= 99,
+	EMMC_PHYS	= 0xd4281000UL,
+	EMMC_IRQ	= 101,
 	SDH_EXTCLK	= 102400000,	/* pll1_d6_409p6 / 4 (u-boot default) */
 
 	APMU_PHYS	= 0xd4282800UL,
 	APMU_SIZE	= 0x400,
-	APMU_SDH0	= 0x054,	/* shared: SDH_AXI gate (bit 3) + reset (bit 0) */
-	APMU_SDH2	= 0x0e0,	/* eMMC: SDH2 gate (bit 11) + reset (bit 1) */
+	APMU_SDH0	= 0x054,	/* shared SDH_AXI + per-SDH0 bits */
+	APMU_SDH2	= 0x0e0,	/* per-SDH2 bits */
 	Sdh_axi_gate	= 1<<3,
 	Sdh_axi_rst	= 1<<0,
-	Sdh2_gate	= 1<<11,
-	Sdh2_rst	= 1<<1,
+	Sdh_gate	= 1<<11,
+	Sdh_rst		= 1<<1,
 
 	Cbsz		= 64,	/* X60/C908 D-cache line size */
 };
 
 typedef struct Ctlr Ctlr;
 struct Ctlr {
+	/* per-controller config */
+	uintptr	regbase;
+	u32int	apmuoff;
+	int	irq;
+	ulong	extclk;
+
+	/* runtime state */
 	Rendez	r;
 	u32int	*regs;
 	int	datadone;
-	ulong	extclk;
-	int	irq;
 };
-
-static Ctlr sdh;
 
 static void
 cacheflush(void *va, int len)
@@ -174,40 +182,44 @@ clkdiv(uint d)
 }
 
 static void
-interrupt(Ureg*, void*)
+interrupt(Ureg*, void *arg)
 {
+	Ctlr *c;
 	u32int *r;
 	int i;
 
-	r = sdh.regs;
+	c = arg;
+	r = c->regs;
 	i = r[Interrupt];
 	r[Interrupt] = i & (Datadone|Err);
-	sdh.datadone = i;
-	wakeup(&sdh.r);
+	c->datadone = i;
+	wakeup(&c->r);
 }
 
 static int
-datadone(void*)
+datadone(void *arg)
 {
-	return sdh.datadone;
+	Ctlr *c = arg;
+	return c->datadone;
 }
 
 static int
-sdhinit(SDio*)
+sdhinit(SDio *io)
 {
+	Ctlr *c;
 	u32int *r, *apmu;
 	int i;
 
+	c = io->aux;
+
 	apmu = vmap(APMU_PHYS, APMU_SIZE);
 	apmu[APMU_SDH0>>2] |= Sdh_axi_gate | Sdh_axi_rst;
-	apmu[APMU_SDH2>>2] |= Sdh2_gate | Sdh2_rst;
+	apmu[c->apmuoff>>2] |= Sdh_gate | Sdh_rst;
 	coherence();
 	vunmap(apmu, APMU_SIZE);
 
-	sdh.extclk = SDH_EXTCLK;
-	sdh.irq = SDH_IRQ;
-	r = vmap(SDH_PHYS, SDH_SIZE);
-	sdh.regs = r;
+	r = vmap(c->regbase, SDH_SIZE);
+	c->regs = r;
 	r[Control1] = Srsthc;
 	for(i = 0; i < 100; i++){
 		delay(10);
@@ -215,7 +227,7 @@ sdhinit(SDio*)
 			break;
 	}
 	if(r[Control1] & Srsthc){
-		print("sdh: reset timeout!\n");
+		print("%s: reset timeout!\n", io->name);
 		return -1;
 	}
 
@@ -225,48 +237,60 @@ sdhinit(SDio*)
 	r[Sdhcmmcctl] |= Mmccardmode;
 	r[Sdhclegctl] |= Genpadclkon;
 	r[Sdhctxcfg] |= Txintclksel;
+
+	/* Srsthc cleared Power Control; restore 3.3V bus power. */
+	r[Control0] = V3_3 | Buspower | Dwidth1;
 	return 0;
 }
 
 static int
-sdhinquiry(SDio*, char *inquiry, int inqlen)
+sdhinquiry(SDio *io, char *inquiry, int inqlen)
 {
+	Ctlr *c = io->aux;
 	uint ver;
 
-	ver = sdh.regs[Slotisrver] >> 16;
+	ver = c->regs[Slotisrver] >> 16;
 	return snprint(inquiry, inqlen,
-		"SpacemiT SD/eMMC Host Controller %2.2x Version %2.2x",
-		ver&0xFF, ver>>8);
+		"SpacemiT %s Host Controller %2.2x Version %2.2x",
+		io->name, ver&0xFF, ver>>8);
 }
 
 static void
-sdhclk(uint freq)
+sdhclk(Ctlr *c, uint freq)
 {
 	u32int *r;
 	int i;
 
-	r = sdh.regs;
-	r[Control1] = clkdiv(sdh.extclk / freq - 1) |
-			DTO << Datatoshift | Clkgendiv | Clken | Clkintlen;
+	r = c->regs;
+	r[Control1] &= ~Clken;
+	r[Control1] = clkdiv(c->extclk / freq - 1) |
+			DTO << Datatoshift | Clkgendiv | Clkintlen;
 	for(i = 0; i < 1000; i++){
 		delay(1);
 		if(r[Control1] & Clkstable)
-			return;
+			break;
 	}
-	print("SD clock won't initialise!\n");
+	if((r[Control1] & Clkstable) == 0){
+		print("SD clock won't initialise!\n");
+		return;
+	}
+	r[Control1] |= Clken;
 }
 
 static void
 sdhenable(SDio *io)
 {
-	sdhclk(400000);
-	sdh.regs[Irptmask] = ~(Dtoerr|Cardintr|Dmaintr);
-	intrenable(sdh.irq, interrupt, nil, BUSUNKNOWN, io->name);
+	Ctlr *c = io->aux;
+
+	sdhclk(c, 400000);
+	c->regs[Irptmask] = ~(Dtoerr|Cardintr|Dmaintr);
+	intrenable(c->irq, interrupt, c, BUSUNKNOWN, io->name);
 }
 
 static int
-sdhcmd(SDio*, SDiocmd *cmd, u32int arg, u32int *resp)
+sdhcmd(SDio *io, SDiocmd *cmd, u32int arg, u32int *resp)
 {
+	Ctlr *ct = io->aux;
 	ulong now;
 	u32int *r;
 	u32int c;
@@ -301,7 +325,7 @@ sdhcmd(SDio*, SDiocmd *cmd, u32int arg, u32int *resp)
 			c |= Multiblock | Blkcnten;
 	}
 
-	r = sdh.regs;
+	r = ct->regs;
 	if(r[Status] & Cmdinhibit){
 		print("sdhcmd: need to reset Cmdinhibit intr %ux stat %ux\n",
 			r[Interrupt], r[Status]);
@@ -324,7 +348,7 @@ sdhcmd(SDio*, SDiocmd *cmd, u32int arg, u32int *resp)
 	r[Arg1] = arg;
 	if((i = r[Interrupt]) != 0){
 		if(i != Cardinsert)
-			print("sdh: before command, intr was %ux\n", i);
+			print("%s: before command, intr was %ux\n", io->name, i);
 		r[Interrupt] = i;
 	}
 	r[Cmdtm] = c;
@@ -334,7 +358,8 @@ sdhcmd(SDio*, SDiocmd *cmd, u32int arg, u32int *resp)
 			break;
 	if((i&(Cmddone|Err)) != Cmddone){
 		if((i&~Err) != Ctoerr)
-			print("sdh: cmd %ux error intr %ux stat %ux\n", c, i, r[Status]);
+			print("%s: cmd %ux error intr %ux stat %ux\n",
+				io->name, c, i, r[Status]);
 		r[Interrupt] = i;
 		if(r[Status]&Cmdinhibit){
 			r[Control1] |= Srstcmd;
@@ -361,9 +386,9 @@ sdhcmd(SDio*, SDiocmd *cmd, u32int arg, u32int *resp)
 	}
 	if((c & Respmask) == Resp48busy){
 		r[Irpten] = Datadone|Err;
-		tsleep(&sdh.r, datadone, 0, 3000);
-		i = sdh.datadone;
-		sdh.datadone = 0;
+		tsleep(&ct->r, datadone, ct, 3000);
+		i = ct->datadone;
+		ct->datadone = 0;
 		r[Irpten] = 0;
 		if((i & Datadone) == 0)
 			print("sdhio: no Datadone after %s\n", cmd->name);
@@ -376,8 +401,9 @@ sdhcmd(SDio*, SDiocmd *cmd, u32int arg, u32int *resp)
 }
 
 static void
-sdhiosetup(SDio*, int, void *buf, int bsize, int bcount)
+sdhiosetup(SDio *io, int, void *buf, int bsize, int bcount)
 {
+	Ctlr *c = io->aux;
 	u32int *r;
 	uintptr pa;
 	int len;
@@ -389,23 +415,24 @@ sdhiosetup(SDio*, int, void *buf, int bsize, int bcount)
 	pa = PADDR(buf);
 	cacheflush(buf, len);
 
-	r = sdh.regs;
+	r = c->regs;
 	r[Sysaddr] = pa;
 	r[Blksizecnt] = 7<<12 | bcount<<16 | bsize;
 	r[Irpten] = Datadone|Err;
 }
 
 static void
-sdhio(SDio*, int write, uchar *buf, int len)
+sdhio(SDio *io, int write, uchar *buf, int len)
 {
+	Ctlr *c = io->aux;
 	u32int *r;
 	int i;
 
-	tsleep(&sdh.r, datadone, 0, 3000);
-	i = sdh.datadone;
-	sdh.datadone = 0;
+	tsleep(&c->r, datadone, c, 3000);
+	i = c->datadone;
+	c->datadone = 0;
 
-	r = sdh.regs;
+	r = c->regs;
 	r[Irpten] = 0;
 	if((i & Datadone) == 0){
 		print("sdhio: %d timeout intr %ux stat %ux\n",
@@ -427,11 +454,12 @@ sdhio(SDio*, int write, uchar *buf, int len)
 }
 
 static void
-sdhbus(SDio*, int width, int speed)
+sdhbus(SDio *io, int width, int speed)
 {
+	Ctlr *c = io->aux;
 	u32int *r;
 
-	r = sdh.regs;
+	r = c->regs;
 	switch(width){
 	case 1:
 		r[Control0] &= ~Dwidth4;
@@ -440,22 +468,52 @@ sdhbus(SDio*, int width, int speed)
 		r[Control0] |= Dwidth4;
 		break;
 	}
-	if(speed)
-		sdhclk(speed);
+	if(speed){
+		if(speed > 26000000)
+			r[Control0] |= Hispeed;
+		else
+			r[Control0] &= ~Hispeed;
+		sdhclk(c, speed);
+	}
 }
 
 void
 sdspacemitlink(void)
 {
-	static SDio io = {
-		"sdspacemit",
-		sdhinit,
-		sdhenable,
-		sdhinquiry,
-		sdhcmd,
-		sdhiosetup,
-		sdhio,
-		sdhbus,
+	static Ctlr emmc = {
+		.regbase = EMMC_PHYS,
+		.apmuoff = APMU_SDH2,
+		.irq	 = EMMC_IRQ,
+		.extclk	 = SDH_EXTCLK,
 	};
-	addmmcio(&io);
+	static Ctlr sd = {
+		.regbase = SD_PHYS,
+		.apmuoff = APMU_SDH0,
+		.irq	 = SD_IRQ,
+		.extclk	 = SDH_EXTCLK,
+	};
+	static SDio io_emmc = {
+		.name	 = "emmc",
+		.init	 = sdhinit,
+		.enable	 = sdhenable,
+		.inquiry = sdhinquiry,
+		.cmd	 = sdhcmd,
+		.iosetup = sdhiosetup,
+		.io	 = sdhio,
+		.bus	 = sdhbus,
+		.aux	 = &emmc,
+	};
+	static SDio io_sd = {
+		.name	 = "sd",
+		.init	 = sdhinit,
+		.enable	 = sdhenable,
+		.inquiry = sdhinquiry,
+		.cmd	 = sdhcmd,
+		.iosetup = sdhiosetup,
+		.io	 = sdhio,
+		.bus	 = sdhbus,
+		.aux	 = &sd,
+	};
+	addmmcio(&io_emmc);
+	addmmcio(&io_sd);
 }
