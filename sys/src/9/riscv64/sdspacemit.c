@@ -309,7 +309,22 @@ sdhclk(Ctlr *c, uint freq)
 	uint d;
 	int i;
 
-	d = c->extclk / freq - 1;
+	/*
+	 * The simple divisor formula (extclk/freq - 1) picks d=1 for
+	 * freq=50MHz on extclk=102.4MHz, which runs the wire at 51.2MHz —
+	 * inside HS card spec but at this controller's PHY limit, producing
+	 * Wrcrctoken|Dcrcerr on every write block. For HS speeds choose the
+	 * smallest d such that actual <= freq, giving 25.6MHz at request 50M
+	 * and clean writes. Keep the old formula for sub-MHz init speeds —
+	 * the spec-true 400KHz makes repeated cardinit attempts unstable on
+	 * this hardware; 200KHz (from the old formula) is reliable.
+	 */
+	if(freq >= 26000000){
+		d = (c->extclk + 2*freq - 1) / (2*freq);
+		if(d > 0x3FF)
+			d = 0x3FF;
+	}else
+		d = c->extclk / freq - 1;
 
 	r = c->regs;
 	r[Control1] &= ~Clken;
