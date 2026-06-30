@@ -54,6 +54,7 @@ enum {
 	/* Control0 */
 	V3_3			= 7<<9,
 	Buspower		= 1<<8,
+	Dwidth8			= 1<<5,	/* SDHCI v3 extended 8-bit data width */
 	Hispeed			= 1<<2,
 	Dwidth4			= 1<<1,
 	Dwidth1			= 0<<1,
@@ -97,6 +98,7 @@ enum {
 	Dmaen			= 1<<0,
 
 	/* Interrupt */
+	Wrcrctoken	= 1<<31,	/* Spacemit: write CRC status token bad */
 	Acmderr		= 1<<24,
 	Denderr		= 1<<22,
 	Dcrcerr		= 1<<21,
@@ -156,6 +158,11 @@ struct Ctlr {
 	Rendez	r;
 	u32int	*regs;
 	int	datadone;
+	u32int	errstat;	/* Status snapshot at IRQ when Err latched */
+	ulong	clock;		/* most recent programmed SDCLK in Hz */
+	int	hispeed;	/* Hispeed bit set when clock was programmed */
+	ulong	nerr;		/* total error interrupts seen */
+	ulong	ntmo;		/* total Datadone timeouts seen */
 };
 
 static void
@@ -191,9 +198,49 @@ interrupt(Ureg*, void *arg)
 	c = arg;
 	r = c->regs;
 	i = r[Interrupt];
+	if(i & Err)
+		c->errstat = r[Status];	/* snapshot before ack races state */
 	r[Interrupt] = i & (Datadone|Err);
 	c->datadone = i;
 	wakeup(&c->r);
+}
+
+static void
+fmtintr(char *buf, int buflen, u32int i)
+{
+	static const struct { u32int bit; char *name; } b[] = {
+		{Wrcrctoken, "Wrcrctoken"},
+		{Acmderr, "Acmderr"},
+		{Denderr, "Denderr"},
+		{Dcrcerr, "Dcrcerr"},
+		{Dtoerr, "Dtoerr"},
+		{Cbaderr, "Cbaderr"},
+		{Cenderr, "Cenderr"},
+		{Ccrcerr, "Ccrcerr"},
+		{Ctoerr, "Ctoerr"},
+		{Err, "Err"},
+		{Cardintr, "Cardintr"},
+		{Cardinsert, "Cardinsert"},
+		{Readrdy, "Readrdy"},
+		{Writerdy, "Writerdy"},
+		{Dmaintr, "Dmaintr"},
+		{Datadone, "Datadone"},
+		{Cmddone, "Cmddone"},
+	};
+	char *p, *e;
+	int k, first;
+
+	p = buf;
+	e = buf + buflen;
+	first = 1;
+	for(k = 0; k < nelem(b); k++){
+		if(i & b[k].bit){
+			p = seprint(p, e, "%s%s", first? "":"|", b[k].name);
+			first = 0;
+		}
+	}
+	if(first)
+		seprint(p, e, "none");
 }
 
 static int
@@ -259,11 +306,14 @@ static void
 sdhclk(Ctlr *c, uint freq)
 {
 	u32int *r;
+	uint d;
 	int i;
+
+	d = c->extclk / freq - 1;
 
 	r = c->regs;
 	r[Control1] &= ~Clken;
-	r[Control1] = clkdiv(c->extclk / freq - 1) |
+	r[Control1] = clkdiv(d) |
 			DTO << Datatoshift | Clkgendiv | Clkintlen;
 	for(i = 0; i < 1000; i++){
 		delay(1);
@@ -275,6 +325,7 @@ sdhclk(Ctlr *c, uint freq)
 		return;
 	}
 	r[Control1] |= Clken;
+	c->clock = d == 0? c->extclk : c->extclk / (2*d);
 }
 
 static void
@@ -435,14 +486,19 @@ sdhio(SDio *io, int write, uchar *buf, int len)
 	r = c->regs;
 	r[Irpten] = 0;
 	if((i & Datadone) == 0){
-		print("sdhio: %d timeout intr %ux stat %ux\n",
-			write, i, r[Status]);
+		c->ntmo++;
+		print("sdhio: %d timeout intr %ux stat %ux clk %lud hs %d ntmo %lud\n",
+			write, i, r[Status], c->clock, c->hispeed, c->ntmo);
 		r[Interrupt] = i;
 		error(Eio);
 	}
 	if(i & Err){
-		print("sdhio: %d error intr %ux stat %ux\n",
-			write, r[Interrupt], r[Status]);
+		char buf[128];
+		c->nerr++;
+		fmtintr(buf, sizeof buf, i);
+		print("sdhio: %d err [%s] intr %ux prestat %ux poststat %ux clk %lud hs %d nerr %lud\n",
+			write, buf, i, c->errstat, r[Status],
+			c->clock, c->hispeed, c->nerr);
 		r[Interrupt] = i;
 		error(Eio);
 	}
@@ -462,17 +518,23 @@ sdhbus(SDio *io, int width, int speed)
 	r = c->regs;
 	switch(width){
 	case 1:
-		r[Control0] &= ~Dwidth4;
+		r[Control0] &= ~(Dwidth4|Dwidth8);
 		break;
 	case 4:
-		r[Control0] |= Dwidth4;
+		r[Control0] = (r[Control0] & ~Dwidth8) | Dwidth4;
+		break;
+	case 8:
+		r[Control0] |= Dwidth8;
 		break;
 	}
 	if(speed){
-		if(speed > 26000000)
+		if(speed > 26000000){
 			r[Control0] |= Hispeed;
-		else
+			c->hispeed = 1;
+		}else{
 			r[Control0] &= ~Hispeed;
+			c->hispeed = 0;
+		}
 		sdhclk(c, speed);
 	}
 }
