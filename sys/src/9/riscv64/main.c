@@ -43,9 +43,7 @@ init0(void)
 		setconfenv();
 		poperror();
 	}
-	print("alarm kproc\n");
 	kproc("alarm", alarmkproc, 0);
-	print("done\n");
 
 	p = newpage(USTKTOP-BY2PG, nil);
 	segpage(up->seg[SSEG], p);
@@ -54,24 +52,17 @@ init0(void)
 	sp[3] = sp[2] = sp[1] = nil;
 	strcpy(sp[1] = (char*)&sp[4], "boot");
 	sp[0] = (void*)&sp[1];
-	print("sp all set up\n");
-	print("fpukexit ...\n");
 
 	splhi();
 	fpukexit(nil, nil);
-	print("done ... call mmuswitch\n");
 	mmuswitch(up);
-	if (1) {
-	print("fault %d\n", fault(UTZERO, UTZERO, 1));
-	print("fault sp %d\n", fault(p->va, UTZERO, 0));
+	print("fault %d sp %d\n", fault(UTZERO, UTZERO, 1), fault(p->va, UTZERO, 0));
 	u64int* pte = userpte((void *)UTZERO);
 	print("pte is %p *pte %llx\n", pte, *pte);
-	}
 	print("touser baby MACH m is %p mmuto p%p\n", m, m->mmutop);
 
 	print("islo %d, now enable clock\n", islo());
-	if(1)clockenable();
-	//print("now to user\n");
+	clockenable();
 	// I am not sure this should be here ...
 	fpoff();
 	print("SP will be USTKTOP-BY2PG %p\n", (uintptr)USTKTOP-BY2PG);
@@ -212,10 +203,6 @@ main(void)
 	once++;
 	while(i == 0); // BUG: does not reload i
 	i = 1; // in case you use GDB to bump PC, make sure i is updated.
-	while (i < 32) {
-		sbiputc('b');
-		i++;
-	}
 	if (!m->machno) {
 		extern char bdata[], edata[], end[], etext[];
 		static ulong vfy = 0xcafebabe;
@@ -232,10 +219,6 @@ main(void)
 	}
 	memset(edata, 0, end - edata);		/* zero bss */
 	machinit();
-	while (i < 64) {
-		sbiputc('c');
-		i++;
-	}
 #ifdef XXX
 	if(m->machno){
 		trapinit();
@@ -252,19 +235,7 @@ main(void)
 	}
 #endif
 	uartconsinit();
-	sbiputc('^');
 	quotefmtinstall();
-	sbiputc('q');
-	print("hi there\n");
-	print("let's try an sbigetc()\n");
-	if (0)for(int i = 0; i < 16; i++) {
-		int c;
-		int tries;
-		sbiputc('=');
-		for(c = sbigetc(), tries = 0; tries < 1<<16 && c < 0; tries++, c = sbigetc())
-			;
-		print("Got %#x, tries %d\n", c, tries);
-	}
 	bootargsinit();
 	meminit();
 	print("meminit done\n");
@@ -275,37 +246,35 @@ main(void)
 	xsummary();
 	printinit();
 	print("\nPlan 9\n");
-	print("\nPlan %d\n", 9);
 	print("conf.mem[0].base %p, conf.mem[0].limit %p, conf.mem[0].npage %lud\n", conf.mem[0].base, conf.mem[0].limit, conf.mem[0].npage);
 #ifdef xxx
 	trapinit(); print("DONE 	trapinit();\n");
 	fpuinit(); print("DONE 	fpuinit();\n");
 #endif
 	socidentify();		/* must precede intrinit: sets soc.plic */
-	intrinit(); print("DONE 	intrinit();\n");
-	clockinit(); print("DONE 	clockinit();\n");
+	intrinit();
+	clockinit();
 	if(timebase == 0){
 		print("timebase not in DTB, falling back to 10MHz\n");
 		timebase = 10*Mhz;
 	} else
 		print("timebase from DTB: %lld Hz\n", timebase);
-	calibrate(); print("DONE calibrate\n");
-	clocksanity(); print("DONE clocksanity\n");
-	cpuidprint(); print("DONE 	cpuidprint();\n"); 
-	timersinit(); print("DONE 	timersinit();\n");
+	calibrate();
+	clocksanity();
+	cpuidprint();
+	timersinit();
 	xsummary();
-	pageinit(); print("DONE 	pageinit();\n"); 
-	procinit0(); print("DONE 	procinit0();\n"); 
-	initseg(); print("DONE 	initseg();\n"); 
-	links(); print("DONE 	links();\n"); 
-	chandevreset(); print("DONE 	chandevreset();\n"); 
-	userinit(); print("DONE 	userinit();\n"); 
-	mpinit(); print("DONE 	mpinit();\n"); 
+	pageinit();
+	procinit0();
+	initseg();
+	links();
+	chandevreset();
+	userinit();
+	mpinit();
 	u64int tm = rdtime();
-	print("tm is %#llx\n", tm);
 	u64int cm = rdstimecmp();
-	print("cm is %#llx\n", cm);
-	mmu1init(); print("DONE 	mmu1init(); islo %d m %p\n", islo(), m); 
+	print("tm %#llx cm %#llx\n", tm, cm);
+	mmu1init();
 	cpuinit(0); print("DONE cpuinit(0) -- FIXME\n");
 	schedinit();
 }
