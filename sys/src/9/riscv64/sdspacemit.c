@@ -109,6 +109,7 @@ enum {
 	Ctoerr		= 1<<16,
 	Err		= 1<<15,
 	Cardintr	= 1<<8,
+	Cardremove	= 1<<7,
 	Cardinsert	= 1<<6,
 	Readrdy		= 1<<5,
 	Writerdy	= 1<<4,
@@ -118,6 +119,7 @@ enum {
 
 	/* Status */
 	Present		= 1<<18,
+	Cardinserted	= 1<<16,	/* SDHCI Present State: card inserted (level) */
 	Bufread		= 1<<11,
 	Bufwrite	= 1<<10,
 	Readtrans	= 1<<9,
@@ -136,6 +138,18 @@ enum {
 
 	APMU_PHYS	= 0xd4282800UL,
 	APMU_SIZE	= 0x400,
+
+	/*
+	 * BPI-F3 microSD card-detect is GPIO 80 (cd-inverted in DT), not
+	 * the SDHCI Cardinserted level bit — that bit reads as 1 stuck on
+	 * this board and doesn't track physical insertion. K1 GPIO bank 2
+	 * (GPIOs 64..95) lives at controller base + 0x8 with GPLR at +0;
+	 * GPIO 80 is bit 16 within the bank.
+	 */
+	GPIO_PHYS	= 0xd4019000UL,
+	GPIO_SIZE	= 0x800,
+	GPIO_BPIF3_SDCD_OFF = 0x8,	/* bank 2 GPLR offset within controller */
+	GPIO_BPIF3_SDCD_BIT = 16,	/* GPIO 80 mod 32 */
 	APMU_SDH0	= 0x054,	/* shared SDH_AXI + per-SDH0 bits */
 	APMU_SDH2	= 0x0e0,	/* per-SDH2 bits */
 	Sdh_axi_gate	= 1<<3,
@@ -155,12 +169,15 @@ struct Ctlr {
 	ulong	extclk;
 
 	/* runtime state */
+	char	*name;		/* io->name, copied at sdhinit for IRQ-side prints */
 	Rendez	r;
 	u32int	*regs;
 	int	datadone;
 	u32int	errstat;	/* Status snapshot at IRQ when Err latched */
 	ulong	clock;		/* most recent programmed SDCLK in Hz */
 	int	hispeed;	/* Hispeed bit set when clock was programmed */
+	int	cardpresent;	/* 1 if Status & Cardinserted at last edge or init */
+	ulong	cardevents;	/* total Cardinsert|Cardremove transitions seen */
 	ulong	nerr;		/* total error interrupts seen */
 	ulong	ntmo;		/* total Datadone timeouts seen */
 };
@@ -200,9 +217,21 @@ interrupt(Ureg*, void *arg)
 	i = r[Interrupt];
 	if(i & Err)
 		c->errstat = r[Status];	/* snapshot before ack races state */
-	r[Interrupt] = i & (Datadone|Err);
-	c->datadone = i;
-	wakeup(&c->r);
+	if(i & (Cardinsert|Cardremove)){
+		int now = (r[Status] & Cardinserted) != 0;
+		if(now != c->cardpresent){
+			c->cardevents++;
+			c->cardpresent = now;
+			print("%s: card %s (event %lud, stat %ux)\n",
+				c->name? c->name: "sd",
+				now? "inserted": "removed",
+				c->cardevents, r[Status]);
+		}
+	}
+	r[Interrupt] = i & (Datadone|Err|Cardinsert|Cardremove);
+	c->datadone = i & (Datadone|Err);	/* don't wake I/O on a card event */
+	if(c->datadone)
+		wakeup(&c->r);
 }
 
 static void
@@ -220,6 +249,7 @@ fmtintr(char *buf, int buflen, u32int i)
 		{Ctoerr, "Ctoerr"},
 		{Err, "Err"},
 		{Cardintr, "Cardintr"},
+		{Cardremove, "Cardremove"},
 		{Cardinsert, "Cardinsert"},
 		{Readrdy, "Readrdy"},
 		{Writerdy, "Writerdy"},
@@ -258,6 +288,7 @@ sdhinit(SDio *io)
 	int i;
 
 	c = io->aux;
+	c->name = io->name;
 
 	apmu = vmap(APMU_PHYS, APMU_SIZE);
 	apmu[APMU_SDH0>>2] |= Sdh_axi_gate | Sdh_axi_rst;
@@ -287,6 +318,13 @@ sdhinit(SDio *io)
 
 	/* Srsthc cleared Power Control; restore 3.3V bus power. */
 	r[Control0] = V3_3 | Buspower | Dwidth1;
+
+	/*
+	 * eMMC is soldered and non-removable; for the removable slots
+	 * presence comes from a board-specific GPIO read in sdhenable.
+	 */
+	c->cardpresent = 1;
+
 	return 0;
 }
 
@@ -343,6 +381,51 @@ sdhclk(Ctlr *c, uint freq)
 	c->clock = d == 0? c->extclk : c->extclk / (2*d);
 }
 
+/*
+ * The K1 controller updates the Cardinserted level bit in Present State
+ * when the card-detect line changes but doesn't seem to raise the
+ * matching Cardinsert/Cardremove edge IRQs — we leave the IRQ-side
+ * logic in place in case it ever does, and poll the level bit from a
+ * kproc as the actually-reliable detector for removable slots.
+ */
+static u32int *gpioregs;	/* shared GPIO controller mapping for cd polling */
+
+static int
+sdcardpresentbpif3(void)
+{
+	u32int gplr;
+
+	if(gpioregs == nil)
+		return 1;
+	gplr = gpioregs[GPIO_BPIF3_SDCD_OFF>>2];
+	/*
+	 * DT lists the cd-gpio as ACTIVE_HIGH then applies cd-inverted, which
+	 * net-net means active-low: card present when GPIO line is LOW.
+	 * Confirmed by reading gplr2 = 0x1c067c0e (bit 16 = 0) with the
+	 * Linux microSD seated.
+	 */
+	return (gplr & (1<<GPIO_BPIF3_SDCD_BIT)) == 0;
+}
+
+static void
+cardpollproc(void *arg)
+{
+	Ctlr *c = arg;
+	int now;
+
+	for(;;){
+		tsleep(&up->sleep, return0, nil, 500);
+		now = sdcardpresentbpif3();
+		if(now != c->cardpresent){
+			c->cardevents++;
+			c->cardpresent = now;
+			print("%s: card %s (event %lud)\n",
+				c->name, now? "inserted": "removed",
+				c->cardevents);
+		}
+	}
+}
+
 static void
 sdhenable(SDio *io)
 {
@@ -350,7 +433,20 @@ sdhenable(SDio *io)
 
 	sdhclk(c, 400000);
 	c->regs[Irptmask] = ~(Dtoerr|Cardintr|Dmaintr);
+	c->regs[Irpten] = Cardinsert|Cardremove;	/* baseline signal mask */
 	intrenable(c->irq, interrupt, c, BUSUNKNOWN, io->name);
+
+	/*
+	 * eMMC is soldered; the microSD's "Cardinserted" status bit lies on
+	 * this board so we read GPIO 80 directly. Map the GPIO controller
+	 * lazily on first removable-slot enable.
+	 */
+	if(strcmp(io->name, "emmc") == 0)
+		return;
+	if(gpioregs == nil)
+		gpioregs = vmap(GPIO_PHYS, GPIO_SIZE);
+	c->cardpresent = sdcardpresentbpif3();
+	kproc("cardpoll", cardpollproc, c);
 }
 
 static int
@@ -361,6 +457,15 @@ sdhcmd(SDio *io, SDiocmd *cmd, u32int arg, u32int *resp)
 	u32int *r;
 	u32int c;
 	int i;
+
+	/*
+	 * Refuse commands when no card is present so that sdmmc.c's existing
+	 * media-change-via-Eio path in mmconline (waserror -> unit->sectors=0)
+	 * resets cached card state. The next I/O after a swap then re-runs
+	 * cardinit on the new card.
+	 */
+	if(ct->cardpresent == 0)
+		error(Eio);
 
 	c = (u32int)cmd->index << Indexshift;
 	switch(cmd->resp){
@@ -451,11 +556,11 @@ sdhcmd(SDio *io, SDiocmd *cmd, u32int arg, u32int *resp)
 		break;
 	}
 	if((c & Respmask) == Resp48busy){
-		r[Irpten] = Datadone|Err;
+		r[Irpten] = Datadone|Err|Cardinsert|Cardremove;
 		tsleep(&ct->r, datadone, ct, 3000);
 		i = ct->datadone;
 		ct->datadone = 0;
-		r[Irpten] = 0;
+		r[Irpten] = Cardinsert|Cardremove;
 		if((i & Datadone) == 0)
 			print("sdhio: no Datadone after %s\n", cmd->name);
 		if(i & Err)
@@ -484,7 +589,7 @@ sdhiosetup(SDio *io, int, void *buf, int bsize, int bcount)
 	r = c->regs;
 	r[Sysaddr] = pa;
 	r[Blksizecnt] = 7<<12 | bcount<<16 | bsize;
-	r[Irpten] = Datadone|Err;
+	r[Irpten] = Datadone|Err|Cardinsert|Cardremove;
 }
 
 static void
@@ -499,7 +604,7 @@ sdhio(SDio *io, int write, uchar *buf, int len)
 	c->datadone = 0;
 
 	r = c->regs;
-	r[Irpten] = 0;
+	r[Irpten] = Cardinsert|Cardremove;
 	if((i & Datadone) == 0){
 		c->ntmo++;
 		print("sdhio: %d timeout intr %ux stat %ux clk %lud hs %d ntmo %lud\n",
