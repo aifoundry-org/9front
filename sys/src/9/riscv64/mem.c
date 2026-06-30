@@ -83,6 +83,5 @@ meminit(void)
 	kmapram(conf.mem[0].base, l);
 
 	conf.mem[0].npage = (conf.mem[0].limit - conf.mem[0].base)/BY2PG;
-	print("fuck 0x%llx 0x%llx\n", (conf.mem[0].limit - conf.mem[0].base),(conf.mem[0].limit - conf.mem[0].base)/BY2PG);
 	print("base %p limit %p npage %lud\n", conf.mem[0].base,  conf.mem[0].limit,conf.mem[0].npage);
 }
