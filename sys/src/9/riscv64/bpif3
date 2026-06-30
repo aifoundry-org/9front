@@ -29,6 +29,7 @@ link
 	ethermedium
 	loopbackmedium
 	ethersmte
+	sdspacemit
 #	netdevmedium
 	pciqemu		pci
 
@@ -46,6 +47,7 @@ misc
 #	uartsbi
 #	uartqemu
 	uarti8250
+	sdmmc		sdspacemit
 	sdvirtio10	pci sdscsi
 port
 	int cpuserver = 0;

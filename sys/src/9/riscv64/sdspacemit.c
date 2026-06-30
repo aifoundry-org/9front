@@ -1,7 +1,7 @@
 /*
- * external mass media controller (mmc / sd host interface)
+ * SpacemiT K1 SD host (eMMC at 0xd4281000)
  *
- * derived from Richard Miller's bcm/emmc.c
+ * derived from zynq/emmc.c
  */
 
 #include "u.h"
@@ -14,7 +14,7 @@
 #include "../port/sd.h"
 
 enum {
-	/* Controller registers */
+	/* Standard SDHCI registers */
 	Sysaddr			= 0x00>>2,
 	Blksizecnt		= 0x04>>2,
 	Arg1			= 0x08>>2,
@@ -37,6 +37,20 @@ enum {
 	Spiintspt		= 0xf0>>2,
 	Slotisrver		= 0xfc>>2,
 
+	/* SpacemiT-specific extension registers */
+	Sdhclegctl		= 0x10c>>2,
+	 Genpadclkon	= 1<<6,
+	Sdhcmmcctl		= 0x114>>2,
+	 Mmccardmode	= 1<<12,
+	Sdhctxcfg		= 0x11c>>2,
+	 Txintclksel	= 1<<30,
+	Sdhcphyctl		= 0x160>>2,
+	 Phyfuncen		= 1<<0,
+	 Phyplllock		= 1<<1,
+	Sdhcphypadcfg	= 0x178>>2,
+	 Phydrivesel	= 4<<0,
+	 Rxbiasctl		= 1<<5,
+
 	/* Control0 */
 	Dwidth4			= 1<<1,
 	Dwidth1			= 0<<1,
@@ -55,7 +69,7 @@ enum {
 	Clkgendiv		= 0<<5,		/* SD clock divided */
 	Clkgenprog		= 1<<5,		/* SD clock programmable */
 	Clken			= 1<<2,		/* SD clock enable */
-	Clkstable		= 1<<1,	
+	Clkstable		= 1<<1,
 	Clkintlen		= 1<<0,		/* enable internal EMMC clocks */
 
 	/* Cmdtm */
@@ -106,6 +120,23 @@ enum {
 	Datactive	= 1<<2,
 	Datinhibit	= 1<<1,
 	Cmdinhibit	= 1<<0,
+
+	/* K1 SoC */
+	SDH_PHYS	= 0xd4281000UL,	/* eMMC */
+	SDH_SIZE	= 0x200,
+	SDH_IRQ		= 101,
+	SDH_EXTCLK	= 102400000,	/* pll1_d6_409p6 / 4 (u-boot default) */
+
+	APMU_PHYS	= 0xd4282800UL,
+	APMU_SIZE	= 0x400,
+	APMU_SDH0	= 0x054,	/* shared: SDH_AXI gate (bit 3) + reset (bit 0) */
+	APMU_SDH2	= 0x0e0,	/* eMMC: SDH2 gate (bit 11) + reset (bit 1) */
+	Sdh_axi_gate	= 1<<3,
+	Sdh_axi_rst	= 1<<0,
+	Sdh2_gate	= 1<<11,
+	Sdh2_rst	= 1<<1,
+
+	Cbsz		= 64,	/* X60/C908 D-cache line size */
 };
 
 typedef struct Ctlr Ctlr;
@@ -117,7 +148,19 @@ struct Ctlr {
 	int	irq;
 };
 
-static Ctlr emmc;
+static Ctlr sdh;
+
+static void
+cacheflush(void *va, int len)
+{
+	uintptr a, last;
+
+	a    = (uintptr)va & ~(uintptr)(Cbsz - 1);
+	last = ((uintptr)va + len + Cbsz - 1) & ~(uintptr)(Cbsz - 1);
+	for(; a < last; a += Cbsz)
+		cboflush((void*)a);
+	coherence();
+}
 
 static uint
 clkdiv(uint d)
@@ -132,62 +175,78 @@ clkdiv(uint d)
 
 static void
 interrupt(Ureg*, void*)
-{	
+{
 	u32int *r;
 	int i;
 
-	r = emmc.regs;
+	r = sdh.regs;
 	i = r[Interrupt];
 	r[Interrupt] = i & (Datadone|Err);
-	emmc.datadone = i;
-	wakeup(&emmc.r);
+	sdh.datadone = i;
+	wakeup(&sdh.r);
 }
 
 static int
 datadone(void*)
 {
-	return emmc.datadone;
+	return sdh.datadone;
 }
 
 static int
-emmcinit(SDio*)
+sdhinit(SDio*)
 {
-	u32int *r;
+	u32int *r, *apmu;
 	int i;
 
-	emmc.extclk = 100000000;
-	emmc.irq = SDIO1IRQ;
-	r = vmap(SDIO_BASE, 0x100);
-	emmc.regs = r;
+	apmu = vmap(APMU_PHYS, APMU_SIZE);
+	apmu[APMU_SDH0>>2] |= Sdh_axi_gate | Sdh_axi_rst;
+	apmu[APMU_SDH2>>2] |= Sdh2_gate | Sdh2_rst;
+	coherence();
+	vunmap(apmu, APMU_SIZE);
+
+	sdh.extclk = SDH_EXTCLK;
+	sdh.irq = SDH_IRQ;
+	r = vmap(SDH_PHYS, SDH_SIZE);
+	sdh.regs = r;
 	r[Control1] = Srsthc;
 	for(i = 0; i < 100; i++){
 		delay(10);
 		if((r[Control1] & Srsthc) == 0)
-			return 0;
+			break;
 	}
-	print("emmc: reset timeout!\n");
-	return -1;
+	if(r[Control1] & Srsthc){
+		print("sdh: reset timeout!\n");
+		return -1;
+	}
+
+	/* K1 PHY bring-up after host reset */
+	r[Sdhcphyctl] |= Phyfuncen | Phyplllock;
+	r[Sdhcphypadcfg] = (r[Sdhcphypadcfg] & ~7) | Phydrivesel | Rxbiasctl;
+	r[Sdhcmmcctl] |= Mmccardmode;
+	r[Sdhclegctl] |= Genpadclkon;
+	r[Sdhctxcfg] |= Txintclksel;
+	return 0;
 }
 
 static int
-emmcinquiry(SDio*, char *inquiry, int inqlen)
+sdhinquiry(SDio*, char *inquiry, int inqlen)
 {
 	uint ver;
 
-	ver = emmc.regs[Slotisrver] >> 16;
+	ver = sdh.regs[Slotisrver] >> 16;
 	return snprint(inquiry, inqlen,
-		"eMMC SD Host Controller %2.2x Version %2.2x",
+		"SpacemiT SD/eMMC Host Controller %2.2x Version %2.2x",
 		ver&0xFF, ver>>8);
 }
 
 static void
-emmcclk(uint freq)
+sdhclk(uint freq)
 {
 	u32int *r;
 	int i;
 
-	r = emmc.regs;
-	r[Control1] = clkdiv(emmc.extclk / freq - 1) |
+	r = sdh.regs;
+	r[Control1] = clkdiv(sdh.extclk / freq - 1) |
 			DTO << Datatoshift | Clkgendiv | Clken | Clkintlen;
 	for(i = 0; i < 1000; i++){
 		delay(1);
@@ -198,15 +257,15 @@ emmcclk(uint freq)
 }
 
 static void
-emmcenable(SDio *io)
+sdhenable(SDio *io)
 {
-	emmcclk(400000);
-	emmc.regs[Irptmask] = ~(Dtoerr|Cardintr|Dmaintr);
-	intrenable(emmc.irq, interrupt, nil, LEVEL, io->name);
+	sdhclk(400000);
+	sdh.regs[Irptmask] = ~(Dtoerr|Cardintr|Dmaintr);
+	intrenable(sdh.irq, interrupt, nil, BUSUNKNOWN, io->name);
 }
 
 static int
-emmccmd(SDio*, SDiocmd *cmd, u32int arg, u32int *resp)
+sdhcmd(SDio*, SDiocmd *cmd, u32int arg, u32int *resp)
 {
 	ulong now;
 	u32int *r;
@@ -242,9 +301,9 @@ emmccmd(SDio*, SDiocmd *cmd, u32int arg, u32int *resp)
 			c |= Multiblock | Blkcnten;
 	}
 
-	r = emmc.regs;
+	r = sdh.regs;
 	if(r[Status] & Cmdinhibit){
-		print("emmccmd: need to reset Cmdinhibit intr %ux stat %ux\n",
+		print("sdhcmd: need to reset Cmdinhibit intr %ux stat %ux\n",
 			r[Interrupt], r[Status]);
 		r[Control1] |= Srstcmd;
 		while(r[Control1] & Srstcmd)
@@ -254,7 +313,7 @@ emmccmd(SDio*, SDiocmd *cmd, u32int arg, u32int *resp)
 	}
 	if((c & Isdata || (c & Respmask) == Resp48busy) &&
 	    r[Status] & Datinhibit){
-		print("emmccmd: need to reset Datinhibit intr %ux stat %ux\n",
+		print("sdhcmd: need to reset Datinhibit intr %ux stat %ux\n",
 			r[Interrupt], r[Status]);
 		r[Control1] |= Srstdata;
 		while(r[Control1] & Srstdata)
@@ -265,7 +324,7 @@ emmccmd(SDio*, SDiocmd *cmd, u32int arg, u32int *resp)
 	r[Arg1] = arg;
 	if((i = r[Interrupt]) != 0){
 		if(i != Cardinsert)
-			print("emmc: before command, intr was %ux\n", i);
+			print("sdh: before command, intr was %ux\n", i);
 		r[Interrupt] = i;
 	}
 	r[Cmdtm] = c;
@@ -275,7 +334,7 @@ emmccmd(SDio*, SDiocmd *cmd, u32int arg, u32int *resp)
 			break;
 	if((i&(Cmddone|Err)) != Cmddone){
 		if((i&~Err) != Ctoerr)
-			print("emmc: cmd %ux error intr %ux stat %ux\n", c, i, r[Status]);
+			print("sdh: cmd %ux error intr %ux stat %ux\n", c, i, r[Status]);
 		r[Interrupt] = i;
 		if(r[Status]&Cmdinhibit){
 			r[Control1] |= Srstcmd;
@@ -302,14 +361,14 @@ emmccmd(SDio*, SDiocmd *cmd, u32int arg, u32int *resp)
 	}
 	if((c & Respmask) == Resp48busy){
 		r[Irpten] = Datadone|Err;
-		tsleep(&emmc.r, datadone, 0, 3000);
-		i = emmc.datadone;
-		emmc.datadone = 0;
+		tsleep(&sdh.r, datadone, 0, 3000);
+		i = sdh.datadone;
+		sdh.datadone = 0;
 		r[Irpten] = 0;
 		if((i & Datadone) == 0)
-			print("emmcio: no Datadone after %s\n", cmd->name);
+			print("sdhio: no Datadone after %s\n", cmd->name);
 		if(i & Err)
-			print("emmcio: %s error interrupt %ux\n",
+			print("sdhio: %s error interrupt %ux\n",
 				cmd->name, r[Interrupt]);
 		r[Interrupt] = i;
 	}
@@ -317,7 +376,7 @@ emmccmd(SDio*, SDiocmd *cmd, u32int arg, u32int *resp)
 }
 
 static void
-emmciosetup(SDio*, int, void *buf, int bsize, int bcount)
+sdhiosetup(SDio*, int, void *buf, int bsize, int bcount)
 {
 	u32int *r;
 	uintptr pa;
@@ -328,35 +387,34 @@ emmciosetup(SDio*, int, void *buf, int bsize, int bcount)
 		error(Etoobig);
 
 	pa = PADDR(buf);
-	cleandse((uchar*)buf, (uchar*)buf+len);
-	clean2pa(pa, pa+len);
+	cacheflush(buf, len);
 
-	r = emmc.regs;
+	r = sdh.regs;
 	r[Sysaddr] = pa;
 	r[Blksizecnt] = 7<<12 | bcount<<16 | bsize;
 	r[Irpten] = Datadone|Err;
 }
 
 static void
-emmcio(SDio*, int write, uchar *buf, int len)
+sdhio(SDio*, int write, uchar *buf, int len)
 {
 	u32int *r;
 	int i;
 
-	tsleep(&emmc.r, datadone, 0, 3000);
-	i = emmc.datadone;
-	emmc.datadone = 0;
+	tsleep(&sdh.r, datadone, 0, 3000);
+	i = sdh.datadone;
+	sdh.datadone = 0;
 
-	r = emmc.regs;
+	r = sdh.regs;
 	r[Irpten] = 0;
 	if((i & Datadone) == 0){
-		print("emmcio: %d timeout intr %ux stat %ux\n",
+		print("sdhio: %d timeout intr %ux stat %ux\n",
 			write, i, r[Status]);
 		r[Interrupt] = i;
 		error(Eio);
 	}
 	if(i & Err){
-		print("emmcio: %d error intr %ux stat %ux\n",
+		print("sdhio: %d error intr %ux stat %ux\n",
 			write, r[Interrupt], r[Status]);
 		r[Interrupt] = i;
 		error(Eio);
@@ -364,19 +422,16 @@ emmcio(SDio*, int write, uchar *buf, int len)
 	if(i)
 		r[Interrupt] = i;
 
-	if(!write){
-		uintptr pa = PADDR(buf);
-		invaldse((uchar*)buf, (uchar*)buf+len);
-		inval2pa(pa, pa+len);
-	}
+	if(!write)
+		cacheflush(buf, len);
 }
 
 static void
-emmcbus(SDio*, int width, int speed)
+sdhbus(SDio*, int width, int speed)
 {
 	u32int *r;
 
-	r = emmc.regs;
+	r = sdh.regs;
 	switch(width){
 	case 1:
 		r[Control0] &= ~Dwidth4;
@@ -386,21 +441,21 @@ emmcbus(SDio*, int width, int speed)
 		break;
 	}
 	if(speed)
-		emmcclk(speed);
+		sdhclk(speed);
 }
 
 void
-emmclink(void)
+sdspacemitlink(void)
 {
 	static SDio io = {
-		"emmc",
-		emmcinit,
-		emmcenable,
-		emmcinquiry,
-		emmccmd,
-		emmciosetup,
-		emmcio,
-		emmcbus,
+		"sdspacemit",
+		sdhinit,
+		sdhenable,
+		sdhinquiry,
+		sdhcmd,
+		sdhiosetup,
+		sdhio,
+		sdhbus,
 	};
 	addmmcio(&io);
 }
