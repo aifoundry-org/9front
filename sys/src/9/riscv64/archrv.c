@@ -471,14 +471,14 @@ cpuinit(int cpu)
 		u64int s = rseed();
 		switch(s&3) {
 			case 0:
-				print("got 16 bits, let's hang on\n");
+				print("got 16 bits, hang on for RNG\n");
 				break;
 			case 1:
 				print("got 32 bits, we have hardware RNG\n");
 				hwrandbuf = hwrand;
 				break;
 			case 2:
-				print("not ready ... wait\n");
+				print("not ready ... wait for RNG\n");
 				break;
 			case 3:
 				print("HWRNG broken ...\n");				
