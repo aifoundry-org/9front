@@ -195,6 +195,7 @@ enum {
 	APMU_EMAC_BUS_EN			= (1U << 0),
 	APMU_EMAC_BUS_RST_RELEASE		= (1U << 1),
 	APMU_EMAC_AXI_MST_ID			= (1U << 13),
+	APMU_EMAC_PTP_EN			= (1U << 15),
 
 	APMU_EMAC_RGMII_DLINE			= 0x03e8,
 	APMU_EMAC_RGMII_DLINE_RX_EN		= (1U << 0),
@@ -857,38 +858,47 @@ ethinit(Ether *edev)
 
 	c = edev->ctlr;
 
-	/* stop everything */
+	/*
+	 * APMU: bring the EMAC out of reset with clocks enabled before
+	 * we touch any MAC register.  Under kexec-from-Linux the MAC is
+	 * already ungated when we take over, so the earlier ordering
+	 * (MAC accesses first, then APMU) worked incidentally.  Under a
+	 * cold u-boot boot u-boot never touches EMAC0 and the bus clock
+	 * is still gated + reset asserted; any csr32 to c->regs then
+	 * stalls the hart.  Do APMU first so the MAC block responds.
+	 *
+	 * Gate the AXI clock AND assert bus-reset (BUS_RST_RELEASE=0 =
+	 * held in reset), then after a generous delay re-enable the
+	 * clock and release reset, preserving unrelated clock-config
+	 * bits firmware may have set (1588/PTP, RGMII TXC source, etc).
+	 * Also enables PTP clock gate (BIT(15)) to match Linux probe,
+	 * so 1588 register block is reachable if we ever query it.
+	 */
+	{
+		u32int origv = csr32r(c->apmu, c->apmuctrloff);
+		u32int preserve = origv & ~(APMU_EMAC_BUS_EN
+			| APMU_EMAC_BUS_RST_RELEASE | APMU_EMAC_AXI_MST_ID
+			| APMU_EMAC_PTP_EN);
+		csr32w(c->apmu, c->apmuctrloff, preserve);	/* clock off + reset asserted */
+		microdelay(10000);
+		csr32w(c->apmu, c->apmuctrloff,
+			preserve | APMU_EMAC_BUS_EN | APMU_EMAC_PTP_EN);	/* clocks on, still in reset */
+		microdelay(10000);
+		csr32w(c->apmu, c->apmuctrloff,
+			preserve | APMU_EMAC_BUS_EN | APMU_EMAC_PTP_EN
+			| APMU_EMAC_BUS_RST_RELEASE | APMU_EMAC_AXI_MST_ID);
+		microdelay(10000);
+		print("smte: APMU CLK_RST[%#ux] %#ux -> %#ux\n",
+			c->apmuctrloff, origv, csr32r(c->apmu, c->apmuctrloff));
+	}
+
+	/* Now the MAC block is reachable; stop everything. */
 	csr32w(c->regs, MAC_INTR_ENABLE,   0);
 	csr32w(c->regs, DMA_INTR_ENABLE,   0);
 	csr32w(c->regs, MAC_TRANSMIT_CTRL, 0);
 	csr32w(c->regs, MAC_RECEIVE_CTRL,  0);
 	csr32w(c->regs, DMA_CTRL,          0);
-	dprint("smte: MAC/DMA stopped\n");
-
-	/*
-	 * APMU: full reset of the EMAC.  Gate the AXI clock AND assert
-	 * the bus-reset (BUS_RST_RELEASE=0 means held in reset), then
-	 * after a generous delay re-enable the clock and release reset,
-	 * preserving the clock-config bits Linux/U-Boot already set up
-	 * (1588 clock enable, RGMII TXC source, ref-clk select).  Without
-	 * this, DMA_STATUS_IRQ bit 4 stays latched at 1 from the previous
-	 * boot stage's last RX and our W1C can never clear it.
-	 */
-	{
-		u32int origv = csr32r(c->apmu, c->apmuctrloff);
-		u32int preserve = origv & ~(APMU_EMAC_BUS_EN
-			| APMU_EMAC_BUS_RST_RELEASE | APMU_EMAC_AXI_MST_ID);
-		csr32w(c->apmu, c->apmuctrloff, preserve);	/* clock off + reset asserted */
-		microdelay(10000);
-		csr32w(c->apmu, c->apmuctrloff, preserve | APMU_EMAC_BUS_EN);	/* clock on, still in reset */
-		microdelay(10000);
-		csr32w(c->apmu, c->apmuctrloff,
-			preserve | APMU_EMAC_BUS_EN | APMU_EMAC_BUS_RST_RELEASE
-			| APMU_EMAC_AXI_MST_ID);
-		microdelay(10000);
-		dprint("smte: APMU CLK_RST[%#ux] %#ux -> %#ux\n",
-			c->apmuctrloff, origv, csr32r(c->apmu, c->apmuctrloff));
-	}
+	print("smte: MAC/DMA stopped\n");
 
 	/* APMU: RGMII delay lines */
 	v = APMU_EMAC_RGMII_DLINE_RX_EN   | APMU_EMAC_RGMII_DLINE_TX_EN
@@ -896,7 +906,7 @@ ethinit(Ether *edev)
 	  | c->rxdelay << APMU_EMAC_RGMII_DLINE_RX_DELAY_SHIFT
 	  | c->txdelay << APMU_EMAC_RGMII_DLINE_TX_DELAY_SHIFT;
 	csr32w(c->apmu, c->apmudlineoff, v);
-	dprint("smte: APMU DLINE[%#ux]=0x%08ux (rx=%d tx=%d steps x 15.6ps)\n",
+	print("smte: APMU DLINE[%#ux]=0x%08ux (rx=%d tx=%d steps x 15.6ps)\n",
 		c->apmudlineoff, v, c->rxdelay, c->txdelay);
 
 	/* MAC address */
