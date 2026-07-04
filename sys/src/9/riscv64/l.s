@@ -22,11 +22,46 @@
 */
 // THIS MUST BE FIRST FUNCTION IN THIS FILE
 TEXT	_start(SB), 1, $-4
+	/*
+	 * RISC-V Linux Image header (64 bytes) so u-boot's booti can
+	 * load a plain 9<board> kernel binary without a uImage wrapper.
+	 * Layout per Linux Documentation/riscv/boot-image-header.rst:
+	 *   code0        first instruction (must be executable)
+	 *   code1        second instruction
+	 *   text_offset  load offset relative to image start (0)
+	 *   image_size   effective image size (0 = infer from file)
+	 *   flags        endianness/page-size (0 = LE, default page)
+	 *   version      header version, currently 2
+	 *   res1..res3   reserved
+	 *   magic        deprecated (leave 0)
+	 *   magic2       "RSC\5" — what booti actually validates
+	 * code0 jumps 64 bytes forward, past the header, into the real
+	 * relocator below.  ELF entry stays _start so bootelf and kexec
+	 * also work — they land at code0 and take the same jump.
+	 */
+	WORD $0x0400006f	/* code0: jal x0, +64 */
+	WORD $0x00000013	/* code1: nop */
+	WORD $0x40200000	/* text_offset[31:0] = KTZERO (booti here treats it absolute) */
+	WORD $0			/* text_offset[63:32] */
+	WORD $0x01000000	/* image_size[31:0] = 16 MiB (upper bound; booti rejects 0) */
+	WORD $0			/* image_size[63:32] */
+	WORD $0			/* flags[31:0] */
+	WORD $0			/* flags[63:32] */
+	WORD $2			/* version */
+	WORD $0			/* res1 */
+	WORD $0			/* res2[31:0] */
+	WORD $0			/* res2[63:32] */
+	WORD $0			/* deprecated magic[31:0] */
+	WORD $0			/* deprecated magic[63:32] */
+	WORD $0x05435352	/* magic2 = "RSC\5" */
+	WORD $0			/* res3 */
+
 	JAL R1, SRC
 SRC:
 	ADD $-4, R1, R1
 	MOV R1, R9
 	MOV $KTZERO, R3
+	ADD $64, R3, R3			/* account for the 64-byte Image header */
 	SUB R3, R1, R3
 	BEQ R3, RELOCATED
 	MOV $KTZERO, R2
