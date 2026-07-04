@@ -114,6 +114,9 @@ fn main{
 	# config method
 	$mp(1) $ma
 
+	# scan for disk partitions, in case nvram needs to be read from one
+	/rc/bin/diskparts
+
 	# load keys from secstore if $auth or $secstore is not empty
 	x=secstore
 	if(~ $#$x 0) x=auth
