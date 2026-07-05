@@ -134,7 +134,7 @@ enum {
 	SD_IRQ		= 99,
 	EMMC_PHYS	= 0xd4281000UL,
 	EMMC_IRQ	= 101,
-	SDH_EXTCLK	= 102400000,	/* pll1_d6_409p6 / 4 (u-boot default) */
+	SDH_EXTCLK	= 102400000,	/* fallback when APMU decode fails */
 
 	APMU_PHYS	= 0xd4282800UL,
 	APMU_SIZE	= 0x400,
@@ -288,11 +288,41 @@ datadone(void *arg)
 	return c->datadone;
 }
 
+/*
+ * SDCLK is a PLL tap selected and divided by fields in the same APMU
+ * register as the gate/reset bits: source select in bits 7:5,
+ * divisor-1 in bits 10:8 (PMU_SDHx_CLK_RES_CTRL in the K1 user
+ * manual).  Decode what u-boot programmed rather than trusting a
+ * compiled-in rate.
+ */
+static ulong
+sdhbaseclk(Ctlr *c, u32int v)
+{
+	static ulong parent[8] = {
+		409600000,	/* pll1_d6 */
+		614400000,	/* pll1_d4 */
+		375000000,	/* pll2_d8 */
+		0,		/* slot-specific, below */
+		223418182,	/* pll1_d11 */
+		189046154,	/* pll1_d13 */
+		106852174,	/* pll1_d23 */
+		0,
+	};
+	ulong f;
+
+	f = parent[(v>>5) & 7];
+	if(((v>>5) & 7) == 3)	/* pll1_d3 on the eMMC slot, pll2_d5 on sd */
+		f = c->apmuoff == APMU_SDH2? 819200000: 600000000;
+	return f / (((v>>8) & 7) + 1);
+}
+
 static int
 sdhinit(SDio *io)
 {
 	Ctlr *c;
 	u32int *r, *apmu;
+	u32int v;
+	ulong f;
 	int i;
 
 	c = io->aux;
@@ -302,7 +332,13 @@ sdhinit(SDio *io)
 	apmu[APMU_SDH0>>2] |= Sdh_axi_gate | Sdh_axi_rst;
 	apmu[c->apmuoff>>2] |= Sdh_gate | Sdh_rst;
 	coherence();
+	v = apmu[c->apmuoff>>2];
 	vunmap(apmu, APMU_SIZE);
+
+	f = sdhbaseclk(c, v);
+	if(f != 0)
+		c->extclk = f;
+	print("%s: base clock %lud Hz (clkctl %ux)\n", io->name, c->extclk, v);
 
 	r = vmap(c->regbase, SDH_SIZE);
 	c->regs = r;
@@ -356,21 +392,17 @@ sdhclk(Ctlr *c, uint freq)
 	int i;
 
 	/*
-	 * The simple divisor formula (extclk/freq - 1) picks d=1 for
-	 * freq=50MHz on extclk=102.4MHz, which runs the wire at 51.2MHz —
-	 * inside HS card spec but at this controller's PHY limit, producing
-	 * Wrcrctoken|Dcrcerr on every write block. For HS speeds choose the
-	 * smallest d such that actual <= freq, giving 25.6MHz at request 50M
-	 * and clean writes. Keep the old formula for sub-MHz init speeds —
-	 * the spec-true 400KHz makes repeated cardinit attempts unstable on
-	 * this hardware; 200KHz (from the old formula) is reliable.
+	 * For 26MHz and up choose the smallest divisor that keeps the
+	 * wire at or below the request.  Identification speeds keep the
+	 * older formula, which lands near half the request: cards must
+	 * accept 100-400KHz, so ~200KHz is always legal and reliable.
 	 */
-	if(freq >= 26000000){
+	if(freq >= 26000000)
 		d = (c->extclk + 2*freq - 1) / (2*freq);
-		if(d > 0x3FF)
-			d = 0x3FF;
-	}else
+	else
 		d = c->extclk / freq - 1;
+	if(d > 0x3FF)
+		d = 0x3FF;
 
 	r = c->regs;
 	r[Control1] &= ~Clken;
