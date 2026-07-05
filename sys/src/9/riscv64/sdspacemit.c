@@ -108,6 +108,13 @@ enum {
 	Ccrcerr		= 1<<17,
 	Ctoerr		= 1<<16,
 	Err		= 1<<15,
+	/*
+	 * the upper half of Irpten is the error-signal enable; the Err
+	 * summary bit itself is fixed to zero in the enable registers, so
+	 * an error only raises the IRQ if its individual bit is set here.
+	 */
+	Anyerr		= Wrcrctoken|Acmderr|Denderr|Dcrcerr|Dtoerr|
+			  Cbaderr|Cenderr|Ccrcerr|Ctoerr,
 	Cardintr	= 1<<8,
 	Cardremove	= 1<<7,
 	Cardinsert	= 1<<6,
@@ -118,6 +125,7 @@ enum {
 	Cmddone		= 1<<0,
 
 	/* Status */
+	Dat0line	= 1<<20,	/* DAT[0] level; low while the card is busy */
 	Present		= 1<<18,
 	Cardinserted	= 1<<16,	/* SDHCI Present State: card inserted (level) */
 	Bufread		= 1<<11,
@@ -180,6 +188,7 @@ struct Ctlr {
 	ulong	cardevents;	/* total Cardinsert|Cardremove transitions seen */
 	ulong	nerr;		/* total error interrupts seen */
 	ulong	ntmo;		/* total Datadone timeouts seen */
+	ulong	ncto;		/* total command timeouts, reported silently */
 };
 
 static void
@@ -228,7 +237,7 @@ interrupt(Ureg*, void *arg)
 				c->cardevents, r[Status]);
 		}
 	}
-	r[Interrupt] = i & (Datadone|Err|Cardinsert|Cardremove|Dmaintr);
+	r[Interrupt] = i & ~Cmddone;	/* sdhcmd polls for and acks Cmddone */
 	if(i & Dmaintr){
 		/*
 		 * SDMA pauses at every boundary from Blksizecnt bits 12-14
@@ -237,9 +246,10 @@ interrupt(Ureg*, void *arg)
 		 */
 		r[Sysaddr] = r[Sysaddr];
 	}
-	c->datadone = i & (Datadone|Err);	/* don't wake I/O on a card event */
-	if(c->datadone)
+	if(i & (Datadone|Err)){		/* don't wake I/O on a card event */
+		c->datadone |= i;
 		wakeup(&c->r);
+	}
 }
 
 static void
@@ -286,6 +296,33 @@ datadone(void *arg)
 {
 	Ctlr *c = arg;
 	return c->datadone;
+}
+
+/*
+ * reset whichever circuits a failed transfer left busy, so the
+ * following STOP_TRANSMISSION and retry start from a clean controller.
+ */
+static void
+sdhabort(Ctlr *c, int write)
+{
+	u32int *r = c->regs;
+	int i;
+
+	if(r[Status] & (Cmdinhibit|Datinhibit)){
+		r[Control1] |= Srstcmd|Srstdata;
+		while(r[Control1] & (Srstcmd|Srstdata))
+			;
+	}
+
+	/*
+	 * a card that rejected a write block holds DAT0 low while it
+	 * finishes internally, and this one answers no commands in that
+	 * window — the recovery STOP and the retry both timed out against
+	 * it.  Give busy a bounded chance to release first.
+	 */
+	if(write)
+		for(i = 0; i < 500 && (r[Status] & Dat0line) == 0; i++)
+			tsleep(&up->sleep, return0, nil, 1);
 }
 
 /*
@@ -568,7 +605,9 @@ sdhcmd(SDio *io, SDiocmd *cmd, u32int arg, u32int *resp)
 		if((long)(m->ticks-now) > HZ)
 			break;
 	if((i&(Cmddone|Err)) != Cmddone){
-		if((i&~Err) != Ctoerr)
+		if((i&~Err) == Ctoerr)
+			ct->ncto++;
+		else
 			print("%s: cmd %ux error intr %ux stat %ux\n",
 				io->name, c, i, r[Status]);
 		r[Interrupt] = i;
@@ -596,17 +635,16 @@ sdhcmd(SDio *io, SDiocmd *cmd, u32int arg, u32int *resp)
 		break;
 	}
 	if((c & Respmask) == Resp48busy){
-		r[Irpten] = Datadone|Err|Cardinsert|Cardremove;
+		r[Irpten] = Anyerr|Datadone|Err|Cardinsert|Cardremove;
 		tsleep(&ct->r, datadone, ct, 3000);
 		i = ct->datadone;
 		ct->datadone = 0;
 		r[Irpten] = Cardinsert|Cardremove;
 		if((i & Datadone) == 0)
-			print("sdhio: no Datadone after %s\n", cmd->name);
+			print("%s: no Datadone after %s\n", io->name, cmd->name);
 		if(i & Err)
-			print("sdhio: %s error interrupt %ux\n",
-				cmd->name, r[Interrupt]);
-		r[Interrupt] = i;
+			print("%s: %s error interrupt %ux\n",
+				io->name, cmd->name, i);
 	}
 	return 0;
 }
@@ -639,32 +677,32 @@ sdhio(SDio *io, int write, uchar *buf, int len)
 	u32int *r;
 	int i;
 
+	r = c->regs;
+	r[Irpten] = Anyerr|Dmaintr|Datadone|Err|Cardinsert|Cardremove;
 	tsleep(&c->r, datadone, c, 3000);
 	i = c->datadone;
 	c->datadone = 0;
 
-	r = c->regs;
 	r[Irpten] = Cardinsert|Cardremove;
-	if((i & Datadone) == 0){
-		c->ntmo++;
-		print("sdhio: %d timeout intr %ux/%ux stat %ux sysaddr %ux clk %lud hs %d ntmo %lud\n",
-			write, i, r[Interrupt], r[Status], r[Sysaddr],
-			c->clock, c->hispeed, c->ntmo);
-		r[Interrupt] = i;
-		error(Eio);
-	}
 	if(i & Err){
 		char buf[128];
 		c->nerr++;
 		fmtintr(buf, sizeof buf, i);
-		print("sdhio: %d err [%s] intr %ux prestat %ux poststat %ux clk %lud hs %d nerr %lud\n",
-			write, buf, i, c->errstat, r[Status],
-			c->clock, c->hispeed, c->nerr);
-		r[Interrupt] = i;
+		print("%s: %d err [%s] intr %ux prestat %ux poststat %ux clk %lud hs %d nerr %lud ncto %lud\n",
+			io->name, write, buf, i, c->errstat, r[Status],
+			c->clock, c->hispeed, c->nerr, c->ncto);
+		sdhabort(c, write);
 		error(Eio);
 	}
-	if(i)
-		r[Interrupt] = i;
+	if((i & Datadone) == 0){
+		c->ntmo++;
+		print("%s: %d timeout intr %ux/%ux stat %ux sysaddr %ux clk %lud hs %d ntmo %lud ncto %lud\n",
+			io->name, write, i, r[Interrupt], r[Status], r[Sysaddr],
+			c->clock, c->hispeed, c->ntmo, c->ncto);
+		r[Interrupt] = r[Interrupt] & ~Cmddone;
+		sdhabort(c, write);
+		error(Eio);
+	}
 
 	if(!write)
 		cacheflush(buf, len);
