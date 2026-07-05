@@ -180,6 +180,7 @@ struct Ctlr {
 	char	*name;		/* io->name, copied at sdhinit for IRQ-side prints */
 	Rendez	r;
 	u32int	*regs;
+	ushort	rca;		/* SD relative address, stashed for the probes */
 	int	datadone;
 	u32int	errstat;	/* Status snapshot at IRQ when Err latched */
 	ulong	clock;		/* most recent programmed SDCLK in Hz */
@@ -526,6 +527,45 @@ sdhenable(SDio *io)
 	kproc("cardpoll", cardpollproc, c);
 }
 
+static int sdhcmd(SDio*, SDiocmd*, u32int, u32int*);
+
+static int
+sdhtrystatus(SDio *io, u32int *st)
+{
+	static SDiocmd status = { 13, 1, 0, 0, "SEND_STATUS" };
+	Ctlr *c = io->aux;
+	u32int r[4];
+
+	if(waserror())
+		return -1;
+	sdhcmd(io, &status, (u32int)c->rca<<16, r);
+	poperror();
+	if(st != nil)
+		*st = r[0];
+	return 0;
+}
+
+/*
+ * a card that ignores a transfer command usually isn't deaf but in a
+ * state where that command is illegal, and it answers CMD13 from any
+ * state: the R1 reply carries the current state in bits 12:9 (4 tran,
+ * 5 data, 6 rcv, 7 prg, 3 stby, 8 dis) and, in bit 22, an
+ * illegal-command flag for the command it ignored.
+ */
+static void
+sdhprobe(SDio *io, char *failed)
+{
+	u32int st;
+
+	if(sdhtrystatus(io, &st) == 0)
+		print("%s: %s unanswered but CMD13 ok: status %ux state %ud%s\n",
+			io->name, failed, st, (st>>9) & 0xF,
+			st & (1<<22)? " (illegal cmd)": "");
+	else
+		print("%s: %s unanswered, CMD13 silent too\n",
+			io->name, failed);
+}
+
 static int
 sdhcmd(SDio *io, SDiocmd *cmd, u32int arg, u32int *resp)
 {
@@ -605,9 +645,19 @@ sdhcmd(SDio *io, SDiocmd *cmd, u32int arg, u32int *resp)
 		if((long)(m->ticks-now) > HZ)
 			break;
 	if((i&(Cmddone|Err)) != Cmddone){
-		if((i&~Err) == Ctoerr)
+		if((i&~Err) == Ctoerr){
 			ct->ncto++;
-		else
+			switch(cmd->index){
+			case 1:		/* SEND_OP_COND */
+			case 8:		/* SD_SEND_IF_COND */
+			case 41:	/* SD_SEND_OP_COND */
+			case 55:	/* APP_CMD */
+				break;	/* card-type probing; timeouts expected */
+			default:
+				print("%s: %s timeout stat %ux ncto %lud\n",
+					io->name, cmd->name, r[Status], ct->ncto);
+			}
+		}else
 			print("%s: cmd %ux error intr %ux stat %ux\n",
 				io->name, c, i, r[Status]);
 		r[Interrupt] = i;
@@ -615,6 +665,13 @@ sdhcmd(SDio *io, SDiocmd *cmd, u32int arg, u32int *resp)
 			r[Control1] |= Srstcmd;
 			while(r[Control1]&Srstcmd)
 				;
+		}
+		if((i&~Err) == Ctoerr)
+		switch(cmd->index){
+		case 12:
+		case 18:
+		case 25:
+			sdhprobe(io, cmd->name);
 		}
 		error(Eio);
 	}
@@ -634,6 +691,8 @@ sdhcmd(SDio *io, SDiocmd *cmd, u32int arg, u32int *resp)
 		resp[0] = 0;
 		break;
 	}
+	if(cmd->index == 3 && cmd->resp == 6)	/* SEND_RELATIVE_ADDR */
+		ct->rca = resp[0] >> 16;
 	if((c & Respmask) == Resp48busy){
 		r[Irpten] = Anyerr|Datadone|Err|Cardinsert|Cardremove;
 		tsleep(&ct->r, datadone, ct, 3000);
