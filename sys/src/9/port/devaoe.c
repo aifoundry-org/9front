@@ -1199,7 +1199,9 @@ strategy(Aoedev *d, Srb *srb)
 	poperror();
 }
 
+#ifndef iskaddr
 #define iskaddr(a)	((uintptr)(a) > KZERO)
+#endif
 
 static long
 rw(Aoedev *d, int write, uchar *db, long len, uvlong off)
