@@ -394,7 +394,8 @@ sdhinit(SDio *io)
 	/* K1 PHY bring-up after host reset */
 	r[Sdhcphyctl] |= Phyfuncen | Phyplllock;
 	r[Sdhcphypadcfg] = (r[Sdhcphypadcfg] & ~7) | Phydrivesel | Rxbiasctl;
-	r[Sdhcmmcctl] |= Mmccardmode;
+	if(strcmp(io->name, "emmc") == 0)
+		r[Sdhcmmcctl] |= Mmccardmode;
 	r[Sdhclegctl] |= Genpadclkon;
 	r[Sdhctxcfg] |= Txintclksel;
 
