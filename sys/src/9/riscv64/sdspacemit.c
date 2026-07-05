@@ -148,6 +148,43 @@ enum {
 	APMU_SIZE	= 0x400,
 
 	/*
+	 * pad configuration: pins 104-110 sit at (pin+6)*4 from the pad
+	 * controller base; drive strength is a 3-bit field at bits 12:10,
+	 * code 1 = 19mA on a 3.3V pad.  The BPI-F3 device tree runs all
+	 * six mmc1 pads (d3 d2 d1 d0 cmd clk = pins 104-109) at 19mA.
+	 */
+	AIB_PHYS	= 0xd401e000UL,
+	AIB_SIZE	= 0x1000,
+	PAD_MMC1	= (104+6)*4,	/* first mmc1 pad register */
+	NMMC1PADS	= 6,
+	Paddrivemask	= 7<<10,
+	Paddrive19ma	= 1<<10,
+
+	/*
+	 * each pad group also has a power-domain register selecting 1.8V
+	 * or 3.3V pad mode; the mmc group's is at 0x81c from the pad
+	 * controller base, bit 2 set meaning 1.8V.  These registers are
+	 * key-protected: each access must be preceded by the 0xbaba /
+	 * 0xeb10 magic writes to the APBC access-security registers.
+	 */
+	IOPD_MMC	= 0x81c,
+	 Iopdv18en	= 1<<2,
+	APBC_PHYS	= 0xd4015000UL,
+	APBC_SIZE	= 0x100,
+	APBC_ASFAR	= 0x50,
+	APBC_ASSAR	= 0x54,
+
+	/*
+	 * the slot's pad rail vqmmc comes from the power-management
+	 * chip's aldo1: enable bit 0 at register 0x5b, 7-bit voltage
+	 * selector at 0x5c, 500mV + (sel-11)*25mV.
+	 */
+	PMIC_ALDO1EN	= 0x5b,
+	PMIC_ALDO1V	= 0x5c,
+	Aldosel3v3	= 123,
+	Aldoselmask	= 0x7f,
+
+	/*
 	 * BPI-F3 microSD card-detect is GPIO 80 (cd-inverted in DT), not
 	 * the SDHCI Cardinserted level bit — that bit reads as 1 stuck on
 	 * this board and doesn't track physical insertion. K1 GPIO bank 2
@@ -317,9 +354,8 @@ sdhabort(Ctlr *c, int write)
 
 	/*
 	 * a card that rejected a write block holds DAT0 low while it
-	 * finishes internally, and this one answers no commands in that
-	 * window — the recovery STOP and the retry both timed out against
-	 * it.  Give busy a bounded chance to release first.
+	 * finishes internally and can ignore commands until it is done;
+	 * give busy a bounded chance to release before the recovery STOP.
 	 */
 	if(write)
 		for(i = 0; i < 500 && (r[Status] & Dat0line) == 0; i++)
@@ -398,6 +434,57 @@ sdhinit(SDio *io)
 		r[Sdhcmmcctl] |= Mmccardmode;
 	r[Sdhclegctl] |= Genpadclkon;
 	r[Sdhctxcfg] |= Txintclksel;
+
+	/*
+	 * u-boot's UHS negotiation with a bootable card leaves the pad
+	 * rail vqmmc at 1.8V, and a freshly inserted card signals at
+	 * 3.3V: reads still work, but host-driven edges sit right at the
+	 * card's input threshold, so writes fail and commands are
+	 * sporadically ignored.  Put the rail, the pad group's power
+	 * domain (touching only the 1.8V-mode bit; the others are live)
+	 * and the pad drive back to what the board expects.
+	 */
+	if(strcmp(io->name, "emmc") != 0){
+		u32int *aib, *apbc;
+		u32int w;
+		int sel, en;
+
+		sel = k1pmicread(PMIC_ALDO1V);
+		if(sel >= 0 && (sel & Aldoselmask) != Aldosel3v3){
+			print("%s: vqmmc was %d mV\n", io->name,
+				500 + ((sel & Aldoselmask) - 11)*25);
+			k1pmicwrite(PMIC_ALDO1V,
+				(sel & ~Aldoselmask) | Aldosel3v3);
+			delay(5);
+		}
+		en = k1pmicread(PMIC_ALDO1EN);
+		if(en >= 0 && (en & 1) == 0)
+			k1pmicwrite(PMIC_ALDO1EN, en | 1);
+
+		aib = vmap(AIB_PHYS, AIB_SIZE);
+		if(aib != nil){
+			for(i = 0; i < NMMC1PADS; i++)
+				aib[(PAD_MMC1>>2) + i] =
+					(aib[(PAD_MMC1>>2) + i] & ~Paddrivemask) |
+					Paddrive19ma;
+			apbc = vmap(APBC_PHYS, APBC_SIZE);
+			if(apbc != nil){
+				apbc[APBC_ASFAR>>2] = 0xbaba;
+				apbc[APBC_ASSAR>>2] = 0xeb10;
+				w = aib[IOPD_MMC>>2];
+				if(w & Iopdv18en){
+					print("%s: pad domain was %ux\n",
+						io->name, w);
+					apbc[APBC_ASFAR>>2] = 0xbaba;
+					apbc[APBC_ASSAR>>2] = 0xeb10;
+					aib[IOPD_MMC>>2] = w & ~Iopdv18en;
+				}
+				vunmap(apbc, APBC_SIZE);
+			}
+			coherence();
+			vunmap(aib, AIB_SIZE);
+		}
+	}
 
 	/* Srsthc cleared Power Control; restore 3.3V bus power. */
 	r[Control0] = V3_3 | Buspower | Dwidth1;
