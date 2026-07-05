@@ -790,7 +790,9 @@ sdclose(Chan* c)
 	decref(&unit->dev->r);
 }
 
+#ifndef iskaddr
 #define iskaddr(a)	((uintptr)(a) > KZERO)
+#endif
 
 static long
 sdbio(Chan* c, int write, char* a, long len, uvlong off)
