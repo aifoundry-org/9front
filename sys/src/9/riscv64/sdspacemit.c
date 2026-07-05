@@ -228,7 +228,15 @@ interrupt(Ureg*, void *arg)
 				c->cardevents, r[Status]);
 		}
 	}
-	r[Interrupt] = i & (Datadone|Err|Cardinsert|Cardremove);
+	r[Interrupt] = i & (Datadone|Err|Cardinsert|Cardremove|Dmaintr);
+	if(i & Dmaintr){
+		/*
+		 * SDMA pauses at every boundary from Blksizecnt bits 12-14
+		 * (512K here) and won't move again until Sysaddr, which now
+		 * reads back as the next address, is rewritten.
+		 */
+		r[Sysaddr] = r[Sysaddr];
+	}
 	c->datadone = i & (Datadone|Err);	/* don't wake I/O on a card event */
 	if(c->datadone)
 		wakeup(&c->r);
@@ -432,7 +440,7 @@ sdhenable(SDio *io)
 	Ctlr *c = io->aux;
 
 	sdhclk(c, 400000);
-	c->regs[Irptmask] = ~(Dtoerr|Cardintr|Dmaintr);
+	c->regs[Irptmask] = ~(Dtoerr|Cardintr);
 	c->regs[Irpten] = Cardinsert|Cardremove;	/* baseline signal mask */
 	intrenable(c->irq, interrupt, c, BUSUNKNOWN, io->name);
 
@@ -589,7 +597,7 @@ sdhiosetup(SDio *io, int, void *buf, int bsize, int bcount)
 	r = c->regs;
 	r[Sysaddr] = pa;
 	r[Blksizecnt] = 7<<12 | bcount<<16 | bsize;
-	r[Irpten] = Datadone|Err|Cardinsert|Cardremove;
+	r[Irpten] = Dmaintr|Datadone|Err|Cardinsert|Cardremove;
 }
 
 static void
@@ -607,8 +615,9 @@ sdhio(SDio *io, int write, uchar *buf, int len)
 	r[Irpten] = Cardinsert|Cardremove;
 	if((i & Datadone) == 0){
 		c->ntmo++;
-		print("sdhio: %d timeout intr %ux stat %ux clk %lud hs %d ntmo %lud\n",
-			write, i, r[Status], c->clock, c->hispeed, c->ntmo);
+		print("sdhio: %d timeout intr %ux/%ux stat %ux sysaddr %ux clk %lud hs %d ntmo %lud\n",
+			write, i, r[Interrupt], r[Status], r[Sysaddr],
+			c->clock, c->hispeed, c->ntmo);
 		r[Interrupt] = i;
 		error(Eio);
 	}
