@@ -25,12 +25,21 @@
 #   bootdelay=3          give a 3s window to break into u-boot
 #   mac_mapping_file=''  disable the vendor NFS-lookup that otherwise hangs
 #   serverip=''          same reason
-#   bootcmd=...          load kernel + DTB from mmc 2:4, set /chosen/bootargs,
-#                        booti into the 9front kernel
+#   bootcmd=...          load plan9.ini from the 9fat partition to CONFADDR
+#                        and kernel + DTB to staging, set a fallback
+#                        /chosen/bootargs, booti into the 9front kernel
 #
-# 9fat population: if KERNEL and DTB are set to file paths, the script formats
-# p4 as FAT and copies the files there.  PLAN9INI (path or literal contents)
-# is optional and rarely needed on this port; bootargs come from the DTB.
+# Boot configuration lives in plan9.ini on the 9fat partition, one
+# key=value per line, same as the PC and the arm u-boot boards: bootcmd
+# zeroes CONFADDR (0x40010000) and loads the file there; the kernel
+# parses it in place and only falls back to the /chosen/bootargs line
+# (baked from $BOOTARGS below) when the file is missing.  The running
+# 9front system reconfigures itself by editing a FAT file — no
+# fw_setenv, no Linux.
+#
+# 9fat population: if KERNEL and DTB are set to file paths, the script
+# formats p4 as FAT and copies the files there, plus plan9.ini — taken
+# from $PLAN9INI if set, otherwise generated from $BOOTARGS.
 #
 # WARNING: destroys everything on the target device.  Defaults to
 # /dev/mmcblk2 (eMMC on the BPI-F3).  Override with $DEV=/dev/whatever.
@@ -146,11 +155,15 @@ fw_setenv -c "$tmpcfg" bootdelay 3
 fw_setenv -c "$tmpcfg" mac_mapping_file ''
 fw_setenv -c "$tmpcfg" serverip ''
 
-# bootcmd loads 9front kernel + DTB from mmc 2:4 (the 9fat partition), sets
-# /chosen/bootargs, and hands off via booti.  0x50000000 is a staging address
-# in DRAM well clear of u-boot's own footprint; booti relocates from there
-# to KTZERO (0x40200000) based on the Image header in the kernel binary.
-bootcmd='load mmc 2:4 0x50000000 9bpif3;'
+# bootcmd zeroes CONFADDR and loads plan9.ini over it, then loads the
+# 9front kernel + DTB from mmc 2:4 (the 9fat partition), sets a fallback
+# /chosen/bootargs for when the file is missing, and hands off via booti.
+# 0x50000000 is a staging address in DRAM well clear of u-boot's own
+# footprint; booti relocates from there to KTZERO (0x40200000) based on
+# the Image header in the kernel binary, leaving CONFADDR untouched.
+bootcmd='mw.b 0x40010000 0x0 0x10000;'
+bootcmd+=' if load mmc 2:4 0x40010000 plan9.ini; then echo plan9.ini loaded; fi;'
+bootcmd+=' load mmc 2:4 0x50000000 9bpif3;'
 bootcmd+=' load mmc 2:4 0x48000000 k1-x_deb1.dtb;'
 bootcmd+=' fdt addr 0x48000000;'
 bootcmd+=' fdt resize;'
@@ -195,9 +208,15 @@ if [ -n "$KERNEL" ]; then
 	mkfs.vfat -F 32 -n 9fat "${DEV}p4" >/dev/null
 	mcopy -i "${DEV}p4" "$KERNEL" ::9bpif3
 	mcopy -i "${DEV}p4" "$DTB"    ::k1-x_deb1.dtb
+	tmpini=$(mktemp)
 	if [ -n "$PLAN9INI" ] && [ -r "$PLAN9INI" ]; then
-		mcopy -i "${DEV}p4" "$PLAN9INI" ::plan9.ini
+		cp "$PLAN9INI" "$tmpini"
+	else
+		# one key=value per line; $BOOTARGS values contain no spaces
+		echo "$BOOTARGS" | tr ' ' '\n' >"$tmpini"
 	fi
+	mcopy -i "${DEV}p4" "$tmpini" ::plan9.ini
+	rm -f "$tmpini"
 	echo "9fat contents:"
 	mdir -i "${DEV}p4" -/ | sed 's/^/    /'
 else
@@ -206,6 +225,7 @@ else
 	echo "    mkfs.vfat -F 32 -n 9fat ${DEV}p4"
 	echo "    mcopy -i ${DEV}p4 /path/9bpif3 ::9bpif3"
 	echo "    mcopy -i ${DEV}p4 /path/k1-x_deb1.dtb ::k1-x_deb1.dtb"
+	echo "    mcopy -i ${DEV}p4 /path/plan9.ini ::plan9.ini"
 fi
 
 echo
