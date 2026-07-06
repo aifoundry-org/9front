@@ -26,6 +26,8 @@ static struct {
 	int len;
 } nvtab[] = {
 	"sparc", "#r/nvram", 1024+850, sizeof(Nvrsafe),
+	"riscv64", "#S/sdM0/nvram", 0, sizeof(Nvrsafe),
+	"riscv64", "#S/sdN0/nvram", 0, sizeof(Nvrsafe),
 	"pc", "#S/sdC0/nvram", 0, sizeof(Nvrsafe),
 	"pc", "#S/sdC0/9fat", -1, sizeof(Nvrsafe),
 	"pc", "#S/sdC1/nvram", 0, sizeof(Nvrsafe),
