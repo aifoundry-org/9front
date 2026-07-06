@@ -1,7 +1,7 @@
 #!/bin/rc
 rfork e
-m=`{dd -if $1 -bs 2048 -skip 16 >[2]/dev/null | xd -c | sed 1q | \
-	sed 's/.........(....................).*/\1/; s/ //g'}
+m=`{dd -if $1 -bs 32 -skip 1024 -count 1 >[2]/dev/null | xd -c | \
+	sed -n '1{;s/.........(....................).*/\1/;s/ //g;p;}'}
 if(~ $"m 01CD00101){
 	echo 9660
 	exit
@@ -15,7 +15,7 @@ if(fat 54 || fat 82){
 	echo dos
 	exit
 }
-m=`{dd -if /env/block -bs 4 -count 1 >[2]/dev/null | xd | sed 's,0000000  ,,;q'}
+m=`{dd -if /env/block -bs 4 -count 1 >[2]/dev/null | xd | sed -n '1s,0000000  ,,p'}
 if(~ $"m 529ab12b){
 	echo paqfs
 	exit
