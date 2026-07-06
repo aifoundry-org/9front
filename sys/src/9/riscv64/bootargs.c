@@ -31,6 +31,7 @@ static int nconf;
 static char maxmem[32];
 static int cpus;
 static int bootargs_set = 0;
+static int preloadedini = 0;
 
 /*
  * Per-UART information harvested from the DTB.  Filled in by devtreeprop()
@@ -330,6 +331,8 @@ print("devtreeeprop: maxmem %s\n", maxmem);
 		timebase = beget4(p);
 	if(strncmp(path, "/chosen", 7) == 0){
 		if(strcmp(key, "bootargs") == 0){
+			if(preloadedini)	/* don't clobber a plan9.ini */
+				return;
 			if(len > BOOTARGSLEN)
 				len = BOOTARGSLEN;
 			memmove(BOOTARGS, val, len);
@@ -606,24 +609,60 @@ parsedevtree(uchar *base)
 		return -1;
 	devtreenode(t, base + beget4(base+8), t->path);
 	finishdtbuarts();
-	if (bootargs_set)
+	if(preloadedini)
+		plan9iniinit(BOOTARGS, 0);
+	else if(bootargs_set)
 		plan9iniinit(BOOTARGS, 1);
+	return 0;
+}
+
+/*
+ * a bootloader (or writeconf across a reboot) may have left a plan9.ini
+ * at CONFADDR, the same convention u-boot boot scripts use on the arm
+ * boards: zero the region, then load the file over it.  Accept it only
+ * if it's NUL-terminated printable text containing a '='; anything else
+ * is leftover memory, and configuration comes from the DTB instead.
+ */
+static int
+inipreloaded(void)
+{
+	char *s;
+	int n, eq;
+
+	s = BOOTARGS;
+	eq = 0;
+	for(n = 0; n < BOOTARGSLEN; n++, s++){
+		if(*s == 0)
+			return n > 0 && eq;
+		if(*s == '=')
+			eq = 1;
+		else if(*s == '\r')
+			*s = '\n';	/* tolerate DOS line ends */
+		else if((*s < ' ' && *s != '\n' && *s != '\t') || (uchar)*s >= 0x80)
+			return 0;
+	}
 	return 0;
 }
 
 void
 bootargsinit(void)
 {
+	preloadedini = inipreloaded();
 	if(dtbphys == 0 || dtbphys == (uintptr)-1){
 		print("bootargsinit: no DTB pointer from firmware\n");
+		if(preloadedini)
+			plan9iniinit(BOOTARGS, 0);
 		return;
 	}
 	if(parsedevtree((uchar*)dtbphys) < 0){
 		print("bootargsinit: no usable DTB at %#p\n", (void*)dtbphys);
+		if(preloadedini)
+			plan9iniinit(BOOTARGS, 0);
 		return;
 	}
-	print("bootargsinit: %d entries from DTB /chosen/bootargs, %d uart %d ether nodes\n",
-		nconf, ndtbuarts, ndtbethers);
+	print("bootargsinit: %d entries from %s, %d uart %d ether nodes\n",
+		nconf, preloadedini? "plan9.ini": "DTB /chosen/bootargs",
+		ndtbuarts, ndtbethers);
 }
 
 char*
