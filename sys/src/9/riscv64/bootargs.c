@@ -535,7 +535,7 @@ devtreenode(Devtree *t, uchar *p, char *cp)
 static void
 finishdtbuarts(void)
 {
-	int i, j, n;
+	int i, j, k, n;
 	char name[32], *path, *colon;
 
 	if(dtbhasplic_ && dtbplicpath[0] != 0){
@@ -561,6 +561,24 @@ finishdtbuarts(void)
 			continue;
 		for(j = 0; j < ndtbethers; j++){
 			if(strcmp(dtbethers[j].path, dtbethalias[i]) == 0){
+				dtbethers[j].aliasidx = i;
+				break;
+			}
+		}
+	}
+	/*
+	 * aliases are optional: hand enabled ether nodes that got no
+	 * ethernetN alias the free indexes, in node order, so a DTB that
+	 * only aliases the first port still yields the others.
+	 */
+	for(j = 0; j < ndtbethers; j++){
+		if(dtbethers[j].aliasidx >= 0 || !dtbethers[j].ok)
+			continue;
+		for(i = 0; i < MAXDTBETHERS; i++){
+			for(k = 0; k < ndtbethers; k++)
+				if(dtbethers[k].aliasidx == i)
+					break;
+			if(k == ndtbethers){
 				dtbethers[j].aliasidx = i;
 				break;
 			}
@@ -660,9 +678,17 @@ bootargsinit(void)
 			plan9iniinit(BOOTARGS, 0);
 		return;
 	}
-	print("bootargsinit: %d entries from %s, %d uart %d ether nodes\n",
-		nconf, preloadedini? "plan9.ini": "DTB /chosen/bootargs",
-		ndtbuarts, ndtbethers);
+	{
+		int i, ndis;
+
+		ndis = 0;
+		for(i = 0; i < ndtbethers; i++)
+			if(!dtbethers[i].ok)
+				ndis++;
+		print("bootargsinit: %d entries from %s, %d uart %d ether nodes (%d disabled)\n",
+			nconf, preloadedini? "plan9.ini": "DTB /chosen/bootargs",
+			ndtbuarts, ndtbethers, ndis);
+	}
 }
 
 char*
