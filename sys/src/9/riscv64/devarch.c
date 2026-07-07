@@ -224,10 +224,34 @@ sbiinit(void)
 	}
 }
 
+/*
+ * scram (called by fshalt without -r) writes 'power off' here,
+ * the same interface aux/acpi serves on pcs.
+ */
+static long
+pmctlwrite(Chan*, void *a, long n, vlong)
+{
+	Cmdbuf *cb;
+
+	cb = parsecmd(a, n);
+	if(waserror()){
+		free(cb);
+		nexterror();
+	}
+	if(cb->nf >= 2 && strcmp(cb->f[0], "power") == 0
+	   && strcmp(cb->f[1], "off") == 0){
+		print("powering off\n");
+		poweroff();
+	}
+	error(Ebadctl);
+	return -1;	/* not reached */
+}
+
 void
 archinit(void)
 {
 	addarchfile("cputype", 0444, cputyperead, nil);
+	addarchfile("pmctl", 0220, nil, pmctlwrite);
 	sbiinit();
 }
 
