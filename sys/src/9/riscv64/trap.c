@@ -165,6 +165,12 @@ forkchild(Proc *p, Ureg *ureg)
 	memmove(cureg, ureg, sizeof(Ureg));
 	if(0)print("forkchild: sp %p pc %p\n", p->sched.sp, p->sched.pc);
 	cureg->arg = 0;
+	/*
+	 * the parent's ureg->pc still points at the ECALL (advancepc runs
+	 * after dosyscall returns); step over it or the child re-executes
+	 * the syscall.  ECALL has no compressed form, so it is 4 bytes.
+	 */
+	cureg->pc += 4;
 }
 
 uintptr
