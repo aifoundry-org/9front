@@ -313,7 +313,7 @@ devtreeprop(char *path, char *key, void *val, int len)
 			addr = (uvlong)beget4(p+4)<<32 | beget4(p);
 			addr += beget4(p+8);
 			snprint(maxmem, sizeof(maxmem), "%#llux", addr);
-print("devtreeeprop: maxmem %s\n", maxmem);
+			print("devtreeprop: maxmem %s\n", maxmem);
 			addconf("*maxmem", maxmem);
 		}
 		return;
