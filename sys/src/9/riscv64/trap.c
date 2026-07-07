@@ -600,10 +600,6 @@ faultriscv64(Ureg* ureg, Cause *)
 	if(addr < UZERO || fault(addr, ureg->pc, read) < 0)
 		badpagefault(ureg, addr, read, insyscall);
 	if (0) if (up->pid == 5) soft();
-	if(addr<UZERO+0x28) {
-		dumpregs(ureg);
-		panic("fault: bad user address addr %#p pc %#p", addr, ureg->pc);
-	}
 	up->insyscall = insyscall;
 }
 
