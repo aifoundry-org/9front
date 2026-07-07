@@ -269,6 +269,9 @@ findorallocether(char *path)
 	e->irq = -1;
 	e->aliasidx = -1;
 	e->ok = 1;		/* per DT spec §2.3.4, absent status = enabled */
+	e->txphase = -1;
+	e->rxphase = -1;
+	e->rstpin = -1;
 	return e;
 }
 
@@ -408,6 +411,15 @@ print("devtreeeprop: maxmem %s\n", maxmem);
 			/* SpacemiT extension: per-EMAC offset into APMU for
 			 * the RGMII delay-line register. */
 			e->dlineregoff = beget4(p);
+		} else if(strcmp(key, "tx-phase") == 0 && len >= 4){
+			/* SpacemiT extension: RGMII delay in degrees of the
+			 * 125MHz clock; per-port board tuning. */
+			e->txphase = beget4(p);
+		} else if(strcmp(key, "rx-phase") == 0 && len >= 4){
+			e->rxphase = beget4(p);
+		} else if(strcmp(key, "emac,reset-gpio") == 0 && len >= 12){
+			/* <phandle pin flags> — the PHY's reset line */
+			e->rstpin = beget4(p + 4);
 		}
 		return;
 	}
