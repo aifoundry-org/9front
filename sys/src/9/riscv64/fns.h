@@ -187,6 +187,9 @@ void gpiointrdisable(uint pin);
 extern int k1pmicread(int reg);
 extern int k1pmicwrite(int reg, int val);
 
+/* main */
+extern void poweroff(void);
+
 /* pciqemu */
 extern int pcicfgrw8(int tbdf, int rno, int data, int read);
 extern int pcicfgrw16(int tbdf, int rno, int data, int read);

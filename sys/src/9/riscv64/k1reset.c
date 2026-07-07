@@ -67,6 +67,7 @@ enum {
 
 	PMIC_ADDR	= 0x41,		/* P1 power-management chip on TWSI8 */
 	PMIC_PWRCTRL2	= 0x7e,
+	 PMIC_SHUTDOWN	= 1<<2,		/* shutdown request */
 	 PMIC_RSTREQ	= 1<<1,		/* reset request */
 };
 
@@ -178,6 +179,18 @@ k1pmicreset(void)
 }
 
 static void
+k1poweroff(void)
+{
+	int v;
+
+	v = k1pmicread(PMIC_PWRCTRL2);
+	if(v < 0)
+		return;
+	k1pmicwrite(PMIC_PWRCTRL2, v | PMIC_SHUTDOWN);
+	delay(1000);
+}
+
+static void
 k1wdtwrite(uchar *wdt, int off, ulong val)
 {
 	*(ulong*)(wdt + WDT_WFAR) = 0xbaba;
@@ -231,3 +244,4 @@ k1reset(void)
 }
 
 void (*rvreset)(void) = k1reset;
+void (*rvpoweroff)(void) = k1poweroff;
