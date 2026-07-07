@@ -333,6 +333,9 @@ struct Dtbether {
 	int	aliasidx;	/* ethernet<N>; -1 if no alias */
 	uchar	mac[6];		/* local-mac-address; all-zero if unset */
 	int	hasmac;
+	int	txphase;	/* SpacemiT "tx-phase": RGMII delay, degrees; -1 unset */
+	int	rxphase;	/* SpacemiT "rx-phase" */
+	int	rstpin;		/* "emac,reset-gpio" pin for the PHY; -1 unset */
 };
 
 struct Soc {
