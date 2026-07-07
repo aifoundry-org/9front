@@ -308,6 +308,7 @@ struct Ctlr {
 	Block	**rxs, **txs;
 	int	rxprodi, rxconsi, txi;
 	u32int	rxdelay, txdelay;
+	int	rstpin;		/* PHY reset GPIO; -1 if unknown */
 	int	attach;
 	int	dmarunning;	/* DMA started at link-up; gates POLL_DEMAND writes */
 	Lock	txlock;
@@ -317,6 +318,77 @@ struct Ctlr {
 	u32int	txdone;
 	int	statstick;
 };
+
+/*
+ * the gmac pad groups (fixed K1 pin assignments, pad function 1) are
+ * normally muxed by the boot loader, but it only configures the port
+ * it boots through; the other port's MDIO then reads zeros from pads
+ * that never leave their reset function.  Mux any pin still not on
+ * function 1: 21mA drive (code 2 on these 1.8V pads) and pull-up, the
+ * configuration the working port runs with.  Pins 0-85 sit at
+ * (pin+1)*4 from the pad controller base.
+ */
+static void
+gmacpins(uvlong base)
+{
+	static uchar pins0[] = {0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,45};
+	static uchar pins1[] = {29,30,31,32,33,34,35,36,37,38,39,40,41,42,43,46};
+	static ulong *aib;
+	uchar *pins;
+	u32int v;
+	int i, n, fixed;
+
+	if(base == EMAC0_PHYS){
+		pins = pins0;
+		n = nelem(pins0);
+	}else{
+		pins = pins1;
+		n = nelem(pins1);
+	}
+	if(aib == nil)
+		aib = vmap(0xd401e000, 0x1000);
+	if(aib == nil)
+		return;
+	fixed = 0;
+	for(i = 0; i < n; i++){
+		v = aib[pins[i] + 1];
+		if((v & 7) == 1)
+			continue;
+		aib[pins[i] + 1] = (v & ~(7 | 7<<10 | 7<<13)) | 1 | 2<<10 | 3<<14;
+		fixed++;
+	}
+	if(fixed)
+		print("smte: muxed %d gmac pads for %#llux\n", fixed, base);
+}
+
+/*
+ * each PHY hangs off a GPIO reset line (emac,reset-gpio: active low,
+ * 10ms low and 100ms settle on this board).  u-boot only releases the
+ * PHY of the port it boots through, so do it ourselves for every port.
+ * GPIO banks 0-3 sit at +{0,4,8,0x100} from the controller base; within
+ * a bank, direction-set is +0x54 and output set/clear +0x18/+0x24 (K1
+ * user manual, GPIO registers).
+ */
+static void
+phyreset(Ctlr *c)
+{
+	static ulong *gpio;
+	uint bank, bit;
+
+	if(c->rstpin < 0 || c->rstpin >= 128)
+		return;
+	if(gpio == nil)
+		gpio = vmap(0xd4019000, 0x200);
+	if(gpio == nil)
+		return;
+	bank = c->rstpin >> 5 == 3? 0x100: (c->rstpin >> 5)*4;
+	bit = 1 << (c->rstpin & 31);
+	gpio[(bank + 0x54)/4] = bit;	/* direction: output */
+	gpio[(bank + 0x24)/4] = bit;	/* drive low: assert reset */
+	delay(10);
+	gpio[(bank + 0x18)/4] = bit;	/* drive high: release */
+	delay(100);
+}
 
 /* MMIO access ---------------------------------------------------------------- */
 
@@ -393,7 +465,7 @@ ethproc(void *ved)
 	for(;;){
 		bmsr = mdread(c, MII_BMSR);
 		if((bmsr & BMSR_LSTATUS) == 0){
-			print("smte: link down (BMSR=0x%04ux)\n", bmsr);
+			print("smte: %s link down (BMSR=0x%04ux)\n", edev->name, bmsr);
 			ethersetlink(edev, 0);
 			csr32w(c->regs, MAC_TRANSMIT_CTRL, 0);
 			csr32w(c->regs, MAC_RECEIVE_CTRL, 0);
@@ -475,7 +547,7 @@ ethproc(void *ved)
 		dprint("smte: %s irq-driven DMA_INTR_ENABLE=%#ux DMA_STATUS=%#ux\n",
 			edev->name, ctrl, csr32r(c->regs, DMA_STATUS_IRQ));
 
-		print("smte: link up %dMbps %s\n", speed, dup);
+		print("smte: %s link up %dMbps %s\n", edev->name, speed, dup);
 		dprint("smte:   MAC_GLOBAL_CTRL=0x%08ux\n", ctrl);
 		dprint("smte:   MAC_TX_CTRL=0x%08ux MAC_RX_CTRL=0x%08ux\n",
 			csr32r(c->regs, MAC_TRANSMIT_CTRL),
@@ -900,6 +972,8 @@ ethinit(Ether *edev)
 	csr32w(c->regs, DMA_CTRL,          0);
 	print("smte: MAC/DMA stopped\n");
 
+	phyreset(c);
+
 	/* APMU: RGMII delay lines */
 	v = APMU_EMAC_RGMII_DLINE_RX_EN   | APMU_EMAC_RGMII_DLINE_TX_EN
 	  | APMU_EMAC_RGMII_DLINE_RX_STEP_15P6 | APMU_EMAC_RGMII_DLINE_TX_STEP_15P6
@@ -1186,11 +1260,27 @@ etherpnp(Ether *edev)
 		ct->regs = nil;
 		return -1;
 	}
+	gmacpins(base);
 	dprint("smte: ether%d regs=%p (phys=%#llux) apmu=%p (phys=%#llux)\n",
 		edev->ctlrno, ct->regs, base, ct->apmu, apmubase);
 
+	/*
+	 * RGMII delays are per-port board tuning.  The DTB gives them as
+	 * degrees of the 125MHz clock (tx-phase/rx-phase); the delay line
+	 * counts 15.6ps steps, so steps = deg * 8000ps/360 / 15.6ps.
+	 * Without DTB values keep the old defaults (~70°), which are known
+	 * to work on the BPI-F3's first port.
+	 */
 	ct->rxdelay = SMTE_DEFAULT_RXDELAY;
 	ct->txdelay = SMTE_DEFAULT_TXDELAY;
+	ct->rstpin = -1;
+	if(de != nil){
+		if(de->txphase > 0)
+			ct->txdelay = (de->txphase * 8000 / 360 * 10 + 78) / 156;
+		if(de->rxphase > 0)
+			ct->rxdelay = (de->rxphase * 8000 / 360 * 10 + 78) / 156;
+		ct->rstpin = de->rstpin;
+	}
 
 	edev->ctlr     = ct;
 	edev->port     = base;
