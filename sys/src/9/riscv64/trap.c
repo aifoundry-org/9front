@@ -324,6 +324,8 @@ if (TrapSys)	{
 		iprint("syscall %d changed return ureg->pc %#p (old pc %#p)\n",
 			scallnr, ureg->pc, pc);
 	if (TrapSys) print("SYSCALL return: up->pid %lud scallnr %d\n\n", up->pid, scallnr);
+	if(up->procctl || up->nnote)
+		donotify(ureg);
 	kexit(ureg);
 
 }
