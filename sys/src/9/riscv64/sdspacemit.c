@@ -804,8 +804,13 @@ sdhiosetup(SDio *io, int, void *buf, int bsize, int bcount)
 	uintptr pa;
 	int len;
 
+	/*
+	 * transfers bigger than the 512K SDMA boundary are fine now that
+	 * the interrupt handler resumes the pause at each crossing; the
+	 * remaining limit is the 16-bit block count field in Blksizecnt.
+	 */
 	len = bsize*bcount;
-	if(len > (0x1000<<7))
+	if(bcount > 0xFFFF)
 		error(Etoobig);
 
 	pa = PADDR(buf);
