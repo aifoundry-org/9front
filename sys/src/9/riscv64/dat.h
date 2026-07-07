@@ -415,6 +415,7 @@ int	probehartid;
 int	probingharts;
 void	(*prstackmax)(void);
 void	(*rvreset)(void);
+void	(*rvpoweroff)(void);
 /* server soc spec. requires 1 GHz clint timer, thus timebase */
 uvlong	timebase;	/* from kernel config */
 vlong	uartfreq;	/* from kernel config */

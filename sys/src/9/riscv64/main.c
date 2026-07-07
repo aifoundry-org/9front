@@ -329,6 +329,23 @@ exit(int)
 		;
 }
 
+void
+poweroff(void)
+{
+	splhi();
+	if(m->machno == 0){
+		/* clear secrets */
+		zeroprivatepages();
+		poolreset(secrmem);
+	}
+	sbireset(0, 0);		/* SRSTSHUT: works on QEMU; ignored on K1 */
+	if (rvpoweroff)
+		rvpoweroff();	/* board-specific, e.g. K1 PMIC shutdown */
+	sbishutdown();		/* legacy ext 8 */
+	for(;;)
+		;
+}
+
 static void
 rebootjump(void *entry, void *code, ulong size)
 {
