@@ -438,6 +438,39 @@ mdread(Ctlr *c, int reg)
 static void	ethrx(Ether *edev);
 static void	ethtx(Ether *edev);
 
+/*
+ * a link loss aborts the MAC under a live TX engine, after which the
+ * chip's ring position no longer matches txi: queued frames then only
+ * leave in bursts whenever the two happen to coincide.  Stop TX DMA,
+ * reclaim the ring, and point both sides back at the base.  The RX
+ * ring survives link bounces (every slot stays chip-owned) and is
+ * left alone.
+ */
+static void
+txreset(Ctlr *c)
+{
+	u32int v;
+	int i;
+
+	v = csr32r(c->regs, DMA_CTRL);
+	csr32w(c->regs, DMA_CTRL, v & ~DMA_CTRL_START_STOP_TX_DMA);
+	ilock(&c->txlock);
+	for(i = 0; i < TXRING; i++){
+		if(c->txs[i] != nil){
+			freeb(c->txs[i]);
+			c->txs[i] = nil;
+		}
+		c->txr[4*i] = 0;
+		c->txr[4*i+1] = 0;
+		c->txr[4*i+2] = 0;
+		c->txr[4*i+3] = 0;
+	}
+	c->txi = 0;
+	smtecacheflush(c->txr, 4 * TXRING * sizeof(u32int));
+	iunlock(&c->txlock);
+	csr32w(c->regs, DMA_TRANSMIT_BASE_ADDRESS, PADDR(c->txr));
+}
+
 static void
 ethproc(void *ved)
 {
@@ -469,6 +502,7 @@ ethproc(void *ved)
 			ethersetlink(edev, 0);
 			csr32w(c->regs, MAC_TRANSMIT_CTRL, 0);
 			csr32w(c->regs, MAC_RECEIVE_CTRL, 0);
+			txreset(c);
 			dprint("smte: MAC TX/RX disabled, waiting for link\n");
 			while((mdread(c, MII_BMSR) & BMSR_LSTATUS) == 0)
 				tsleep(&up->sleep, return0, nil, Linkdelay);
