@@ -309,6 +309,7 @@ struct Ctlr {
 	int	rxprodi, rxconsi, txi;
 	u32int	rxdelay, txdelay;
 	int	rstpin;		/* PHY reset GPIO; -1 if unknown */
+	int	txcons;		/* oldest unreclaimed TX slot */
 	int	attach;
 	int	dmarunning;	/* DMA started at link-up; gates POLL_DEMAND writes */
 	Lock	txlock;
@@ -466,6 +467,7 @@ txreset(Ctlr *c)
 		c->txr[4*i+3] = 0;
 	}
 	c->txi = 0;
+	c->txcons = 0;
 	smtecacheflush(c->txr, 4 * TXRING * sizeof(u32int));
 	iunlock(&c->txlock);
 	csr32w(c->regs, DMA_TRANSMIT_BASE_ADDRESS, PADDR(c->txr));
@@ -748,6 +750,40 @@ ethrx(Ether *edev)
 	}
 }
 
+static char*
+ethifstat(void *arg, char *p, char *e)
+{
+	Ether *edev = arg;
+	Ctlr *c = edev->ctlr;
+	int i, ntx, nrx;
+
+	if(p >= e)
+		return p;
+	ntx = 0;
+	for(i = 0; i < TXRING; i++)
+		if(c->txs[i] != nil)
+			ntx++;
+	nrx = 0;
+	for(i = 0; i < RXRING; i++)
+		if(c->rxs[i] != nil)
+			nrx++;
+	p = seprint(p, e, "tx: prod %d cons %d inflight %d done %ud\n",
+		c->txi, c->txcons, ntx, c->txdone);
+	p = seprint(p, e, "rx: prod %d cons %d bufs %d frames %ud\n",
+		c->rxprodi, c->rxconsi, nrx, c->rxframes);
+	p = seprint(p, e, "irq bits seen %#ux dma ctl %#ux status %#ux intren %#ux\n",
+		c->irqseen, csr32r(c->regs, DMA_CTRL),
+		csr32r(c->regs, DMA_STATUS_IRQ),
+		csr32r(c->regs, DMA_INTR_ENABLE));
+	p = seprint(p, e, "mac global %#ux tx %#ux rx %#ux\n",
+		csr32r(c->regs, MAC_GLOBAL_CTRL),
+		csr32r(c->regs, MAC_TRANSMIT_CTRL),
+		csr32r(c->regs, MAC_RECEIVE_CTRL));
+	p = seprint(p, e, "rgmii delay rx %ud tx %ud steps, phy reset pin %d\n",
+		c->rxdelay, c->txdelay, c->rstpin);
+	return p;
+}
+
 /* ethtx --------------------------------------------------------------------- */
 
 static void
@@ -760,6 +796,20 @@ ethtx(Ether *edev)
 
 	c = edev->ctlr;
 	ilock(&c->txlock);
+	/*
+	 * reclaim transmitted frames eagerly, oldest first, so buffers
+	 * don't sit in the ring until the write position laps them.
+	 */
+	while(c->txs[c->txcons] != nil){
+		r = &c->txr[4 * c->txcons];
+		smtecacheinval(r, 16);
+		if(r[0] & TX_DESC0_OWN)
+			break;
+		freeb(c->txs[c->txcons]);
+		c->txs[c->txcons] = nil;
+		c->txdone++;
+		c->txcons = (c->txcons + 1) & (TXRING - 1);
+	}
 	for(;;){
 		r = &c->txr[4 * c->txi];
 		smtecacheinval(r, 16);		/* discard stale cache before reading HW status */
@@ -904,17 +954,8 @@ etherserve(Ether *edev)
 
 	/* e.g. echo debug 1 > /net/ether0/0/ctl to get periodic stats */
 	if(debug && ++c->statstick >= 5000){
-		int i, ndone;
 		c->statstick = 0;
 		lasttxi = (c->txi - 1) & (TXRING - 1);
-		ndone = 0;
-		for(i = 0; i < c->txi && i < TXRING; i++){
-			u32int *tr = &c->txr[4*i];
-			smtecacheinval(tr, 16);
-			if((tr[0] & TX_DESC0_OWN) == 0 && c->txs[i] != nil)
-				ndone++;
-		}
-		c->txdone = ndone;
 		print("smte: %s stats irq_seen=0x%08ux rxcons=%d rxprod=%d "
 			"rx_frames=%ud txi=%d tx_done=%ud "
 			"rxd0=0x%08ux txd0[%d]=0x%08ux "
@@ -1321,6 +1362,7 @@ etherpnp(Ether *edev)
 	edev->irq      = irq;
 	edev->attach   = ethattach;
 	edev->transmit = ethtx;
+	edev->ifstat   = ethifstat;
 	edev->arg      = edev;
 	edev->mbps     = 1000;
 
