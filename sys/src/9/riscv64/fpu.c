@@ -145,7 +145,14 @@ fpuprocsave(Proc *p)
 		return;
 	}
 
-	if(p->fpstate == FPinit)
+	/*
+	 * A process in a note handler carries the FPnotify bit; mask it
+	 * out before deciding whether there is anything to save.  Without
+	 * this, a process that never touched the FPU (FPinit|FPnotify) is
+	 * not recognised as FPinit and we call fpsave(nil), faulting on the
+	 * store to fcsr at offset 0x200.
+	 */
+	if((p->fpstate & ~FPnotify) == FPinit)
 		return;
 	fpsave(p->fpsave);
 	p->fpstate = FPidle;
@@ -196,11 +203,17 @@ fpuprocfork(Proc *p)
 		fpsave(up->fpsave);
 		up->fpstate = FPidle;
 		/* wet floor */
+	case FPinactive:
+		/*
+		 * The parent's state is saved in up->fpsave; give the child
+		 * its own copy.  Falling through from FPclean/FPdirty is not
+		 * enough: an already-inactive (FPidle) parent must copy too,
+		 * otherwise the child is left FPidle with a nil fpsave and
+		 * faults in fpsave() the first time it is scheduled out.
+		 */
 		if(p->fpsave == nil)
 			p->fpsave = fpalloc(nil);
 		memmove(p->fpsave, up->fpsave, sizeof(FPsave));
-		break;
-	case FPinactive:
 		p->fpstate = FPinactive;
 		break;
 	}
@@ -268,7 +281,10 @@ mathtrap(Ureg *ureg)
 			return;
 		}
 		if (TrapSpew)print("fpstate %d\n", up->fpstate);
-		if(up->fpstate > FPclean){
+		/* mask FPnotify: a process in a note handler that never used
+		 * the FPU is FPinit|FPnotify with fpsave nil; without the mask
+		 * we would fpsave(nil) and fault on the fcsr store at 0x200. */
+		if((up->fpstate & ~FPnotify) > FPclean){
 			if (TrapSpew)print("fp dirty. save it and mark it on\n");
 			fpsave(up->fpsave);
 			up->fpstate = FPidle;
