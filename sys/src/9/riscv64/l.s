@@ -65,6 +65,7 @@ SRC:
 	SUB R3, R1, R3
 	BEQ R3, RELOCATED
 	MOV $KTZERO, R2
+	ADD $64, R2, R2			/* the header is linked at KTZERO; we copy from past it */
 	MOV R2, R10
 	MOV $0x1000000, R4
 	SUB R2, R1, R5
