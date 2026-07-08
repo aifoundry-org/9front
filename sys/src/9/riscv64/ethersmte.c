@@ -236,10 +236,14 @@ enum {
 	MII_PHYSID1	= 2,
 	MII_PHYSID2	= 3,
 	MII_ANLPAR	= 5,
+	MII_GBCR	= 9,	/* 1000BASE-T control (advertisement) */
 	MII_GBSR	= 10,
 
 	BMCR_ANENABLE	= (1U << 12),
 	BMCR_ANRESTART	= (1U << 9),
+
+	GBCR_ADV1000FULL	= (1U << 9),
+	GBCR_ADV1000HALF	= (1U << 8),
 
 	BMSR_ANEGCOMPLETE	= (1U << 5),
 	BMSR_LSTATUS		= (1U << 2),
@@ -495,6 +499,13 @@ ethproc(void *ved)
 		id2 & 0xf);
 
 	dprint("smte: PHY starting autonegotiation\n");
+	/*
+	 * Advertise 1000BASE-T in the gigabit control register before
+	 * restarting autoneg.  Without this the PHY only offers its power-on
+	 * default, which on this board does not include gigabit, so the link
+	 * settles at 100BASE-TX and every transfer is capped near 100Mbps.
+	 */
+	mdwrite(c, MII_GBCR, GBCR_ADV1000FULL | GBCR_ADV1000HALF);
 	mdwrite(c, MII_BMCR, BMCR_ANENABLE | BMCR_ANRESTART);
 
 	for(;;){
