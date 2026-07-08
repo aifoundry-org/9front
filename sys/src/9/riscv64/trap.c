@@ -149,13 +149,28 @@ evenaddr(uintptr addr)
 	}
 }
 
+/*
+ * the child bypasses the syscall exit path on its first return to
+ * user mode, so kexit never stamps its Tos: it would run with the
+ * parent's pid (copied with the stack) until its next syscall.
+ * libc's malloc locking compares _tos->pid across a pool operation
+ * and aborts the process if the pid changes mid-lock, which is
+ * exactly what happens when the first malloc sbrks.
+ */
+void
+forkret(void)
+{
+	kexit(nil);
+	sysrforkret();
+}
+
 void
 forkchild(Proc *p, Ureg *ureg)
 {
 	if(0)print("forkchild parent %lud kid %lud p %p ureg %p stack ? %p\n", up->pid, p->pid, p, ureg, (uintptr) p - TRAPFRAMESIZE);
 	Ureg *cureg;
 	if(0)print("ureg sp %p pc %p\n", ureg->sp, ureg->pc);
-	p->sched.pc = (uintptr) sysrforkret;
+	p->sched.pc = (uintptr) forkret;
 	p->sched.sp = (uintptr) p - sizeof(Ureg);
 	if(0)print("forkchild: sp %p pc %p\n", p->sched.sp, p->sched.pc);
 

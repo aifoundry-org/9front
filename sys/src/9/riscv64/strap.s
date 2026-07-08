@@ -176,7 +176,13 @@ TEXT sysrforkret(SB), 1, $-4
 	SFENCE_VMA(0,0)
 	//flushalltlb
 	WORD $0x12000073
-	/* SP must point at our Ureg here.  up may have changed since entry. */
+	/*
+	 * derive the Ureg address from USER rather than trusting SP:
+	 * forkret() calls us from C, so SP points at its frame, not
+	 * at the Ureg.
+	 */
+	MOV	R(USER), R2
+	SUB	$UREGSIZE, R2
 	MOV	R0, (ARG*XLEN)(R2)	/* zero saved R(ARG) in ureg */
 	JMP	syscallret
 
