@@ -92,7 +92,13 @@ RELOCATED:
 	 */
 	MOV	R11, dtbphys(SB)
 	JAL	R1, mmudisable<>(SB)
-	MOV $MACHADDR(1), R2
+	/*
+	 * Boot stack below all per-cpu Mach pages [MACHADDR(MAXMACH-1),KTZERO),
+	 * so it never grows into a secondary hart's page.  (It used to sit at
+	 * MACHADDR(1) and grew down through cpu2..N's pages, corrupting them
+	 * once those harts ran.)  cpu0's Mach stays at MACHADDR(0).
+	 */
+	MOV $MACHADDR(MAXMACH), R2
 	MOV	$setSB(SB), R3
 	// clear out UP and set MACH. 
 	MOV $0, R6
