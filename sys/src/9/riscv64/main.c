@@ -164,24 +164,18 @@ machinit(void)
 void
 mpinit(void)
 {
-#ifdef XXX
-	extern void _start(void);
-	int i;
-
-	for(i = 1; i < conf.nmach; i++){
-		Ureg u = {0};
-
-		MACHP(i)->machno = i;
-		cachedwbinvse(MACHP(i), MACHSIZE);
-
-		u.r0 = 0x84000003;	/* CPU_ON */
-		u.r1 = (sysrd(MPIDR_EL1) & ~(0xFF0000FFULL)) | i;
-		u.r2 = PADDR(_start);
-		u.r3 = i;
-		hvccall(&u);
+	/*
+	 * Uniprocessor unless *ncpu>1 was set, so the default boot is
+	 * unchanged.  hsmstartall() starts the other harts at _main (l.s)
+	 * via SBI HSM; each lands in cpustart().
+	 */
+	if(conf.nmach <= 1)
+		return;
+	if(nosbi){
+		print("mpinit: no SBI HSM; staying uniprocessor\n");
+		return;
 	}
-	synccycles();
-#endif
+	hsmstartall();
 }
 
 void

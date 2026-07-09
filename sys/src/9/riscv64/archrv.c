@@ -864,6 +864,7 @@ idlewake(void)
 		sbisendipi(&hartbm);		/* wake them all at once */
 	waking = 0;
 }
+#endif	/* xxx: IPI/idle helpers above stay dormant until Phase 3 */
 
 /*
  * SBI sometimes reports one or two incorrect, random hart(s) as started,
@@ -940,7 +941,8 @@ startagain(void)
 	 * but a system reset will fix that.
 	 */
 	archreset();
-	notreached();
+	for(;;)
+		;		/* archreset does not return */
 }
 
 static int
@@ -969,7 +971,7 @@ stophart(int hart, int state)
 }
 
 /*
- * start any stopped cpus at _main.  some or all may already be started,
+ * start any stopped cpus at cpumain.  some or all may already be started,
  * but we are going to make the unwarranted assumption that systems
  * with SBI HSM calls only start one cpu initially (the only other
  * legitimate configuration is to start them all at once).
@@ -1029,12 +1031,12 @@ hsmstartall(void)
 			if (stophart(hart, state) < 0)
 				continue;
 
-		if (sbihartstart(hart, PADDR(_main), hart) < 0)
+		if (sbihartstart(hart, PADDR(cpumain), hart) < 0)
 			/*
 			 * opensbi source says failure to start puts a hart
 			 * into stopped state, so it should be ready to go now.
 			 */
-			if (sbihartstart(hart, PADDR(_main), hart) < 0) {
+			if (sbihartstart(hart, PADDR(cpumain), hart) < 0) {
 				iprint("sbi can't start hart %d\n", hart);
 				continue;
 			}
@@ -1046,6 +1048,44 @@ hsmstartall(void)
 	if (col % Hartcols != 0)
 		iprint("\n");
 }
+
+/*
+ * C entry for a secondary hart, reached from cpumain (l.s).  Phase 1: bring
+ * the hart just far enough to prove SBI HSM start works, record it, and
+ * park.  m (the MACH register) already points at MACHP(hartid), set by
+ * cpumain.  Per-hart trap/clock/PLIC init and the schedinit() hand-off are
+ * the next step; until then this hart does not touch the scheduler or
+ * sys->nonline, so idlewake leaves it alone.
+ */
+void
+cpustart(int hartid)
+{
+	Hart *hartst;
+
+	/*
+	 * We index Mach and active.machs[] by hartid, which is only valid
+	 * for the contiguous low hart ids we actually support.  A hart id
+	 * SBI reports out of range would corrupt those arrays, so park it.
+	 */
+	if(hartid < 0 || hartid >= MAXMACH){
+		for(;;)
+			wfi();
+	}
+	m->machno = hartid;
+	m->hartid = hartid;
+	machinit();			/* stvec + active.machs[machno] */
+
+	hartst = &harts[hartid];
+	hartst->running = 1;
+	hartst->state = Hstarted;
+	coherence();
+	hartst->havestate = 1;
+
+	iprint("cpu%d: hart %d online (parked)\n", m->machno, hartid);
+	for(;;)
+		wfi();
+}
+#ifdef xxx	/* still-speculative code below stays guarded */
 
 static ulong
 prifexts(ulong isa, ulong exts, char *name)

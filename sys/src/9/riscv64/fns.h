@@ -277,6 +277,12 @@ void*	putstvec(void *);
 void calibrate(void);
 uint mach2context(Mach *);
 void cpuinit(int);
+void mpinit(void);
+void hsmstartall(void);
+void archreset(void);
+void wfi(void);
+void cpustart(int);
+extern void cpumain(void);
 
 /* rva23 */
 void wrstimecmp(u64int);
