@@ -13,6 +13,7 @@ dev
 	tls
 	cap
 	fs
+	dtracy
 	ether	netif
 #	bridge	log
 	ip	arp chandial ip ipv6 ipaux iproute netlog nullmedium pktmedium inferno
@@ -21,6 +22,8 @@ dev
 #	rtc
 	pci	pci
 	sd
+
+	dtracy
 
 link
 #	usbxhcipci	pci usbxhci
@@ -47,6 +50,12 @@ misc
 #	uartqemu
 	uarti8250
 	sdvirtio10	pci sdscsi
+
+	dtracysys
+	dtracytimer
+	dtracydev
+
+
 port
 	int cpuserver = 0;
 bootdir
