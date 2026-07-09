@@ -116,6 +116,26 @@ _stop:
 	JMP	_stop
 
 
+/* fault-proof memcpy */
+/* returns number of bytes not copied in R8. dtpeek seems to want that */
+TEXT peek(SB), 1, $-4
+	MOV	RARG, R1
+	MOV	dst+8(FP), R2
+	MOVWU	len+16(FP), R8
+TEXT _peekinst(SB), 1, $-4
+	MOV	$recktrap(SB), R9
+	MOV	R9, CSR(STVEC)		/* if we fault here, report it */
+_peekloop:
+	MOVB 0(R1), R3
+	MOVB R3, 0(R2)
+	ADD $1, R2, R2
+	ADD $1, R1, R1
+	ADD $-1, R8, R8
+	BNE R4, _peekloop
+_endpeekcopy:
+	MOV	R9, CSR(STVEC)
+	RET
+
 TEXT 	soft(SB), 1, $-4
 	RET
 
