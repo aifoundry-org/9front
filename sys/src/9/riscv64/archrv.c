@@ -1010,9 +1010,13 @@ hsmstartall(void)
 		}
 	}
 
-	/* start any stopped harts, and they should all be stopped except me */
+	/*
+	 * start any stopped harts, up to *ncpu of them.  We index Mach by
+	 * hartid, and on this SoC hart ids are contiguous from 0, so
+	 * conf.nmach doubles as the hart-id ceiling.
+	 */
 	col = 0;
-	for (hart = soc.hobbled; hart < HARTMAX; hart++) {
+	for (hart = soc.hobbled; hart < HARTMAX && hart < conf.nmach; hart++) {
 		if (hart == m->hartid) {
 			iprint("hart %d is me, already running\n", hart);
 			continue;
@@ -1050,12 +1054,15 @@ hsmstartall(void)
 }
 
 /*
- * C entry for a secondary hart, reached from cpumain (l.s).  Phase 1: bring
- * the hart just far enough to prove SBI HSM start works, record it, and
- * park.  m (the MACH register) already points at MACHP(hartid), set by
- * cpumain.  Per-hart trap/clock/PLIC init and the schedinit() hand-off are
- * the next step; until then this hart does not touch the scheduler or
- * sys->nonline, so idlewake leaves it alone.
+ * C entry for a secondary hart, reached from cpumain (l.s).  m (the MACH
+ * register) already points at MACHP(hartid), set by cpumain.  Record the
+ * hart and park it in wfi.
+ *
+ * We do NOT enter the scheduler here yet: a secondary that runs a proc
+ * which then blocks must be resumed by a cross-cpu IPI, and that
+ * machinery (idlewake/clint IPIs) is not enabled yet.  Joining the
+ * scheduler first just deadlocks the boot.  IPIs come next; then this
+ * parks-in-wfi turns into per-cpu init + schedinit.
  */
 void
 cpustart(int hartid)
