@@ -115,6 +115,57 @@ _stop:
 	WFI
 	JMP	_stop
 
+/*
+ * Secondary hart entry, started by SBI HSM (hsmstartall) at PADDR(cpumain).
+ * We arrive in S-mode with paging OFF; SBI passes a0 (R10) = hartid and
+ * a1 (R11) = the opaque value we supplied (also the hartid).  The kernel
+ * is already relocated and its page table (sv39, identity-mapped
+ * gigapages) is built by the boot hart, so we only enable paging, set up
+ * this hart's Mach and stack, and enter C at cpustart().
+ *
+ * Note: not named _main — that symbol is libc's C-runtime entry point
+ * (crt0), and defining our own clobbers kernel startup.
+ */
+TEXT	cpumain(SB), 1, $-4
+	MOV	R10, R12		/* keep hartid across everything */
+	MOV	$setSB(SB), R3
+
+	/*
+	 * turn on paging with the shared kernel table.  the kernel range is
+	 * identity-mapped, so the PC and SB-relative loads keep working
+	 * across the switch (the sv39 load below already relies on VA==PA
+	 * while paging is off).
+	 */
+	MOV	sv39(SB), R8		/* L1 table root (phys == virt) */
+	SRL	$12, R8
+	MOV	$SATP_SV39, R9
+	OR	R9, R8, R8
+	MOV	R8, CSR(SATP)
+	SFENCE
+
+	/* m (MACH == R7) = MACHP(hartid) = KTZERO - (hartid+1)*MACHSIZE */
+	MOV	$KTZERO, R7
+	ADD	$1, R12, R8
+	SLL	$13, R8			/* (hartid+1) * MACHSIZE (8 KiB) */
+	SUB	R8, R7, R7
+
+	/* per-hart stack: top of this hart's Mach page, growing down */
+	MOV	R7, R2
+	ADD	$MACHSIZE, R2, R2
+
+	MOV	$0, R6			/* up = nil */
+
+	/* permit kernel access to user pages (SSTATUS.SUM), as in _start */
+	MOV	CSR(SSTATUS), R8
+	OR	$0x40000, R8, R8
+	MOV	R8, CSR(SSTATUS)
+
+	MOV	R12, R(ARG)		/* cpustart(hartid) */
+	JAL	R1, cpustart(SB)
+_parkhart:				/* cpustart must not return */
+	WFI
+	JMP	_parkhart
+
 
 /* fault-proof memcpy */
 /* returns number of bytes not copied in R8. dtpeek seems to want that */
