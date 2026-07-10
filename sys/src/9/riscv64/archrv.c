@@ -642,7 +642,8 @@ timerset(uvlong next)
 		else if (fticks > (vlong)sys->clintsperhz)
 			fticks = sys->clintsperhz;
 	}
-	wrstimecmp(now + (uvlong)fticks);
+	m->timecmp = now + (uvlong)fticks;	/* published for idlewake() */
+	wrstimecmp(m->timecmp);
 	clockenable();
 	splx(pl);
 }
@@ -682,11 +683,17 @@ clocksanity(void)
 			print("clint timebase: %,lld Hz\n", timebase);
 	return 1;
 }
-#ifdef xxx
-static int mwords[1];
-static int *mwaitwd = mwords;		/* make safe from the start */
 
-void countipi(void);
+/*
+ * count an ipi that broke us out of wfi but wasn't serviced as a real
+ * trap (we were at splhi in idlewakehands).  irqalloc accounting isn't
+ * wired up on this port yet, so just tally it on the Mach.
+ */
+void
+countipi(void)
+{
+	m->intr++;
+}
 
 void
 clintipitohart(int hart)
@@ -720,6 +727,9 @@ ipitohart(int hart)
  * note that halt, ainc, adec, and the spl* functions contain fences.
  */
 
+/* the global WFI halt (mch.s); devarch.c shadows this name with a static */
+extern void halt(void);
+
 static ulong
 idlenowakehands(void)
 {
@@ -731,9 +741,10 @@ idlenowakehands(void)
 	while (((ip = getsip()) & Superie) == 0)
 		halt();
 	coherence();		/* make other harts' changes visible to us */
-	/* can't call intrclknotrap: needs non-nil Ureg* */
+	/* service any pending external interrupt directly; irq() tolerates
+	 * a nil Ureg* since it only passes it on to handlers. */
 	if (ip & Seie)
-		intrnotrap();
+		irq(nil);
 	return ip;
 }
 
@@ -776,7 +787,7 @@ idlehands(void)
 {
 	Mpl pl;
 
-	if (nrdy != 0 || active.exiting || active.rebooting)
+	if (nrdy != 0 || active.exiting)
 		return;
 	pl = splhi();
 	if (soc.idlewake && sys->nonline > 1)
@@ -811,14 +822,11 @@ idlewake(void)
 	uint cpu, startcpu, nonline;
 	uvlong hartbm, imminent;
 	Mach *mp;
-	Mach **machptr;
-	static int waking;		/* lock with _tas */
+	static int waking;		/* lock with tas */
 	static uint currcpu;
 
-	if (0)				/* we don't emulate x86 mwait *.
-		++*mwaitwd;		/* need not be atomic increment */
 	if (!soc.idlewake || nrdy == 0 || sys->nonline <= 1 ||
-	    TAS(&waking) != 0)
+	    tas(&waking) != 0)
 		return;			/* another cpu is waking */
 
 	/*
@@ -827,7 +835,7 @@ idlewake(void)
 	 * this is somewhat approximate as the other cpus may change
 	 * state underfoot.
 	 */
-	imminent = rdcltime() + sys->nsthresh;
+	imminent = rdtime() + sys->nsthresh;
 	nonline = sys->nonline;
 	startcpu = cpu = WRAPCPU(currcpu, nonline);
 
@@ -843,11 +851,16 @@ idlewake(void)
 	 * assume on-line cpus are 0 — nonline-1.
 	 */
 	hartbm = 0;
-	machptr = sys->machptr;
 	while (left > 0) {
-		mp = machptr[cpu++];
+		/*
+		 * Machs live at fixed addresses MACHP(machno); this port has
+		 * no sys->machptr[] to publish.  machno == hartid for the
+		 * contiguous low harts we bring up, so MACHP(cpu) is valid
+		 * for cpu in 0..nonline-1.
+		 */
+		mp = MACHP(cpu++);
 		cpu = WRAPCPU(cpu, nonline);
-		if (mp != nil && mp->ipiwait && rdcltimecmp(mp) > imminent &&
+		if (mp != m && mp->ipiwait && mp->timecmp > imminent &&
 		    amoswapw(&mp->ipiwait, 0) != 0) {
 			/* next clock intr not soon & no ipi yet sent */
 			if (nosbi)
@@ -864,7 +877,6 @@ idlewake(void)
 		sbisendipi(&hartbm);		/* wake them all at once */
 	waking = 0;
 }
-#endif	/* xxx: IPI/idle helpers above stay dormant until Phase 3 */
 
 /*
  * SBI sometimes reports one or two incorrect, random hart(s) as started,
@@ -1063,14 +1075,11 @@ uchar cpustack[MAXMACH][CPUSTACKSIZE];
 
 /*
  * C entry for a secondary hart, reached from cpumain (l.s).  m (the MACH
- * register) already points at MACHP(hartid), set by cpumain.  Record the
- * hart and park it in wfi.
- *
- * We do NOT enter the scheduler here yet: a secondary that runs a proc
- * which then blocks must be resumed by a cross-cpu IPI, and that
- * machinery (idlewake/clint IPIs) is not enabled yet.  Joining the
- * scheduler first just deadlocks the boot.  IPIs come next; then this
- * parks-in-wfi turns into per-cpu init + schedinit.
+ * register) already points at MACHP(hartid), set by cpumain, and paging is
+ * already on with the shared kernel table.  Bring this cpu far enough to
+ * join the scheduler: give it its own top-level page table, a per-cpu HZ
+ * clock, and enable software ipis so idlewake() (cpu 0) can resume it when
+ * it blocks in wfi.  Then schedinit() and never return.
  */
 void
 cpustart(int hartid)
@@ -1088,17 +1097,23 @@ cpustart(int hartid)
 	}
 	m->machno = hartid;
 	m->hartid = hartid;
+	/* prefer the stable Mach copy over the local param past here */
 	machinit();			/* stvec + active.machs[machno] */
+	mmu1init();			/* our own mmutop; loads satp */
+	cpuinit(m->hartid);		/* plic context, entropy; clears Stie */
+	m->clockintrsok = 1;
+	setsie(Ssie);			/* accept cross-cpu ipis for idlewake */
+	timersinit();			/* per-cpu HZ clock; arms our timer */
 
-	hartst = &harts[hartid];
+	hartst = &harts[m->hartid];
 	hartst->running = 1;
 	hartst->state = Hstarted;
 	coherence();
 	hartst->havestate = 1;
+	aadd(&sys->nonline, 1);		/* now eligible for idlewake() */
 
-	iprint("cpu%d: hart %d online (parked)\n", m->machno, hartid);
-	for(;;)
-		wfi();
+	iprint("cpu%d: hart %d online\n", m->machno, m->hartid);
+	schedinit();			/* runs procs; never returns */
 }
 #ifdef xxx	/* still-speculative code below stays guarded */
 
