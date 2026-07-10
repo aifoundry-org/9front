@@ -125,6 +125,20 @@ sbisendipi(uvlong *hart)
 	return sbicall(4, 0, (uintptr)hart, nil, nil);
 }
 
+/*
+ * legacy remote_sfence_vma: flush [start, start+size) from the TLBs of the
+ * harts selected in the bit-vector at *hartmask (bit k == hart k).
+ */
+vlong
+sbiremotesfencevma(uvlong *hartmask, uvlong start, uvlong size)
+{
+	uvlong xargs[2];
+
+	xargs[0] = start;		/* a1 */
+	xargs[1] = size;		/* a2 */
+	return sbicall(6, 0, (uintptr)hartmask, nil, xargs);
+}
+
 void
 _sbisettimer(uvlong tm)
 {

@@ -81,7 +81,12 @@ extern void kmapram(uintptr, uintptr);
 extern void* vmap(uvlong, vlong);
 extern void vunmap(void*, vlong);
 extern void mmu1init(void);
+extern void* mmuuncache(void*, usize);
 extern void putasid(Proc*);
+
+extern void* ucalloc(usize);
+extern void* ucallocalign(usize size, int align, usize span);
+extern void ucfree(void*);
 
 /* mem */
 extern void mmuidmap(uintptr*);
@@ -258,6 +263,7 @@ vlong	sbihartstart(uvlong hartid, uvlong phys_start, uvlong private);
 vlong	sbihartstatus(uvlong hartid);
 vlong	sbihartsuspend(void);
 vlong	sbiprobeext(uvlong);
+vlong	sbiremotesfencevma(uvlong *hartmask, uvlong start, uvlong size);
 void	sbireset(ulong type, ulong reason);
 vlong	sbisendipi(uvlong map[]);
 void	sbisettimer(uvlong);

@@ -47,6 +47,7 @@ PORT=\
 	sysproc.$O\
 	taslock.$O\
 	tod.$O\
+	ucalloc.$O\
 	xalloc.$O\
 	userinit.$O\
 
