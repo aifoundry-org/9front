@@ -341,9 +341,9 @@ struct Dtbether {
 
 struct Soc {
 	/* identification, set early from SBI (mvendorid/marchid/mimpid) */
-	u32int	vendor;		/* JEDEC manuf. id (e.g. 0x710 SpacemiT) */
-	u32int	arch;		/* low 32 bits of marchid (sufficient to discriminate) */
-	u32int	impl;		/* low 32 bits of mimpid */
+	uvlong	vendor;		/* JEDEC manuf. id (e.g. 0x710 SpacemiT) */
+	uvlong	arch;		/* low 32 bits of marchid (sufficient to discriminate) */
+	uvlong	impl;		/* low 32 bits of mimpid */
 
 	/* physical addresses, vmapped to virtual addresses during start-up */
 	uchar	*clint;		/* local intr ctlr also a timer */

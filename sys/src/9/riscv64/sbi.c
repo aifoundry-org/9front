@@ -63,17 +63,18 @@ sbiprobeext(uvlong ext)
 	return sbiret.status;
 }
 
-vlong
+uvlong
 sbigetmvendorid(void)
 {
 	Sbiret sbiret;
 
 	if (sbicall(0x10, 4, 0, &sbiret, nil) < 0)
 		return -1;
+
 	return sbiret.status;
 }
 
-vlong
+uvlong
 sbigetmarchid(void)
 {
 	Sbiret sbiret;
@@ -83,7 +84,7 @@ sbigetmarchid(void)
 	return sbiret.status;
 }
 
-vlong
+uvlong
 sbigetmimpid(void)
 {
 	Sbiret sbiret;
