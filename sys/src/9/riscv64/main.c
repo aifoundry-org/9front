@@ -80,11 +80,18 @@ confinit(void)
 	sys = &asys;
 	sys->nonline = 1;		/* the boot cpu; secondaries bump this */
 
-	conf.nmach = 1;
+	/*
+	 * Default to every hart the DTB lists (hartcnt, counted in bootargs.c);
+	 * *ncpu is the opt-out to pin a smaller count, e.g. *ncpu=1.  Falls back
+	 * to uniprocessor if the DTB gave us no cpu nodes.
+	 */
+	conf.nmach = hartcnt > 0? hartcnt: 1;
 	if(p = getconf("*ncpu"))
 		conf.nmach = strtol(p, 0, 0);
 	if(conf.nmach > MAXMACH)
 		conf.nmach = MAXMACH;
+	if(conf.nmach < 1)
+		conf.nmach = 1;
 
 	if(p = getconf("service")){
 		if(strcmp(p, "cpu") == 0)
@@ -271,7 +278,7 @@ main(void)
 	u64int cm = rdstimecmp();
 	print("tm %#llx cm %#llx\n", tm, cm);
 	mmu1init();
-	cpuinit(0); print("DONE cpuinit(0) -- FIXME\n");
+	cpuinit(0);
 	/*
 	 * cpuinit() does clockoff() (clears Stie) as its last timer act, and
 	 * for the boot cpu it runs AFTER timersinit(), so unlike a secondary

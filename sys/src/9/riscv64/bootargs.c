@@ -29,7 +29,6 @@ static char *confname[MAXCONF];
 static char *confval[MAXCONF];
 static int nconf;
 static char maxmem[32];
-static int cpus;
 static int bootargs_set = 0;
 static int preloadedini = 0;
 
@@ -319,7 +318,7 @@ devtreeprop(char *path, char *key, void *val, int len)
 		return;
 	}
 	if(strncmp(path, "/cpus/cpu", 9) == 0 && strcmp(key, "reg") == 0){
-		cpus++;
+		hartcnt++;		/* count harts the DTB lists (see confinit) */
 		return;
 	}
 	/*
