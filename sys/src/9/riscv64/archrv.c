@@ -1054,6 +1054,14 @@ hsmstartall(void)
 }
 
 /*
+ * Dedicated scheduler/trap stacks for secondary harts, indexed by hartid.
+ * cpumain (l.s) sets each secondary's SP to the top of its slot instead of
+ * its 8K Mach page.  cpu0 is unaffected (it stacks at MACHADDR(MAXMACH), set
+ * in _start), so cpustack[0] is unused.
+ */
+uchar cpustack[MAXMACH][CPUSTACKSIZE];
+
+/*
  * C entry for a secondary hart, reached from cpumain (l.s).  m (the MACH
  * register) already points at MACHP(hartid), set by cpumain.  Record the
  * hart and park it in wfi.

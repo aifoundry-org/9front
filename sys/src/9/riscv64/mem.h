@@ -37,6 +37,13 @@
 #define	MACHSIZE	(8*KiB)
 
 #define KSTACK		(8*KiB)
+/*
+ * dedicated per-secondary-hart scheduler/trap stack (see cpustack[] and
+ * cpumain in l.s).  a secondary must NOT stack in its 8K Mach page: once it
+ * runs the scheduler its stack overflows down through the next hart's Mach
+ * page (the collision that forced the boot hart off its Mach page too).
+ */
+#define CPUSTACKSIZE	(2*KSTACK)
 #define STACKALIGN(sp)	((sp) & ~7)		/* bug: assure with alloc */
 #define TRAPFRAMESIZE	(38*8)
 

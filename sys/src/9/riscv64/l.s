@@ -155,9 +155,18 @@ TEXT	cpumain(SB), 1, $-4
 	SLL	$13, R8			/* (hartid+1) * MACHSIZE (8 KiB) */
 	SUB	R8, R7, R7
 
-	/* per-hart stack: top of this hart's Mach page, growing down */
-	MOV	R7, R2
-	ADD	$MACHSIZE, R2, R2
+	/*
+	 * per-hart stack: top of this hart's dedicated cpustack[hartid] slot,
+	 * NOT its 8K Mach page.  A Mach-page stack overflows down through the
+	 * next hart's Mach page once the scheduler runs (same collision that
+	 * moved the boot hart's stack off its Mach page).
+	 */
+	MOV	$cpustack(SB), R2	/* base of stack array */
+	ADD	$1, R12, R8		/* hartid + 1 slots */
+	MOV	$CPUSTACKSIZE, R9
+	MUL	R9, R8, R8		/* (hartid+1) * CPUSTACKSIZE */
+	ADD	R8, R2, R2		/* top of this hart's stack */
+	AND	$~15, R2, R2		/* 16-byte align the SP */
 
 	MOV	$0, R6			/* up = nil */
 
