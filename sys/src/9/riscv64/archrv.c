@@ -36,8 +36,6 @@ enum {
 
 	Livedangerously = 0,	/* flag: don't reset when sbi lies */
 	Reservedways = 1,  /* we need 1 l[23] cache way unenabled as cache */
-
-	Hartcols = 3,
 };
 
 struct Cpu {
@@ -457,7 +455,6 @@ cpuinit(int cpu)
 	hartst->havestate = 1;
 	coherence();
 #endif
-	DBG("[cpu%d hart%d]\n", cpu, m->hartid);
 	m->boottsc = rdtsc();
 
 	m->plicctxt = mach2context(m);	/* base context without priv mode */
@@ -471,17 +468,17 @@ cpuinit(int cpu)
 		u64int s = rseed();
 		switch(s&3) {
 			case 0:
-				print("got 16 bits, hang on for RNG\n");
+				iprint("got 16 bits, hang on for RNG %d; ", cpu);
 				break;
 			case 1:
-				print("got 32 bits, we have hardware RNG\n");
+				iprint("got 32 bits, we have hardware RNG %d; ", cpu);
 				hwrandbuf = hwrand;
 				break;
 			case 2:
-				print("not ready ... wait for RNG\n");
+				iprint("not ready ... wait for RNG %d; ", cpu);
 				break;
 			case 3:
-				print("HWRNG broken ...\n");				
+				iprint("HWRNG %d broken ... ", cpu);
 				break;	
 		}
 	}
@@ -1056,13 +1053,10 @@ hsmstartall(void)
 				iprint("sbi can't start hart %d\n", hart);
 				continue;
 			}
-		iprint("sbi started hart %d%s", hart,
-			col++ % Hartcols == Hartcols-1? "\n": "\t");
+		iprint("sbi started hart %d; ", hart);
 		/* give time to start & bump hartcnt; stagger startups */
 		delay(250);
 	}
-	if (col % Hartcols != 0)
-		iprint("\n");
 }
 
 /*
