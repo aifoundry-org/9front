@@ -151,7 +151,7 @@ socidentify(void)
 			break;
 		}
 	}
-	print("socidentify: vendor %#ux arch %#ux impl %#ux plic %#p\n",
+	print("socidentify: vendor %#ullx arch %#ullx impl %#ullx plic %#p\n",
 		soc.vendor, soc.arch, soc.impl, soc.plic);
 }
 
