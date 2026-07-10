@@ -122,9 +122,21 @@
 #define PTEUSERREAD (PTEVALID | PTEREAD | PTEEXEC | PTEUSER | PTEACCESSED)
 #define PTEUSERWRITE (PTEUSERREAD | PTEWRITE | PTEDIRTY)
 
-/* bogus. */
-#define PTECACHED 0
-#define PTEUNCACHED 0
+/*
+ * Svpbmt page-based memory types live in PTE bits [62:61] (needs
+ * menvcfg.PBMTE set by firmware to be honoured in S-mode).
+ *	00 PMA  - cacheable, per physical memory attributes (normal)
+ *	01 NC   - non-cacheable, idempotent, weakly ordered (DMA buffers)
+ *	10 IO   - non-cacheable, non-idempotent, strongly ordered (MMIO)
+ * The K1's X60 cores advertise svpbmt; NC gives coherent DMA without
+ * Zicbom cache maintenance.
+ */
+#define PTEPBMT		(3ULL<<61)
+#define PTECACHED	(0ULL<<61)
+#define PTEUNCACHED	(1ULL<<61)
+#define PTEIO		(2ULL<<61)
+
+#define Cachelinesz	64		/* X60/C908 Zicbom cache-block size */
 
 #define PA2PTE(pa)	((pa>>12)<<10)
 #define PTE2PA(pte)	((pte>>10)<<12)
