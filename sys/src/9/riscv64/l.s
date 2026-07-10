@@ -275,6 +275,26 @@ TEXT	_tas(SB), 1, $-4
 	FENCE_RW
 	RET
 
+/*
+ * wait/atomic primitives used by the idle + cross-cpu-ipi path (archrv.c).
+ * ported from the unlinked M-mode mch.s; these are privilege-neutral.
+ */
+TEXT	halt(SB), 0, $-4
+	WFI			/* may be a no-op or hint */
+	RET
+
+TEXT	amoswapw(SB), 0, $(2*XLEN)	/* ulong amoswapw(ulong *a, ulong nv) */
+	MOVWU	nv+XLEN(FP), R9
+	AMOW(Amoswap, AQ|RL, 9, ARG, ARG)	/* *a = nv; old *a -> ret */
+	RET
+
+TEXT	aadd(SB), 1, $-4		/* int aadd(int *a, int addend) */
+	MOVW	addend+XLEN(FP), R9
+	AMOW(Amoadd, AQ|RL, 9, ARG, 10)	/* *a += addend; old *a -> R10 */
+	ADDW	R9, R10, R(ARG)		/* return new value */
+	SEXT_W(R(ARG))
+	RET
+
 TEXT	setlabel(SB), 1, $-4
 	MOV	R2, 0(R8)
 	MOV	R1, 8(R8)
@@ -327,14 +347,6 @@ TEXT	flushasid(SB), 1, $-4
 TEXT	vcycles(SB), 1, $-4
 	RET
 TEXT	perfticks(SB), 1, $-4
-	RET
-
-TEXT	idlehands(SB), 1, $-4
-	FENCE
-	MOVW	nrdy(SB), R8
-	BNE	R8, R0, _ready
-	WFI
-_ready:
 	RET
 
 /*
