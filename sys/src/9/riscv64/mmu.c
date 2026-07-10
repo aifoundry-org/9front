@@ -100,18 +100,50 @@ l1map(uintptr va, uintptr pa, uintptr pe, uintptr attr)
 u64int *sv57, *sv48, *sv39, *pGiB;
 u64int mmumode;
 
-void
-kmapram(uintptr base, uintptr limit)
+/*
+ * Carve one page-table page out of the front of the physical pool at boot,
+ * before conf.npage is known.  The pool has already been zeroed by meminit,
+ * but zero again for safety.  Identity mapped, so va == pa.
+ */
+static u64int*
+bootptpage(void)
 {
-	u64int i;
-	USED(base);
-	USED(limit);
+	uintptr pa;
+
+	pa = conf.mem[0].base;
+	assert((pa & (BY2PG-1)) == 0);
+	conf.mem[0].base += BY2PG;
+	memset((void*)pa, 0, BY2PG);
+	return (u64int*)pa;
+}
+
+void
+kmapram(uintptr, uintptr limit)
+{
+	u64int i, j, pa;
+	u64int *l2;
+
 	sv57[0] = ((((u64int)sv48)>>2)) | 1;
 	if (Spew)print("%p is %p\n", sv57, sv57[0]);
 	sv48[0] = ((((u64int)sv39)>>2)) | 1;
 	/* TODO: handle more complex memory topologies. */
 	for(i = 0; i < 6; i++){
-		sv39[i] = ((0x40000000*i)>>2) | 0xcf;
+		pa = 0x40000000ULL*i;
+		if(pa >= VDRAM && pa < limit){
+			/*
+			 * DRAM: map with 2MiB leaves reached through a shared L2
+			 * table rather than a single 1GiB leaf.  Every hart's mmutop
+			 * is a by-value copy of sv39, so the shared L2 pointer means
+			 * a later mmuuncache() that edits an L2/L3 entry is seen by
+			 * all harts with only a TLB shootdown (see mmuuncache).
+			 */
+			l2 = bootptpage();
+			for(j = 0; j < 512; j++)
+				l2[j] = PA2PTE(pa + j*PGLSZ(1)) | 0xcf;
+			sv39[i] = PA2PTE((uintptr)l2) | PTEVALID;
+		} else
+			/* below/above DRAM (includes MMIO): keep the 1GiB leaf */
+			sv39[i] = PA2PTE(pa) | 0xcf;
 		print("sv39:%p is %p\n", &sv39[i], sv39[i]);
 	}
 
