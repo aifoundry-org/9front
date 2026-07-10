@@ -220,6 +220,7 @@ void	clearipi(void);
 void	clockenable(void);
 void	clockintr(Ureg* ureg, void *);
 void	clockoff(void);
+void	timerset(uvlong);
 int	clocksanity(void);
 void	clrreserv(void);
 uintptr	clrsie(uintptr);

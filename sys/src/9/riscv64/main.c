@@ -272,6 +272,16 @@ main(void)
 	print("tm %#llx cm %#llx\n", tm, cm);
 	mmu1init();
 	cpuinit(0); print("DONE cpuinit(0) -- FIXME\n");
+	/*
+	 * cpuinit() does clockoff() (clears Stie) as its last timer act, and
+	 * for the boot cpu it runs AFTER timersinit(), so unlike a secondary
+	 * (which timersinit()s after cpuinit in cpustart) cpu0 would enter the
+	 * scheduler with its timer disabled — its stale periodic Timer then
+	 * keeps any later timeradd() from re-arming, so the clock never restarts
+	 * and timeout-only tsleeps (e.g. SD init) hang once other harts idle.
+	 * Re-arm the clock here, matching the secondary path.
+	 */
+	timerset(0);
 	schedinit();
 }
 
