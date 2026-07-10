@@ -166,18 +166,20 @@ vlabs(vlong vl)				/* unused */
 	return vl >= 0? vl: -vl;
 }
 
-static char *cputype = "riscv64";
+static char vendor[19], arch[19], impid[19];
+static char cpuid[sizeof(vendor)+sizeof(arch)+sizeof(impid)];
+static char cputype[150];
 
 static long
 cputyperead(Chan*, void *a, long n, vlong off)
 {
-	char str[100];
-	extern int (*archclz)(Clzuint);
+	return readstr(off, a, n, cputype);
+}
 
-	snprint(str, sizeof str, "%s %ud\next %s\nidle %s %ssending IPIs over %lld ns\n",
-		cputype, m->cpumhz,
-		"wfi", soc.idlewake? "": "not ", "hi",  0); // /*sys->nsthresh*/);
-	return readstr(off, a, n, str);
+static long
+cpuidread(Chan*, void *a, long n, vlong off)
+{
+	return readstr(off, a, n, cpuid);
 }
 
 static ulong exts[] = {
@@ -250,7 +252,14 @@ pmctlwrite(Chan*, void *a, long n, vlong)
 void
 archinit(void)
 {
+	snprint(vendor, sizeof(vendor), "0x%016ullx", sbigetmvendorid());
+	snprint(arch, sizeof(arch), "0x%016ullx", sbigetmarchid());
+	snprint(impid, sizeof(impid), "0x%016ullx", sbigetmimpid());
+	snprint(cpuid, sizeof(cpuid), "%s %s %s", vendor, arch, impid);
+	/* cputype is a bit un-plan9-like for /dev, it has English words in it */
+	snprint(cputype, sizeof(cputype), "riscv64 %ud\next %s\nidle %s %ssending IPIs over %lld ns\nvendor %s arch %s impid %s\n", m->cpumhz, "wfi", soc.idlewake? "": "not ", "hi",  (uvlong)0, vendor, arch, impid);
 	addarchfile("cputype", 0444, cputyperead, nil);
+	addarchfile("cpuid", 0444, cpuidread, nil);
 	addarchfile("pmctl", 0220, nil, pmctlwrite);
 	sbiinit();
 	k1thermalinit();
@@ -309,7 +318,7 @@ haltsys(void)
 {
 	int i;
 
-	panic("iprint(\"mpshutdown: cpu%d: %d active cpus\n\", m->machno, sys->nonline);");
+	panic("iprint(\"mpshutdown: cpu%d: %d active cpus\n", m->machno, sys->nonline);
 	delay(5);
 	panic("implement devtabshutdown();");
 	splhi();
