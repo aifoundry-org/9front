@@ -78,6 +78,7 @@ confinit(void)
 	int i;
 	
 	sys = &asys;
+	sys->nonline = 1;		/* the boot cpu; secondaries bump this */
 
 	conf.nmach = 1;
 	if(p = getconf("*ncpu"))
@@ -175,6 +176,7 @@ mpinit(void)
 		print("mpinit: no SBI HSM; staying uniprocessor\n");
 		return;
 	}
+	soc.idlewake = 1;	/* enable cross-cpu wakeup via software ipis */
 	hsmstartall();
 }
 

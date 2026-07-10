@@ -117,6 +117,11 @@ irq(Ureg *ureg)
 			break;
 		}
 	}
+	/*
+	 * a handler may have readied a proc that another (idle) cpu should
+	 * run; poke idle cpus so they don't wait for their next clock tick.
+	 */
+	idlewake();
 	return 0;
 }
 

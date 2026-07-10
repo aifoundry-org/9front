@@ -989,9 +989,15 @@ noted(Ureg *ureg, Ureg *nureg, int arg0)
 	return 0;
 }
 
+/* clear a software ipi delivered to this cpu (see idlewake/ipitohart) */
 void clearipi(void)
 {
-	panic("clearipi");
+	if(nosbi || soc.ipiclint)
+		m->clint->msip[m->hartid] = 0;
+	else
+		sbiclearipi();		/* legacy SBI: clears our SSIP */
+	coherence();
+	clrsipbit(Ssie);		/* deassert pending super sw intr */
 }
 
 /* base plic context for mach (M mode). dependent upon system configuration */

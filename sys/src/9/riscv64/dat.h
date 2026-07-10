@@ -228,6 +228,7 @@ struct Mach
 	uvlong boottsc;
 	uint plicctxt;
 	uchar	clockintrsok;	/* flag: safe to call timerintr */
+	ulong	ipiwait;	/* flag: cpu is idling, wake it with an ipi */
 	int	clockintrdepth;
 	int machmode;
 	uint cpumhz;
@@ -491,6 +492,7 @@ enum Riscv_vendorid {
 };
 
 struct Sys {
+			int	nonline;	/* number of cpus online */
 			/* computed constants to avoid mult. & div. */
 			uvlong	clintsperµs;
 			uvlong	clintsperhz;	/* clint ticks per HZ */
