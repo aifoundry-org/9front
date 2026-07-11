@@ -408,35 +408,10 @@ ishartonline(int hart)		/* unused */
 	return harts[hart].running;
 }
 
-/* it's a shame they did not plan for a fallback if hardware RNG broke ... */
-void
-hwrand(void *v, ulong n)
-{
-	ulong amt = 0;
-	u8int *vp = v;
-	while(amt < n) {
-		u64int s = rseed();
-		switch(s&3) {
-			case 0:
-				break;
-			case 1:
-				memmove(&vp[amt], &s, sizeof(s));
-				amt += sizeof(s);
-				break;
-			case 2:
-				break;
-			case 3:
-				panic("HWRNG broke");				
-				break;	
-		}
-	}
-	return;
-}
 /* cpu-specific setup for this cpu */
 void
 cpuinit(int cpu)
 {
-	extern void (*hwrandbuf)(void*, ulong);
 	USED(cpu);
 #ifdef xxx
 	Hart *hartst;
@@ -459,29 +434,12 @@ cpuinit(int cpu)
 
 	m->plicctxt = mach2context(m);	/* base context without priv mode */
 	clockoff();
-	/* start the entropy */
-	// Run this loop at least once. I have no idea why, but it has
-	// to run once, presumably to take the trap, which must initialize
-	// something. Weird. But if don't run this loop, it hangs in
-	// interrupt handling in later boot, when it goes touser(). Shit.
-	for(int i = 0; i < 1; i++) {
-		u64int s = rseed();
-		switch(s&3) {
-			case 0:
-				iprint("got 16 bits, hang on for RNG %d; ", cpu);
-				break;
-			case 1:
-				iprint("got 32 bits, we have hardware RNG %d; ", cpu);
-				hwrandbuf = hwrand;
-				break;
-			case 2:
-				iprint("not ready ... wait for RNG %d; ", cpu);
-				break;
-			case 3:
-				iprint("HWRNG %d broken ... ", cpu);
-				break;	
-		}
-	}
+
+	/*	TODO: hardware entropy.  The X60 and X100 have no seed CSR (Zkr), so there is
+	 	no in-core source.  The K1 has a CRNG block (MMIO at 0xf0703800); a driver
+		for it could fill a buffer and set hwrandbuf (see port/random.c) so
+		randomread() uses hardware entropy.  Until then hwrandbuf stays nil and
+		the software PRNG is used. */
 }
 
 static uvlong tscperclintglob;
@@ -1357,5 +1315,3 @@ millidelay(int millisecs)
 		microdelay(1000LL * millisecs);
 }
 #endif
-
-
