@@ -196,7 +196,7 @@ r:	CHAR
 			}
 		}
 	| SCON r
-	={	$$.i = mn2(RSCON,$2.i,$1.i); }
+	={	$$.i = mn2(RSCON,$2.i,(uintptr)$1.cp); }	/* $1 is a pointer (yylval.cp); .i would truncate it on 64-bit */
 	| '^' r
 	={	$$.i = mn1(CARAT,$2.i); }
 	| r '$'
