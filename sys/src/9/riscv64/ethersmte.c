@@ -1149,7 +1149,18 @@ ethinit(Ether *edev)
 
 	/* K1 EMAC uses 32-bit DMA addresses */
 	c->rxr = xspanalloc(sizeof(u32int) * 4 * RXRING, 16, 0);
-	c->txr = xspanalloc(sizeof(u32int) * 4 * TXRING, 16, 0);
+	/*
+	 * TX descriptors are 16 bytes, so four share a 64-byte cache line.
+	 * ethtx's smtecacheflush() of a freshly-queued descriptor writes the
+	 * whole line back, and that carries our stale copies of the other
+	 * three descriptors -- clobbering OWN=host completions the chip just
+	 * wrote to them.  The completions are then lost (the ring jams full,
+	 * inflight stuck near TXRING) and the chip sees OWN=cpu, reports
+	 * TX_DES_UNAVAILABLE and suspends, so bulk TX trickles.  Put the ring
+	 * in non-cacheable memory (Svpbmt NC) so there is no line to clobber;
+	 * the cbo calls on it become no-ops.
+	 */
+	c->txr = ucallocalign(sizeof(u32int) * 4 * TXRING, 16, 0);
 	memset(c->rxr, 0, 4 * RXRING * sizeof(u32int));
 	memset(c->txr, 0, 4 * TXRING * sizeof(u32int));
 	smtecacheflush(c->rxr, 4 * RXRING * sizeof(u32int));
