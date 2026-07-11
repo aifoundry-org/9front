@@ -199,7 +199,18 @@ void
 main(void)
 {
 	if(!once){
-		memset(MACHP(0), 0, KTZERO-(uintptr)MACHP(0));
+		/*
+		 * Zero every per-cpu Mach page, not just cpu0's.  The Mach
+		 * pages stack downward from just below KTZERO (MACHADDR(n) =
+		 * KTZERO-(n+1)*MACHSIZE), so MACHP(0) is the highest and
+		 * MACHP(MAXMACH-1) the lowest.  These pages aren't in bss, and
+		 * cpumain (l.s) doesn't clear them, so a secondary hart would
+		 * otherwise start on a garbage Mach (e.g. m->ilockdepth != 0,
+		 * panicking in sched()).  Safe here: cpu0's boot stack and
+		 * L1TOP live below MACHADDR(MAXMACH-1), and no secondary has
+		 * started yet (mpinit() runs much later).
+		 */
+		memset(MACHP(MAXMACH-1), 0, KTZERO-(uintptr)MACHP(MAXMACH-1));
 	}
 
 	if (once) panic("main entered twice");
