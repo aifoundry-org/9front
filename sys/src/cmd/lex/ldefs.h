@@ -87,7 +87,7 @@ extern int pres;	/* present input character */
 extern int peek;	/* next input character */
 extern int *name;
 extern int *left;
-extern int *right;
+extern uintptr *right;	/* holds a node index, except RSCON/RSTR where it's a pointer */
 extern int *parent;
 extern uchar **ptr;
 extern uchar *nullstr;
@@ -155,7 +155,7 @@ extern void	mkmatch(void);
 extern int	mn0(int);
 extern int	mn1(int, int);
 extern int	mnp(int, void*);
-extern int	mn2(int, int, int);
+extern int	mn2(int, int, uintptr);
 extern void	munputc(int);
 extern void	munputs(uchar *);
 extern void	*myalloc(int, int);
