@@ -263,6 +263,7 @@ enum {
 enum {
 	RXRING	= 512,
 	TXRING	= 512,
+	Txirqevery = 64,	/* request a TX-completion IRQ every Nth frame */
 	MAXSMTE	= 2,
 };
 
@@ -575,26 +576,23 @@ ethproc(void *ved)
 		ethtx(edev);
 		csr32w(c->regs, DMA_STATUS_IRQ, ~0U);
 		/*
-		 * Both completion interrupts are deliberately omitted; only the
-		 * error/stop conditions stay enabled.
+		 * RX_TRANSFER_DONE deliberately omitted: enabling it after a
+		 * Linux kexec breaks DHCP/RX (the chip seems to refuse further RX
+		 * until bit 4 is acked, and W1C of bit 4 doesn't reliably clear on
+		 * this silicon); RX completion is served by the 1ms etherclock poll.
 		 *
-		 * RX_TRANSFER_DONE: enabling it after a Linux kexec breaks
-		 * DHCP/RX (the chip seems to refuse further RX until bit 4 is
-		 * acked, and W1C of bit 4 doesn't reliably clear on this
-		 * silicon); RX completion is served by the 1ms etherclock poll.
-		 *
-		 * TX_TRANSFER_DONE: with it enabled the chip raises one IRQ per
-		 * transmitted frame.  On a uniprocessor the sender and ethirq
-		 * share a cpu so that rate self-throttles, but with secondaries
-		 * generating TX concurrently the per-frame IRQ outpaces ethirq's
-		 * drain, pins plic.c's bounded claim/complete loop, and the
-		 * source is masked as a storm (seen under tcpbw -c at *ncpu>1).
-		 * The IRQ isn't needed: oq is a Qkick queue whose kick is ethtx
-		 * (devether.c), so every transmit reclaims spent descriptors, and
-		 * the 1ms poll mops up the tail when TX goes idle.
+		 * TX_TRANSFER_DONE stays enabled, but ethtx only sets the per-
+		 * descriptor IRQ-on-completion bit every Txirqevery frames.  A
+		 * per-frame TX IRQ (the default) outpaces ethirq's drain once
+		 * secondaries generate TX concurrently, pinning plic.c's bounded
+		 * claim/complete loop until the source is masked as a storm (seen
+		 * under tcpbw -c at *ncpu>1).  Coalescing keeps reclaim prompt
+		 * enough to avoid TX stalls while cutting the IRQ rate ~Txirqevery-
+		 * fold; the 1ms poll still mops up the tail when TX goes idle.
 		 */
 		csr32w(c->regs, DMA_INTR_ENABLE,
-			DMA_INTR_ENABLE_TX_DMA_STOPPED
+			DMA_INTR_ENABLE_TX_TRANSFER_DONE
+			| DMA_INTR_ENABLE_TX_DMA_STOPPED
 			| DMA_INTR_ENABLE_RX_DES_UNAVAILABLE
 			| DMA_INTR_ENABLE_RX_DMA_STOPPED
 			| DMA_INTR_ENABLE_RX_MISSED_FRAME);
@@ -849,8 +847,10 @@ ethtx(Ether *edev)
 		/* push frame payload to DRAM before HW reads it */
 		smtecacheflush(bp->rp, BLEN(bp));
 		r[1] = (BLEN(bp) & TX_DESC1_SIZE1_MASK)
-			| TX_DESC1_FIRST_SEGMENT | TX_DESC1_LAST_SEGMENT
-			| TX_DESC1_INTERRUPT_ON_COMPLETION;
+			| TX_DESC1_FIRST_SEGMENT | TX_DESC1_LAST_SEGMENT;
+		/* coalesce: only every Nth frame raises a completion IRQ */
+		if((c->txi & (Txirqevery - 1)) == 0)
+			r[1] |= TX_DESC1_INTERRUPT_ON_COMPLETION;
 		if(c->txi == TXRING - 1)
 			r[1] |= TX_DESC1_END_RING;
 		r[2] = (u32int)pa;
