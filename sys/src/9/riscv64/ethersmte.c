@@ -575,17 +575,26 @@ ethproc(void *ved)
 		ethtx(edev);
 		csr32w(c->regs, DMA_STATUS_IRQ, ~0U);
 		/*
-		 * RX_TRANSFER_DONE deliberately omitted: enabling it after a
-		 * Linux kexec breaks DHCP/RX, independently confirmed even
-		 * with timebase correctly harvested from DTB.  Hypothesis:
-		 * chip refuses to process further RX frames until host acks
-		 * bit 4 via W1C, and W1C of bit 4 doesn't reliably clear it
-		 * on this silicon.  RX completion served by 1ms polling
-		 * backstop; TX completion is IRQ-driven.
+		 * Both completion interrupts are deliberately omitted; only the
+		 * error/stop conditions stay enabled.
+		 *
+		 * RX_TRANSFER_DONE: enabling it after a Linux kexec breaks
+		 * DHCP/RX (the chip seems to refuse further RX until bit 4 is
+		 * acked, and W1C of bit 4 doesn't reliably clear on this
+		 * silicon); RX completion is served by the 1ms etherclock poll.
+		 *
+		 * TX_TRANSFER_DONE: with it enabled the chip raises one IRQ per
+		 * transmitted frame.  On a uniprocessor the sender and ethirq
+		 * share a cpu so that rate self-throttles, but with secondaries
+		 * generating TX concurrently the per-frame IRQ outpaces ethirq's
+		 * drain, pins plic.c's bounded claim/complete loop, and the
+		 * source is masked as a storm (seen under tcpbw -c at *ncpu>1).
+		 * The IRQ isn't needed: oq is a Qkick queue whose kick is ethtx
+		 * (devether.c), so every transmit reclaims spent descriptors, and
+		 * the 1ms poll mops up the tail when TX goes idle.
 		 */
 		csr32w(c->regs, DMA_INTR_ENABLE,
-			DMA_INTR_ENABLE_TX_TRANSFER_DONE
-			| DMA_INTR_ENABLE_TX_DMA_STOPPED
+			DMA_INTR_ENABLE_TX_DMA_STOPPED
 			| DMA_INTR_ENABLE_RX_DES_UNAVAILABLE
 			| DMA_INTR_ENABLE_RX_DMA_STOPPED
 			| DMA_INTR_ENABLE_RX_MISSED_FRAME);
