@@ -164,6 +164,11 @@ machinit(void)
 {
 	extern void strap(void);
 	wstvec((uintptr)strap);
+	/*
+	 * strap() begins by swapping R(MACH) with SSCRATCH, so SSCRATCH
+	 * must already hold this hart's Mach pointer before any trap is taken.
+	 */
+	putsscratch((uintptr)m);
 	m->ticks = 1;
 	m->perf.period = 1;
 	active.machs[m->machno] = 1;
