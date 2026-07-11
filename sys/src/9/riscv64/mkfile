@@ -70,6 +70,7 @@ OBJ=\
 	sbiecall.$O\
 	ethersmte.$O\
 	k1reset.$O\
+	k1thermal.$O\
 	$CONF.root.$O\
 	$CONF.rootc.$O\
 	$DEVS\
