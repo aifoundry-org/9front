@@ -253,6 +253,7 @@ archinit(void)
 	addarchfile("cputype", 0444, cputyperead, nil);
 	addarchfile("pmctl", 0220, nil, pmctlwrite);
 	sbiinit();
+	k1thermalinit();
 }
 
 static void

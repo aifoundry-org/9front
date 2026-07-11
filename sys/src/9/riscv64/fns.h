@@ -192,6 +192,13 @@ void gpiointrdisable(uint pin);
 extern int k1pmicread(int reg);
 extern int k1pmicwrite(int reg, int val);
 
+/* k1thermal */
+extern void k1thermalinit(void);
+
+/* devarch */
+extern Dirtab* addarchfile(char *name, int perm,
+	long(*rdfn)(Chan*,void*,long,vlong), long(*wrfn)(Chan*,void*,long,vlong));
+
 /* main */
 extern void poweroff(void);
 
