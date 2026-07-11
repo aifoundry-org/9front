@@ -218,6 +218,10 @@ TEXT	rseed(SB), 1, $-4
 	MOV	CSR(SEED), R8
 	RET
 
+TEXT	putsscratch(SB), 1, $-4
+	MOV	R(ARG), CSR(SSCRATCH)
+	RET
+
 TEXT	wstvec(SB), 1, $-4
 	SFENCE
 	MOV	RARG, CSR(STVEC)
