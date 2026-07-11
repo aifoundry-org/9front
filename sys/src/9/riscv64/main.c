@@ -76,7 +76,7 @@ confinit(void)
 	ulong kpages;
 	char *p;
 	int i;
-	
+
 	sys = &asys;
 	sys->nonline = 1;		/* the boot cpu; secondaries bump this */
 
@@ -141,7 +141,7 @@ confinit(void)
 	kpages = conf.npage - conf.upages;
 	print("kpages to start is %lx = %lx - %lx \n", kpages, conf.npage, conf.upages);
 	kpages *= BY2PG;
-	print("%lx -= %lx + %lx + %lx + %lx + %x\n", 
+	print("%lx -= %lx + %lx + %lx + %lx + %x\n",
 		kpages,conf.upages*sizeof(Page)
 		, conf.nproc*sizeof(Proc*)
 		, conf.nimage*sizeof(Image)
@@ -220,7 +220,7 @@ main(void)
 	if (!m->machno) {
 		extern char bdata[], edata[], end[], etext[];
 		static ulong vfy = 0xcafebabe;
-	
+
 		if (vfy != 0xcafebabe){
 			sbiputc('Z');
 			memmove(bdata, etext, edata - bdata);
@@ -284,6 +284,20 @@ main(void)
 	links();
 	chandevreset();
 	userinit();
+	/*
+	 * Wire pid 1 to cpu0. It is created by userinit() before mpinit() starts
+	 * any secondary and before cpu0 begins scheduling, so wiring it now is race-free.
+	 * Avoid letting a secondary hart (not yet cache-coherent as it enters the scheduler)
+	 * running the boot exec, which would read stale kernel memory and fault.
+	 */
+	{
+		Proc *p;
+		int i;
+
+		for(i = 0; (p = proctab(i)) != nil; i++)
+			if(p->pid != 0 && p->text != nil && strcmp(p->text, "*init*") == 0)
+				procwired(p, 0);
+	}
 	mpinit();
 	u64int tm = rdtime();
 	u64int cm = rdstimecmp();
