@@ -1,0 +1,8 @@
+[default_config]
+assembler = "go"
+instruction_set = "riscv"
+
+[default_config.opts]
+diagnostics = false
+default_diagnostics = false
+
