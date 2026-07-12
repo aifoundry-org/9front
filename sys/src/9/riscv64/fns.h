@@ -220,6 +220,7 @@ extern Dtbether *dtbether(int);
 // new
 void wsatp(u64int);
 void wstvec(u64int);
+void putscounteren(uintptr);
 u64int rsatp(void);
 u64int rseed(void);
 void *usertokernel(void *v);

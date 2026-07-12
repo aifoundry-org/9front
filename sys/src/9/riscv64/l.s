@@ -348,9 +348,25 @@ TEXT	flushasidva(SB), 1, $-4
 TEXT	flushasid(SB), 1, $-4
 	RET
 
+/*
+ * cycle counter (CSR 0xc00): per core (not per hart) and may pause during WFI.
+ * S-mode access needs mcounteren.CY (OpenSBI sets it); user mode needs scounteren.CY.
+ */
 TEXT	vcycles(SB), 1, $-4
+	MOV	CSR(CYCLO), R(ARG)
 	RET
+
+/*
+ * elapsed time for the scheduler: reads the time counter (CSR 0xc01),
+ * not the cycle counter. Time is monotonic, doesn't pause during WFI.
+ */
 TEXT	perfticks(SB), 1, $-4
+	MOV	CSR(TIME), R(ARG)
+	RET
+
+/* takes scounteren bits to let user mode read the cycle/time/instret CSRs */
+TEXT	putscounteren(SB), 1, $-4
+	MOV	R(ARG), CSR(SCOUNTEREN)
 	RET
 
 /*
