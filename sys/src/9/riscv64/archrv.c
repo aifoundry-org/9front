@@ -432,6 +432,13 @@ cpuinit(int cpu)
 #endif
 	m->boottsc = rdtsc();
 
+	/*
+	 * Let libc cycles(2) read the cycle/time/instret CSRs.
+	 * OpenSBI grants these to S-mode via mcounteren;
+	 * scounteren passes them on to U-mode. Bits: CY|TM|IR.
+	 */
+	putscounteren(1<<0 | 1<<1 | 1<<2);
+
 	m->plicctxt = mach2context(m);	/* base context without priv mode */
 	clockoff();
 
