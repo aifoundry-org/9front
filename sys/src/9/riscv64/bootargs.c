@@ -2,13 +2,13 @@
  * boot-time configuration from the DTB passed in by SBI.
  *
  * The previous-stage firmware (OpenSBI under qemu, U-Boot/OpenSBI on hardware)
- * passes us hartid in a0 and a pointer to a flattened device tree in a1.  
+ * passes us hartid in a0 and a pointer to a flattened device tree in a1.
  * l.s stashes that pointer in `dtbphys`.  We scan the DTB's /chosen/bootargs
  * property for a plan9.ini-style "key=value key=value ..." string and stuff
  * each pair into conf[].  bootrc and friends then see them as ordinary kernel
  * env via getconf()/setconfenv().
  */
-#include "u.h" 
+#include "u.h"
 #include "../port/lib.h"
 #include "mem.h"
 #include "dat.h"
@@ -35,9 +35,9 @@ char *bootconf;			/* BOOTARGS; see mem.h */
 
 /*
  * Per-UART information harvested from the DTB.  Filled in by devtreeprop()
- * as it walks uart-like nodes (serial@..., uart@..., r_uart...).  After
- * the whole DTB is parsed, applyaliases() correlates them with the
- * /aliases section so serial0 → eia0, etc., and resolvedtbconsole()
+ * as it walks uart-like nodes (serial@..., uart@..., r_uart...).
+ * After the whole DTB is parsed, applyaliases() correlates them with the
+ * /aliases section, so serial0 is eia0, etc., and resolvedtbconsole()
  * picks the entry referenced by /chosen/stdout-path.
  */
 #define MAXDTBUARTS 16
@@ -47,8 +47,8 @@ static Dtbuart dtbuarts[MAXDTBUARTS];
 static int ndtbuarts;
 static Dtbether dtbethers[MAXDTBETHERS];
 static int ndtbethers;
-static char dtbalias[MAXDTBUARTS][64];	/* serial<N> → DT node path */
-static char dtbethalias[MAXDTBETHERS][64]; /* ethernet<N> → DT node path */
+static char dtbalias[MAXDTBUARTS][64];	/* serial<N> -> DT node path */
+static char dtbethalias[MAXDTBETHERS][64]; /* ethernet<N> -> DT node path */
 static char dtbstdout[64];
 static int dtbhasplic_;			/* root interrupt controller is a PLIC */
 static char dtbrootcompat[128];		/* root "compatible": NUL-separated list */
@@ -331,7 +331,7 @@ findorallocether(char *path)
 	e->path[n] = 0;
 	e->irq = -1;
 	e->aliasidx = -1;
-	e->ok = 1;		/* per DT spec §2.3.4, absent status = enabled */
+	e->ok = 1;		/* per DT spec sec. 2.3.4, absent status = enabled */
 	e->txphase = -1;
 	e->rxphase = -1;
 	e->rstpin = -1;
@@ -359,7 +359,7 @@ findorallocuart(char *path)
 	u->irq = -1;
 	u->regshift = 0;	/* ns16550 binding default; PXA/DW APB set reg-shift=<2> */
 	u->aliasidx = -1;
-	u->ok = 1;		/* per DT spec §2.3.4, absent status = enabled */
+	u->ok = 1;		/* per DT spec, absent status = enabled */
 	return u;
 }
 
@@ -395,11 +395,9 @@ devtreeprop(char *path, char *key, void *val, int len)
 		return;
 	}
 	/*
-	 * /cpus/timebase-frequency = CLINT mtime tick rate in Hz.  All
-	 * kernel timer math (HZ scheduling, tsleep, IP-stack retransmit
-	 * timers) depends on this being correct.  On the K1 it's 24 MHz;
-	 * hard-coding 10 MHz makes every kernel timer fire 2.4x too
-	 * quickly, which warps everything downstream including ping RTT.
+	 * /cpus/timebase-frequency = CLINT mtime tick rate in Hz.  All kernel
+	 * timer math (HZ scheduling, tsleep, IP-stack retransmit timers)
+	 * depends on this being correct: 10MHz on qemu, 24MHz on the K1.
 	 */
 	if(strcmp(path, "/cpus") == 0
 	   && strcmp(key, "timebase-frequency") == 0 && len >= 4)
@@ -544,7 +542,7 @@ devtreeprop(char *path, char *key, void *val, int len)
 		if(strcmp(key, "reg") == 0 && len >= 8){
 			/*
 			 * /soc on K1 is #address-cells=2 #size-cells=2, so reg is
-			 * 16 bytes; older qemu-virt uses 8.  Cover both.
+			 * 16 bytes; older qemu-virt uses 8.
 			 */
 			if(len >= 16){
 				ic->base = ((uvlong)beget4(p) << 32) | beget4(p + 4);
@@ -742,7 +740,7 @@ finishdtbuarts(void)
 	}
 	/*
 	 * aliases are optional: hand enabled ether nodes that got no
-	 * ethernetN alias the free indexes, in node order, so a DTB that
+	 * ethernetN alias the free indices, in node order, so a DTB that
 	 * only aliases the first port still yields the others.
 	 */
 	for(j = 0; j < ndtbethers; j++){
@@ -811,8 +809,8 @@ parsedevtree(uchar *base)
 
 /*
  * a bootloader (or writeconf across a reboot) may have left a plan9.ini
- * at CONFADDR, the same convention u-boot boot scripts use on the arm
- * boards: zero the region, then load the file over it.  Accept it only
+ * at CONFADDR, the same convention u-boot boot scripts use on the arm boards:
+ * zero the region, then load the file over it.  Accept it only
  * if it's NUL-terminated printable text containing a '='; anything else
  * is leftover memory, and configuration comes from the DTB instead.
  */
