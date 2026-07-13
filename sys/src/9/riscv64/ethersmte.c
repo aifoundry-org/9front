@@ -267,8 +267,8 @@ enum {
 
 /*
  * K1 DMA is non-coherent (dma-noncoherent in the vendor DT).
- * CPU→HW: cbo.flush (writeback + invalidate) — push fresh data to DRAM.
- * HW→CPU: cbo.inval (invalidate only) — must NOT writeback or a stale
+ * CPU->HW: cbo.flush (writeback + invalidate) — push fresh data to DRAM.
+ * HW->CPU: cbo.inval (invalidate only) — must NOT writeback or a stale
  * CPU-cached descriptor (e.g. OWN=host from an old replenish that the
  * line later re-prefetched) would clobber the chip's just-written
  * OWN=chip update in DRAM, stranding the frame in a slot ethrx never
@@ -938,7 +938,7 @@ ethirq(Ureg *, void *arg)
 	 * Drain unconditionally — ethrx/ethtx are self-bounded by the
 	 * per-descriptor OWN flag, so calling them when nothing is
 	 * ready is a cheap one-descriptor read.  Also covers the polling
-	 * backstop path (etherclock → etherserve → ethirq).
+	 * backstop path (etherclock -> etherserve -> ethirq).
 	 */
 	ethrx(edev);
 	ethtx(edev);

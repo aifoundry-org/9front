@@ -78,13 +78,6 @@ TEXT strap(SB), 1, $-4
 	MOV	$dummysc(SB), R9
 	SCW(0, 9, 0)
 
-#ifdef TRAPDEBUG
-FUCK
-//	MOV	MCONSUART(R(MACH)), R(UART0)
-//	CONSPUT($'S')
-//	JAL	R0, wfi(SB)		/* JMP only takes local labels */
-#endif
-
 	MOV	CSR(SSTATUS), R9
 	AND	$Spp, R9
 	BEQ	R9, fromuser			/* prev not super */

@@ -30,16 +30,16 @@ static char *fpstnames[] = {
  * 9front kernels allow kernel and note handler use of FPU.
  * Exceptions can nest, requiring a stack of saved FPU register values.
  ** This stack is implemented via a linked list.
- * CPU takes a trap on ANY access to FPU. 
+ * CPU takes a trap on ANY access to FPU.
  ** All setting is done at SPLHI in assembly. No code in this file should touch the FP registers.
  * Registers F28-F31 hold constants.
  * FPU registers should never be used in this file.
- * FPU is enabled by 2 bits in SSTATUS. If those bits are 0, the FPU can be used. 
+ * FPU is enabled by 2 bits in SSTATUS. If those bits are 0, the FPU can be used.
  * SSTATUS in the ureg is a saved copy of SSTATUS
  ** Weirdly, the FPU bits are not cleared to 0 when strap occurs.
  ** Will we need to do this?
  * The FPU status is restored when we leave the kernel to user mode.
- * Or when we leave this trap to go back to kernel. 
+ * Or when we leave this trap to go back to kernel.
  */
 
 /* initial contents of high fp regs.  compiler assumes such initialization. */
@@ -67,7 +67,7 @@ fpalloc(FPalloc *link)
 	return a;
 }
 
-static void 
+static void
 fpfree(FPalloc*a)
 {
 	free(a);
@@ -91,8 +91,8 @@ fprestore(FPsave *p)
 	fploadregs(p->regs); // fploadregs enables the FPU
 }
 
-/* fpinit loads the registers from fpsave0. 
- * Critically, the constant registers will be set. 
+/* fpinit loads the registers from fpsave0.
+ * Critically, the constant registers will be set.
  * This used to load from fpsave0, but that does not
  * have f28-31 set, which in actual use did not end well.
  */
@@ -121,7 +121,7 @@ void
 fpuprocsave(Proc *p)
 {
 	if (TrapSpew)print("fpuprocsave\n");
-	// Process dead? nothing do to. 
+	// Process dead? nothing do to.
 	if(p->state == Moribund){
 		FPalloc *a;
 
@@ -146,11 +146,8 @@ fpuprocsave(Proc *p)
 	}
 
 	/*
-	 * A process in a note handler carries the FPnotify bit; mask it
-	 * out before deciding whether there is anything to save.  Without
-	 * this, a process that never touched the FPU (FPinit|FPnotify) is
-	 * not recognised as FPinit and we call fpsave(nil), faulting on the
-	 * store to fcsr at offset 0x200.
+	 * A process in a note handler carries the FPnotify bit; mask it out
+	 * before deciding whether there is anything to save.
 	 */
 	if((p->fpstate & ~FPnotify) == FPinit)
 		return;
@@ -254,7 +251,7 @@ mathtrap(Ureg *ureg)
 {
 	if (TrapSpew)print("mathtrap %p\n", ureg->pc);
 	/* we were not in user mode. So, the kernel decided to use the FPU,
-	 * and if there is state to be preserved, here is where we do it. 
+	 * and if there is state to be preserved, here is where we do it.
 	 * We will set up the FPU here and just return. */
 
 	/* no user stuff going on. Ron is unsure about this code. */

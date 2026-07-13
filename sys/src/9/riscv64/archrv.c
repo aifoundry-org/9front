@@ -1,6 +1,5 @@
 /*
- * risc-v rv64gc dependencies: clint, clock, ipis, harts, l2/3 cache, idling,
- *	delays
+ * risc-v rv64gc dependencies: clint, clock, ipis, harts, l2/3 cache, idling, delays
  */
 #include "u.h"
 #include "../port/lib.h"
@@ -548,11 +547,9 @@ calibrate(void)
 	sys->nsthresh = (Minns * sys->clintsperµs) / 1000;
 
 	/*
-	/* Minimum interval until next timer interrupt.  Was /(100*HZ) and
-	 * that made too many intrs; was /(5*HZ) = 2ms which was too coarse
-	 * for sub-tick polling (e.g. the 1ms etherclock backstop).  At
-	 * /(10*HZ) we get 1ms resolution and ~1000 clock interrupts/sec
-	 * worst case, which is well under 1% of CPU on a 1.6GHz K1.
+	/* minimum interval until next timer interrupt: 1ms resolution.
+	 * /(100*HZ) made too many intrs; /(5*HZ) = 2ms was too coarse
+	 * for sub-tick polling (e.g. the 1ms etherclock backstop).
 	 */
 	sys->minclints = timebase / (10*HZ);
 
@@ -569,23 +566,13 @@ clockoff(void)
 
 /*
  *  set next timer interrupt for time next, in fastticks (clint ticks).
- *  we won't go longer than 1/HZ s. without a clock interrupt.
- *  as a special case, next==0 requests a small interval (e.g., 1/HZ s.).
+ *  as a special case, next==0 requests a small interval.
  *
- *  On RISC-V the supervisor timer pending bit (sip.STIP) is asserted by
- *  hardware whenever mtime ≥ stimecmp and can only be cleared by
- *  advancing stimecmp past mtime — csr writes to sip have no effect on
- *  it (the trap.c comment "this does not work for interrupt 0x20 (STIP)"
- *  is talking about exactly this).  So we must unconditionally write
- *  stimecmp to a strictly-future deadline; otherwise the trap returns,
- *  STIP is still set, and we immediately re-trap.  Previously this
- *  function only wrote stimecmp under two narrow conditions (deadline
- *  in the past, or > 0x1000000 ticks in the future), which meant the
- *  ordinary case left stimecmp at its passed-deadline value and the
- *  whole timer subsystem ran on a 43.7 ms cadence (set by the safety
- *  net in trap.c:traplocalintr).  That capped sub-tick polling like
- *  the ethersmte 1 ms backstop and showed up as ~18 ms / 12 ms-mdev
- *  ping latency on the K1.
+ * On RISC-V the supervisor timer pending bit (sip.STIP) is asserted by hardware
+ * whenever mtime ≥ stimecmp, and can only be cleared by advancing stimecmp
+ * past mtime: csr writes to sip have no effect on it. So we must unconditionally
+ * write stimecmp to a strictly-future deadline; otherwise the trap returns,
+ * STIP is still set, and we immediately re-trap.
  */
 void
 timerset(uvlong next)
@@ -653,7 +640,7 @@ clocksanity(void)
 /*
  * count an ipi that broke us out of wfi but wasn't serviced as a real
  * trap (we were at splhi in idlewakehands).  irqalloc accounting isn't
- * wired up on this port yet, so just tally it on the Mach.
+ * wired up on this port yet, so just tally it in the Mach.
  */
 void
 countipi(void)
@@ -720,19 +707,18 @@ idlewakehands(void)
 	ulong ip;
 
 	/*
-	 * ask for an ipi from another cpu if work becomes possibly
-	 * available.  if no other devices or processors interrupt,
-	 * the clock will.
+	 * ask for an ipi from another cpu if work becomes possibly available.
+	 * if no other devices or processors interrupt, the clock will.
 	 */
 	amoswapw(&m->ipiwait, 1);		/* avoid coherence call */
 	ip = idlenowakehands();
 
 	/*
-	 * some interrupt popped us out of wfi at splhi, if we were in
-	 * wfi.  if we popped out of wfi due to an ipi, clear it.  as
-	 * a side-effect, if we waited in wfi, the ipi won't have been
-	 * automatically counted for irqalloc since it wasn't serviced,
-	 * but ipiwait will have been zeroed when sending the ipi.
+	 * some interrupt popped us out of wfi at splhi, if we were in wfi.
+	 * if we popped out of wfi due to an ipi, clear it. as a side-effect,
+	 * if we waited in wfi, the ipi won't have been automatically counted
+     * for irqalloc since it wasn't serviced, but ipiwait will have
+     * been zeroed when sending the ipi.
 	 */
 	if (amoswapw(&m->ipiwait, 0) == 0)
 		countipi();			/* were still waiting */
@@ -818,12 +804,6 @@ idlewake(void)
 	 */
 	hartbm = 0;
 	while (left > 0) {
-		/*
-		 * Machs live at fixed addresses MACHP(machno); this port has
-		 * no sys->machptr[] to publish.  machno == hartid for the
-		 * contiguous low harts we bring up, so MACHP(cpu) is valid
-		 * for cpu in 0..nonline-1.
-		 */
 		mp = MACHP(cpu++);
 		cpu = WRAPCPU(cpu, nonline);
 		if (mp != m && mp->ipiwait && mp->timecmp > imminent &&
@@ -989,9 +969,8 @@ hsmstartall(void)
 	}
 
 	/*
-	 * start any stopped harts, up to *ncpu of them.  We index Mach by
-	 * hartid, and on this SoC hart ids are contiguous from 0, so
-	 * conf.nmach doubles as the hart-id ceiling.
+	 * start any stopped harts, up to *ncpu of them.  We index Mach by hartid,
+	 * and on platforms we've tested so far, K1 hart ids are contiguous from 0.
 	 */
 	for (hart = soc.hobbled; hart < HARTMAX && hart < conf.nmach; hart++) {
 		if (hart == m->hartid) {
@@ -1036,12 +1015,10 @@ hsmstartall(void)
 uchar cpustack[MAXMACH][CPUSTACKSIZE];
 
 /*
- * C entry for a secondary hart, reached from cpumain (l.s).  m (the MACH
+ * main loop for a secondary hart (called from cpumain in l.s).  m (the MACH
  * register) already points at MACHP(hartid), set by cpumain, and paging is
- * already on with the shared kernel table.  Bring this cpu far enough to
- * join the scheduler: give it its own top-level page table, a per-cpu HZ
- * clock, and enable software ipis so idlewake() (cpu 0) can resume it when
- * it blocks in wfi.  Then schedinit() and never return.
+ * already on with the shared kernel table. Bring this hart far enough to
+ * join the scheduler, then schedinit() and don't return.
  */
 void
 cpustart(int hartid)
@@ -1077,7 +1054,8 @@ cpustart(int hartid)
 	iprint("cpu%d: hart %d online\n", m->machno, m->hartid);
 	schedinit();			/* runs procs; never returns */
 }
-#ifdef xxx	/* still-speculative code below stays guarded */
+
+#ifdef xxx
 
 static ulong
 prifexts(ulong isa, ulong exts, char *name)
@@ -1230,9 +1208,7 @@ archmmu(void)
 	assert(m->npgsz >= 1);
 	return Npglvls;
 }
-#endif
 
-#ifdef xxx
 static int
 fmtP(Fmt* f)
 {
