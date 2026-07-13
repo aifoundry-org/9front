@@ -316,12 +316,7 @@ main(u64int hartid, uintptr dtb)
 	links();
 	chandevreset();
 	userinit();
-	/*
-	 * Wire pid 1 to cpu0. It is created by userinit() before mpinit() starts
-	 * any secondary and before cpu0 begins scheduling, so wiring it now is race-free.
-	 * Avoid letting a secondary hart (not yet cache-coherent as it enters the scheduler)
-	 * running the boot exec, which would read stale kernel memory and fault.
-	 */
+	/* Wire pid 1 to cpu0: the rest of the harts are not yet cache-coherent. */
 	{
 		Proc *p;
 		int i;

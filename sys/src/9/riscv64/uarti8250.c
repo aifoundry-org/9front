@@ -1,34 +1,11 @@
 /*
- * 8250/16550 UART for riscv64.  Register layer adapted from
- * sys/src/9/mt7688/uarti8250.c; multi-port discovery via pnp()
- * returning a chained Uart list follows sys/src/9/pc/uartpci.c.
- * DTB-driven enumeration uses the table built by bootargs.c
- * (DTB walker derived from sys/src/9/bcm/bootargs.c).
- *
- * Every node under /soc whose name matches serial@/uart@/r_uart
- * and whose status = "okay" becomes an eia<N> port, numbered in
- * /aliases serial<N> order.  The port that /chosen/stdout-path
- * resolves to is marked as the kernel console.
+ * 8250/16550 UART for riscv64.
  *
  * SoC-specific quirks are gated on the DT "compatible" string.
- * For "spacemit,*" parts (SpacemiT-family SoCs with the PXA-derived
- * UART block — BPI-F3's K1 today, K3 once silicon arrives) we
- * reprogram FCR/IER with the bit patterns the PXA-derived RX
- * datapath requires: FIFO+8-byte trigger and the unit-enable bit
- * plus the receive-line/data/timeout interrupt enables.  See the
- * Marvell PXA TRM, "UART chapter", which the SpacemiT silicon
- * inherits register-for-register.
+ * "spacemit,*" UARTs are handled the same as Marvell PXA.
  *
- * The console UART runs interrupt-driven via intrenable() when its
- * DTB irq is known; other UARTs and IRQ-less ports stay on the
- * 100-tick clock-callback polling path.  (Secondary UARTs are gated
- * off the IRQ path until we confirm their power/clock state is sane
- * — a mis-clocked port returning 0x00 from IIR would otherwise storm
- * the PLIC.)  plic.c is now driven by soc.plic — set preferentially
- * from the DTB by bootargsinit() and otherwise from a vendor-keyed
- * default in socidentify() — so the chip-level PLIC is properly
- * masked before the first source is enabled and the per-driver
- * socplicmask workaround is no longer required.
+ * The console UART is interrupt-driven via intrenable() when its DTB irq is known;
+ * other UARTs and IRQ-less ports depend on 100-tick clock-callback polling.
  */
 
 #include "u.h"
@@ -522,11 +499,7 @@ i8250disable(Uart* uart)
 }
 
 /*
- * PLIC-driven RX/TX.  Modelled on mt7688/uarti8250.c#i8250interrupt:
- * loop reading IIR until "no interrupt pending", dispatching by the
- * IIR ID field.  On the PXA-derived block a receive-timeout indication
- * (Ictoi) is the natural "drain me" event for sub-FIFO chunks; the
- * standard 16550 only ever raises Irda for that case.
+ * PLIC-driven RX/TX (like mt7688/uarti8250.c#i8250interrupt).
  */
 static void
 i8250interrupt(Ureg*, void* arg)
@@ -645,12 +618,8 @@ i8250enable(Uart* uart, int ie)
 
 	if(ie && ctlr->iena == 0){
 		/*
-		 * Only the console UART gets the IRQ-driven path for now.
-		 * Secondary UARTs enumerated from the DTB may be in odd power
-		 * states (eia2 on the K1 is "okay" in the DT but the chip
-		 * itself may not be fully clocked at the moment) and a misread
-		 * IIR there would storm the PLIC.  When we trust the per-UART
-		 * clock/power state, this gate can drop.
+		 * Only the console UART gets the IRQ-driven path for now
+		 * (avoid PLIC storms on the others, until we can trust clock/power state).
 		 */
 		/*
 		 * *uartpoll=1 in bootargs forces the polling path even when
@@ -670,10 +639,7 @@ i8250enable(Uart* uart, int ie)
 			print("uarti8250: irq-driven on %s irq %d\n",
 				uart->name, ctlr->irq);
 		} else if(uart->console){
-			/*
-			 * No IRQ from the DTB — fall back to the 100-tick clock
-			 * callback polling path so the console is still usable.
-			 */
+			/* No IRQ from the DTB — fall back to 100-tick clock callback polling */
 			ctlr->poll = 1;
 			pollctlr = ctlr;
 			addclock0link(i8250poll, 100);
@@ -746,6 +712,9 @@ allocuart(Dtbuart *du, int aliasidx)
 	return u;
 }
 
+/*
+ * actual MMIO mapping after bootargsinit has populated the DTB UART table
+ */
 static Uart*
 i8250pnp(void)
 {
@@ -833,7 +802,7 @@ i8250pnp(void)
 		tail = u;
 	}
 
-	/* Also catch any okay uart-like nodes that lack a serial<N> alias. */
+	/* Also catch any uart-like nodes that lack a serial<N> alias. */
 	for(j = 0; j < n; j++){
 		du = dtbuart(j);
 		if(du == nil || du->aliasidx >= 0)
@@ -892,12 +861,7 @@ void
 uartconsinit(void)
 {
 	/*
-	 * Wire consuart now so early prints have somewhere to go.  The
-	 * actual MMIO mapping comes later from i8250pnp() once bootargsinit
-	 * has populated the DTB UART table; until then putc falls back to
-	 * sbiputc and getc returns -1.  Don't call uartctl here: it would
-	 * call csr8w which touches ctlr->io.  We trust whatever baud/format
-	 * U-Boot or OpenSBI left configured.
+	 * Init for early prints (as configured by U-Boot or OpenSBI).
 	 */
 	consuart = &i8250uart;
 	consuart->console = 1;

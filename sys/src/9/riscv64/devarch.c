@@ -225,10 +225,6 @@ sbiinit(void)
 	}
 }
 
-/*
- * scram (called by fshalt without -r) writes 'power off' here,
- * the same interface aux/acpi serves on pcs.
- */
 static long
 pmctlwrite(Chan*, void *a, long n, vlong)
 {

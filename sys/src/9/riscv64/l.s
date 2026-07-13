@@ -36,8 +36,8 @@ TEXT	_start(SB), 1, $-4
 	 * up SB, stack and Mach ourselves below.
 	 */
 	/*
-	 * RISC-V Linux Image header (64 bytes) so u-boot's booti can
-	 * load a plain 9<board> kernel binary without a uImage wrapper.
+	 * RISC-V PE/COFF header (64 bytes) so that u-boot's booti can load
+	 * a plain kernel binary without a uImage wrapper.
 	 * Layout per Linux Documentation/riscv/boot-image-header.rst:
 	 *   code0        first instruction (must be executable)
 	 *   code1        second instruction
@@ -48,9 +48,8 @@ TEXT	_start(SB), 1, $-4
 	 *   res1..res3   reserved
 	 *   magic        deprecated (leave 0)
 	 *   magic2       "RSC\5" — what booti actually validates
-	 * code0 jumps 64 bytes forward, past the header.  ELF entry stays
-	 * _start so bootelf and kexec also work — they land at code0 and
-	 * take the same jump.
+	 * code0 jumps 64 bytes forward, past the header, into the relocator below.
+	 * ELF entry is _start for bootelf and kexec: start at code0 and take the jump.
 	 *
 	 * The kernel runs in place wherever the loader put it and fixes up
 	 * its data pointers via the jl -u relocation table (relocfixup),
@@ -163,9 +162,7 @@ TEXT	cpumain(SB), 1, $-4
 
 	/*
 	 * per-hart stack: top of this hart's dedicated cpustack[hartid] slot,
-	 * NOT its 8K Mach page.  A Mach-page stack overflows down through the
-	 * next hart's Mach page once the scheduler runs (same collision that
-	 * moved the boot hart's stack off its Mach page).
+	 * NOT its 8K Mach page (which would overflow when the scheduler runs).
 	 */
 	MOV	$cpustack(SB), R2	/* base of stack array */
 	ADD	$1, R12, R8		/* hartid + 1 slots */
@@ -313,9 +310,9 @@ _fail:
 	MOV	R11, R(ARG)
 	RET
 
-// This version of tas stores RA (caller PC) in the location.
-// More useful than just '1' and the code tests for it being
-// non-zero, not just '1'.
+/* This version of tas stores RA (caller PC) in the location.
+ * More useful than just '1' and the code tests for it being
+ * non-zero, not just '1'. */
 TEXT	tas(SB), 1, $-4
 TEXT	_tas(SB), 1, $-4
 	FENCE_RW
@@ -343,22 +340,26 @@ TEXT	aadd(SB), 1, $-4		/* int aadd(int *a, int addend) */
 	SEXT_W(R(ARG))
 	RET
 
-TEXT	setlabel(SB), 1, $-4
-	MOV	R2, 0(R8)
-	MOV	R1, 8(R8)
-	MOV	R0, R8
-	RET
-
-// There is a spurious u64int pushed here, not sure why?
-// only on forkret. goddam it.
+/*
+ * Label consists of a stack pointer and a programme counter.
+ * Restore them and RET. For a forked child the target is forkret(),
+ * so on entry SP points at the Ureg but forkret builds its own frame below it;
+ * sysrforkret recomputes the Ureg from R(USER) rather than trusting SP.
+ */
 TEXT	gotolabel(SB), 1, $-4			/* gotolabel(Label *) */
 	MOV	0(R(ARG)), R2			/* restore sp */
-	MOV	XLEN(R(ARG)), R1		/* restore return pc */
+	MOV	XLEN(R(ARG)), LINK		/* restore return pc */
 	MOV	$1, R(ARG)
 	RET
 
-// NOTE: this is the SHADOW register of the memory-mapped
-// MTIME register. We will now use STIMECMP for interrupts.
+TEXT	setlabel(SB), 1, $-4
+	MOV	R2, 0(R(ARG))			/* store sp */
+	MOV	LINK, XLEN(R(ARG))		/* store return pc */
+	MOV	R0, R(ARG)
+	RET
+
+/* NOTE: this is the SHADOW register of the memory-mapped
+ * MTIME register. We will now use STIMECMP for interrupts. */
 #define TIME	0xc01
 TEXT	rdtime(SB), 1, $-4
 	FENCE
@@ -458,7 +459,7 @@ TEXT touser(SB), 1, $-4
 	MOV	RARG, R2		/* new sp */
 	WORD $0x10200073 //SRET
 
-// Courtesy of Geoff (I think?)
+// Courtesy of Geoff
 /*
  * Turn the Sie bit of SSTATUS on or off; leave the individual enables alone.
  * NB: the spl* functions contain barriers and it is safe to rely upon that.
