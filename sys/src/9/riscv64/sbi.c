@@ -164,10 +164,26 @@ vlong
 sbihartstart(uvlong hartid, uvlong physstart, uvlong private)
 {
 	uvlong xargs[2];
+	Sbiret sbiret;
 
 	xargs[0] = physstart;		/* for r11 */
 	xargs[1] = private;		/* for r12 */
-	return sbicall(HSM, 0, hartid, nil, xargs);
+	return sbicall(0x48534d, 0, hartid, &sbiret, xargs);
+}
+
+/*
+ * v0.2 hsm extensions
+ * 	funcs: stop this hart. Call with splihi().
+ */
+
+vlong
+sbihartstop(void)
+{
+	Sbiret sbiret;
+	uvlong xargs[2];
+	xargs[0] = 0;
+	xargs[1] = 0;
+	return sbicall(HSM, 1, 0, &sbiret, xargs);
 }
 
 /*

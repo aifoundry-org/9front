@@ -22,6 +22,8 @@
 */
 // THIS MUST BE FIRST FUNCTION IN THIS FILE
 TEXT	_start(SB), 1, $-4
+	/* on entry, a0/a1 have hartid / dtb pointer. These are X10/X11,
+	 * in Plan 9 naming, R10/R11. */
 	/*
 	 * RISC-V Linux Image header (64 bytes) so u-boot's booti can
 	 * load a plain 9<board> kernel binary without a uImage wrapper.
@@ -66,7 +68,7 @@ SRC:
 	BEQ R3, RELOCATED
 	MOV $KTZERO, R2
 	ADD $64, R2, R2			/* the header is linked at KTZERO; we copy from past it */
-	MOV R2, R10
+	MOV R2, R12
 	MOV $0x1000000, R4
 	SUB R2, R1, R5
 	BEQ R5, DONECOPY
@@ -82,13 +84,13 @@ ENDLOOP:
 DONECOPY:
 	ADD $10, R1
 	SUB R9, R1, R1
-	ADD R10, R1, R1
+	ADD R12, R1, R1
 	JAL R1, 0(R1)
 RELOCATED:
 	MOV	$setSB(SB), R3
 	/* SBI passes hartid in a0 (R10) and DTB physical address in a1 (R11).
-	 * R10 was already clobbered during relocation; R11 survives.  
-     * Stash the DTB pointer before mmudisable<> can scratch it.
+	 * Stash the DTB pointer. We will also pass it to main,
+	 * it might make more sense to save it there.
 	 */
 	MOV	R11, dtbphys(SB)
 	JAL	R1, mmudisable<>(SB)
@@ -107,6 +109,11 @@ RELOCATED:
 	MOV CSR(SSTATUS), R8
 	OR $0x40000, R8, R8
 	MOV R8, CSR(SSTATUS)
+	// Move A0 to RARG
+	MOV R10, RARG
+	// mov A1 to on-stack arg1.
+	// Recall that RARG represents 1(SP)
+	MOV R11, (2*XLEN)(SP)
 	
 	JAL	R1, main(SB)
 NDNR:
