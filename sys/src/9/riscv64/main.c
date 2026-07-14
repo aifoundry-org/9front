@@ -198,12 +198,26 @@ cpuidprint(void)
 	iprint("cpu%d: 1000MHz QEMU\n", m->machno);
 }
 
+static void
+sbiputs(char *s)
+{
+	for(int i = 0; s[i]; i++) {
+		int c = s[i];
+		if (c == 015) sbiputc(012);
+		sbiputc(c);
+	}
+}
+
 int i = 1;
 int once = 0;
 void
-main(void)
+main(u64int hartid, uintptr dtb)
 {
-	if(!once){
+	extern void _start(void);
+	extern void cpumain(u64int, uintptr);
+
+	sbiputc('!');
+	if((hartid == 0) && !once){
 		/*
 		 * Zero every per-cpu Mach page, not just cpu0's.  The Mach
 		 * pages stack downward from just below KTZERO (MACHADDR(n) =
@@ -216,6 +230,23 @@ main(void)
 		 * started yet (mpinit() runs much later).
 		 */
 		memset(MACHP(MAXMACH-1), 0, KTZERO-(uintptr)MACHP(MAXMACH-1));
+	}
+
+	sbiputc('@');
+	if (hartid) {
+		int err;
+		sbiputc('#');
+		if (err = sbihartstart(0, PADDR(_start)+64, dtb) < 0) {
+			err &= 0xf;
+			err += '0';
+sbiputc('n');sbiputc('o');sbiputc('n');sbiputc('-');sbiputc('z');sbiputc('e');sbiputc('r');sbiputc('o');sbiputc(' ');sbiputc('h');sbiputc('a');sbiputc('r');sbiputc('t');sbiputc('i');sbiputc('d');sbiputc(' ');sbiputc('c');sbiputc('o');sbiputc('u');sbiputc('l');sbiputc('d');sbiputc(' ');sbiputc('n');sbiputc('o');sbiputc('t');sbiputc(' ');sbiputc('s');sbiputc('t');sbiputc('a');sbiputc('r');sbiputc('t');sbiputc(' ');sbiputc('h');sbiputc('a');sbiputc('r');sbiputc('t');sbiputc(' ');sbiputc('=');sbiputc(err);
+		}
+		err = sbihartstop() & 0xf;
+		err += '0';
+//sbiputc('n');sbiputc('o');sbiputc('n');sbiputc('-');sbiputc('z');sbiputc('e');sbiputc('r');sbiputc('o');sbiputc(' ');sbiputc('h');sbiputc('a');sbiputc('r');sbiputc('t');sbiputc(' ');sbiputc('r');sbiputc('e');sbiputc('t');sbiputc('u');sbiputc('r');sbiputc('n');sbiputc('e');sbiputc('d');sbiputc(' ');sbiputc('f');sbiputc('r');sbiputc('o');sbiputc('m');sbiputc(' ');sbiputc('h');sbiputc('a');sbiputc('r');sbiputc('t');sbiputc('s');sbiputc('t');sbiputc('o');sbiputc('p');sbiputc(';');sbiputc(' ');sbiputc('h');sbiputc('a');sbiputc('n');sbiputc('g');sbiputc('i');sbiputc('n');sbiputc('g');sbiputc('=');sbiputc(err);
+		while(!once);
+		sbiputc('r');sbiputc('e');sbiputc('s');sbiputc('u');sbiputc('m');sbiputc('e');sbiputc(015);sbiputc(012);
+		cpumain(hartid, dtb);
 	}
 
 	if (once) panic("main entered twice");
@@ -265,7 +296,7 @@ main(void)
 	xsummary();
 	printinit();
 	print("\nPlan 9\n");
-	print("conf.mem[0].base %p, conf.mem[0].limit %p, conf.mem[0].npage %lud\n", conf.mem[0].base, conf.mem[0].limit, conf.mem[0].npage);
+	print("hartid %ulld dtb %p conf.mem[0].base %p, conf.mem[0].limit %p, conf.mem[0].npage %lud\n", hartid, dtb, conf.mem[0].base, conf.mem[0].limit, conf.mem[0].npage);
 #ifdef xxx
 	trapinit(); print("DONE 	trapinit();\n");
 	fpuinit(); print("DONE 	fpuinit();\n");
