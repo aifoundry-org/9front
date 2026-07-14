@@ -269,6 +269,7 @@ uvlong	sbigetmimpid(void);
 uvlong	sbigetmvendorid(void);
 vlong	sbihartstart(uvlong hartid, uvlong phys_start, uvlong private);
 vlong	sbihartstatus(uvlong hartid);
+vlong	sbihartstop(void);
 vlong	sbihartsuspend(void);
 vlong	sbiprobeext(uvlong);
 vlong	sbiremotesfencevma(uvlong *hartmask, uvlong start, uvlong size);
