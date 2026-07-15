@@ -22,8 +22,19 @@
 */
 // THIS MUST BE FIRST FUNCTION IN THIS FILE
 TEXT	_start(SB), 1, $-4
-	/* on entry, a0/a1 have hartid / dtb pointer. These are X10/X11,
-	 * in Plan 9 naming, R10/R11. */
+	/*
+	 * S-mode entry state guaranteed by SBI, for both the cold-boot entry
+	 * and an HSM hart_start resumption (see sbihartstart):
+	 *   a0 (R10) = hartid of this hart
+	 *   a1 (R11) = cold boot: DTB physical address
+	 *              hart_start: the opaque value the starter passed (we
+	 *                          pass the DTB, so it's the DTB either way)
+	 *   pc       = this entry address; privilege = S-mode
+	 *   satp     = 0 (paging off, so VA == PA here)
+	 *   sstatus.SIE = 0, sie = 0 (interrupts masked)
+	 * Everything else (sp, gp, tp, saved/temp regs) is UNSPECIFIED; we set
+	 * up SB, stack and Mach ourselves below.
+	 */
 	/*
 	 * RISC-V Linux Image header (64 bytes) so u-boot's booti can
 	 * load a plain 9<board> kernel binary without a uImage wrapper.
@@ -101,12 +112,14 @@ RELOCATED:
 	MOV CSR(SSTATUS), R8
 	OR $0x40000, R8, R8
 	MOV R8, CSR(SSTATUS)
-	// Move A0 to RARG
-	MOV R10, RARG
-	// mov A1 to on-stack arg1.
-	// Recall that RARG represents 1(SP)
-	MOV R11, (2*XLEN)(SP)
-	
+	/*
+	 * hand a0/a1 to main(hartid, dtb).  The Plan 9 riscv ABI passes the
+	 * first argument in RARG and later ones on the stack; arg0 is RARG
+	 * (== 1(SP)) and arg1 goes in the next slot at 2*XLEN(SP).
+	 */
+	MOV R10, RARG			/* arg0 = hartid */
+	MOV R11, (2*XLEN)(SP)		/* arg1 = dtb */
+
 	JAL	R1, main(SB)
 NDNR:
 	MOV $0x30, R10
