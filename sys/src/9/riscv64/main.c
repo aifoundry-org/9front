@@ -215,8 +215,10 @@ main(u64int hartid, uintptr dtb)
 {
 	extern void _start(void);
 	extern void cpumain(u64int, uintptr);
+	extern uintptr dtbphys;
 
-	sbiputc('!');
+	dtbphys = dtb;
+
 	if((hartid == 0) && !once){
 		/*
 		 * Zero every per-cpu Mach page, not just cpu0's.  The Mach
@@ -232,7 +234,6 @@ main(u64int hartid, uintptr dtb)
 		memset(MACHP(MAXMACH-1), 0, KTZERO-(uintptr)MACHP(MAXMACH-1));
 	}
 
-	sbiputc('@');
 	if (hartid) {
 		int err;
 		sbiputc('#');
