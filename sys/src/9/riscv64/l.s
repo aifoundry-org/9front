@@ -88,11 +88,6 @@ DONECOPY:
 	JAL R1, 0(R1)
 RELOCATED:
 	MOV	$setSB(SB), R3
-	/* SBI passes hartid in a0 (R10) and DTB physical address in a1 (R11).
-	 * Stash the DTB pointer. We will also pass it to main,
-	 * it might make more sense to save it there.
-	 */
-	MOV	R11, dtbphys(SB)
 	JAL	R1, mmudisable<>(SB)
 	/*
 	 * Boot stack below all per-cpu Mach pages [MACHADDR(MAXMACH-1),KTZERO),
