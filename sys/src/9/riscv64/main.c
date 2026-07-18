@@ -237,7 +237,7 @@ main(u64int hartid, uintptr dtb)
 	if (hartid) {
 		int err;
 		sbiputc('#');
-		if (err = sbihartstart(0, PADDR(_start)+64, dtb) < 0) {
+		if (err = sbihartstart(0, PADDR(_start), dtb) < 0) {
 			err &= 0xf;
 			err += '0';
 sbiputc('n');sbiputc('o');sbiputc('n');sbiputc('-');sbiputc('z');sbiputc('e');sbiputc('r');sbiputc('o');sbiputc(' ');sbiputc('h');sbiputc('a');sbiputc('r');sbiputc('t');sbiputc('i');sbiputc('d');sbiputc(' ');sbiputc('c');sbiputc('o');sbiputc('u');sbiputc('l');sbiputc('d');sbiputc(' ');sbiputc('n');sbiputc('o');sbiputc('t');sbiputc(' ');sbiputc('s');sbiputc('t');sbiputc('a');sbiputc('r');sbiputc('t');sbiputc(' ');sbiputc('h');sbiputc('a');sbiputc('r');sbiputc('t');sbiputc(' ');sbiputc('=');sbiputc(err);

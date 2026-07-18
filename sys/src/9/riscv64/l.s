@@ -41,7 +41,7 @@ TEXT	_start(SB), 1, $-4
 	 * relocator below.  ELF entry stays _start so bootelf and kexec
 	 * also work — they land at code0 and take the same jump.
 	 */
-	WORD $0x0400006f	/* code0: jal x0, +64 */
+	WORD $0x040000ef	/* code0: jal x1, +64 */
 	WORD $0x00000013	/* code1: nop */
 	WORD $0x40200000	/* text_offset[31:0] = KTZERO (booti here treats it absolute) */
 	WORD $0			/* text_offset[63:32] */
@@ -58,16 +58,13 @@ TEXT	_start(SB), 1, $-4
 	WORD $0x05435352	/* magic2 = "RSC\5" */
 	WORD $0			/* res3 */
 
-	JAL R1, SRC
 SRC:
 	ADD $-4, R1, R1
 	MOV R1, R9
 	MOV $KTZERO, R3
-	ADD $64, R3, R3			/* account for the 64-byte Image header */
 	SUB R3, R1, R3
 	BEQ R3, RELOCATED
 	MOV $KTZERO, R2
-	ADD $64, R2, R2			/* the header is linked at KTZERO; we copy from past it */
 	MOV R2, R12
 	MOV $0x1000000, R4
 	SUB R2, R1, R5
