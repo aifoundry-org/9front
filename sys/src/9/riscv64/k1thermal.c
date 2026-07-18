@@ -243,7 +243,12 @@ faninit(void)
 void
 k1thermalinit(void)
 {
-	if(soc.vendor != SpacemiT)
+	/*
+	 * mvendorid 0x710 covers every SpacemiT part including the K3,
+	 * whose APBC/AIB live elsewhere; only the DTB names the SoC
+	 * precisely enough to touch the addresses above.
+	 */
+	if(soc.vendor != SpacemiT || !dtbsocmatch("spacemit,k1"))
 		return;
 	thermalinit();
 	faninit();
