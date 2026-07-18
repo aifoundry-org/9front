@@ -927,6 +927,13 @@ sdspacemitlink(void)
 		.bus	 = sdhbus,
 		.aux	 = &sd,
 	};
+	/*
+	 * All the addresses here (SDHCI, APMU, AIB, PMIC) are the K1's;
+	 * sdhinit writes them unconditionally, so don't register on any
+	 * other SoC — the probe itself faults or hangs the bus there.
+	 */
+	if(!dtbsocmatch("spacemit,k1"))
+		return;
 	addmmcio(&io_emmc);
 	addmmcio(&io_sd);
 }
