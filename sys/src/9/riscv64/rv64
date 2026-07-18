@@ -27,6 +27,7 @@ dev
 
 link
 #	usbxhcipci	pci usbxhci
+	sdspacemit
 	ethervirtio10 virtio10mem pci
 #	ethersink
 	ethermedium
@@ -50,6 +51,7 @@ misc
 #	uartqemu
 	uarti8250
 	sdvirtio10	pci sdscsi
+	sdmmc		sdspacemit
 
 	dtracysys
 	dtracytimer
