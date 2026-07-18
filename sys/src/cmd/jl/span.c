@@ -527,3 +527,131 @@ buildrep(int x, int as)
 	}
 	oprange[as].start = 0;
 }
+
+typedef struct Reloc Reloc;
+
+struct Reloc
+{
+	int n;
+	int t;
+	uchar *m;
+	vlong *a;
+};
+
+static Reloc rels;
+
+static void
+grow(Reloc *r)
+{
+	int t;
+	uchar *m, *nm;
+	vlong *a, *na;
+
+	t = r->t;
+	r->t += 64;
+	m = r->m;
+	a = r->a;
+	r->m = nm = malloc(r->t*sizeof(uchar));
+	r->a = na = malloc(r->t*sizeof(vlong));
+	memmove(nm, m, t*sizeof(uchar));
+	memmove(na, a, t*sizeof(vlong));
+	free(m);
+	free(a);
+}
+
+/*
+ * relocation mode 0: add the module displacement
+ * to the vlong at the working address (see a.out(6))
+ */
+void
+dynreloc(Sym *s, vlong v, int abs)
+{
+	int i, n;
+	uchar *m;
+	vlong *a;
+	Reloc *r;
+
+	if(!abs || s->type == SXREF)
+		diag("unsupported relocation for %s", s->name);
+	if(v & 3)
+		diag("bad relocation address %llux for %s", v, s->name);
+	v >>= 2;
+	r = &rels;
+	n = r->n;
+	if(n >= r->t)
+		grow(r);
+	m = r->m;
+	a = r->a;
+	for(i = n; i > 0; i--){
+		if(v < a[i-1]){	/* happens occasionally for data */
+			m[i] = m[i-1];
+			a[i] = a[i-1];
+		}
+		else
+			break;
+	}
+	m[i] = 0;
+	a[i] = v;
+	r->n++;
+}
+
+void
+asmdyn(void)
+{
+	int i, n, t, c;
+	vlong off, la, ra, *a;
+	uchar *m;
+	Reloc *r;
+
+	cflush();
+	off = seek(cout, 0, 1);
+	lput(0);
+	t = 0;
+	lput(0);	/* no imports */
+	t += 4;
+
+	la = 0;
+	r = &rels;
+	n = r->n;
+	m = r->m;
+	a = r->a;
+	lput(n);
+	t += 4;
+	for(i = 0; i < n; i++){
+		ra = *a-la;
+		if(*a < la)
+			diag("bad relocation order");
+		if(ra < 256)
+			c = 0;
+		else if(ra < 65536)
+			c = 1;
+		else{
+			c = 2;
+			if(ra >= (1LL<<32))
+				diag("relocation address increment too big");
+		}
+		cput((c<<6)|*m++);
+		t++;
+		if(c == 0){
+			cput(ra);
+			t++;
+		}
+		else if(c == 1){
+			wput(ra);
+			t += 2;
+		}
+		else{
+			lput(ra);
+			t += 4;
+		}
+		la = *a++;
+	}
+
+	cflush();
+	seek(cout, off, 0);
+	lput(t);
+	cflush();
+
+	if(debug['v'])
+		Bprint(&bso, "relocation entries = %d\n", n);
+}

@@ -32,6 +32,29 @@ asmb(void)
 	if(debug['v'])
 		Bprint(&bso, "%5.2f asm\n", cputime());
 	Bflush(&bso);
+
+	/*
+	 * absolute addresses appear only in initialized data
+	 * (datblk adds INITTEXT/INITDAT to sym-bearing values);
+	 * code is entirely pc-relative.  record a fixup for each.
+	 */
+	if(dlm)
+		for(p = datap; p != P; p = p->link)
+			if((p->to.type == D_CONST || p->to.type == D_VCONST) && p->to.sym != S)
+				switch(p->to.sym->type){
+				case STEXT:
+				case SLEAF:
+				case SSTRING:
+				case SDATA:
+				case SBSS:
+					if(p->reg != 8)
+						diag("relocated datum not a vlong\n%P", p);
+					if(p->from.sym->type == SSTRING)
+						diag("relocated datum in string segment\n%P", p);
+					dynreloc(p->to.sym,
+						p->from.sym->value + p->from.offset + (INITDAT-INITTEXT), 1);
+				}
+
 	OFFSET = HEADR;
 	seek(cout, OFFSET, 0);
 	pc = 0;
@@ -129,6 +152,24 @@ asmb(void)
 		Bflush(&bso);
 		if(!debug['s'])
 			asmlc();
+		if(dlm)
+			asmdyn();
+		cflush();
+	}
+	else if(dlm){
+		switch(HEADTYPE) {
+		case 0:
+		case 4:
+			seek(cout, rnd(HEADR+textsize, 4096)+datsize, 0);
+			break;
+		case 6:
+			seek(cout, rnd(HEADR+textsize, INITRND)+datsize, 0);
+			break;
+		default:
+			seek(cout, HEADR+textsize+datsize, 0);
+			break;
+		}
+		asmdyn();
 		cflush();
 	}
 
@@ -142,6 +183,8 @@ asmb(void)
 		break;
 	case 2:
 		t = thechar == 'j'? B_MAGIC: Y_MAGIC;
+		if(dlm)
+			t |= DYN_MAGIC;
 		lput(t);
 		lput(textsize);			/* sizes */
 		lput(datsize);

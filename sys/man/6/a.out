@@ -302,6 +302,15 @@ incremented by the current
 .IR ra .
 Then, the value in the module at the working address is modified as
 specified by the relocation mode.
+.PP
+On riscv64, mode 0 adds the displacement between the module's
+linked and actual load addresses to the 8-byte little-endian
+address at the working address.
+Executable code needs no fixups on riscv64, so the linker records
+one for each absolute pointer in initialized data;
+.B jl
+.B -u
+emits only the relocation data (the import table is empty).
 .SH "SEE ALSO"
 .IR db (1), 
 .IR acid (1), 
