@@ -46,7 +46,7 @@
 #
 # Usage:
 #   sudo bash flash-emmc-uboot-and-partitions.sh
-#   sudo KERNEL=/path/9bpif3 DTB=/path/k1-x_deb1.dtb \
+#   sudo KERNEL=/path/9rv64 DTB=/path/k1-x_deb1.dtb \
 #        bash flash-emmc-uboot-and-partitions.sh
 #
 
@@ -163,7 +163,7 @@ fw_setenv -c "$tmpcfg" serverip ''
 # the Image header in the kernel binary, leaving CONFADDR untouched.
 bootcmd='mw.b 0x40010000 0x0 0x10000;'
 bootcmd+=' if load mmc 2:4 0x40010000 plan9.ini; then echo plan9.ini loaded; fi;'
-bootcmd+=' load mmc 2:4 0x50000000 9bpif3;'
+bootcmd+=' load mmc 2:4 0x50000000 9rv64;'
 bootcmd+=' load mmc 2:4 0x48000000 k1-x_deb1.dtb;'
 bootcmd+=' fdt addr 0x48000000;'
 bootcmd+=' fdt resize;'
@@ -206,7 +206,7 @@ echo
 echo "=== 6. populate 9fat partition ==="
 if [ -n "$KERNEL" ]; then
 	mkfs.vfat -F 32 -n 9fat "${DEV}p4" >/dev/null
-	mcopy -i "${DEV}p4" "$KERNEL" ::9bpif3
+	mcopy -i "${DEV}p4" "$KERNEL" ::9rv64
 	mcopy -i "${DEV}p4" "$DTB"    ::k1-x_deb1.dtb
 	tmpini=$(mktemp)
 	if [ -n "$PLAN9INI" ] && [ -r "$PLAN9INI" ]; then
@@ -223,7 +223,7 @@ else
 	echo "KERNEL/DTB not provided; 9fat left unformatted."
 	echo "Format and populate later with:"
 	echo "    mkfs.vfat -F 32 -n 9fat ${DEV}p4"
-	echo "    mcopy -i ${DEV}p4 /path/9bpif3 ::9bpif3"
+	echo "    mcopy -i ${DEV}p4 /path/9rv64 ::9rv64"
 	echo "    mcopy -i ${DEV}p4 /path/k1-x_deb1.dtb ::k1-x_deb1.dtb"
 	echo "    mcopy -i ${DEV}p4 /path/plan9.ini ::plan9.ini"
 fi
