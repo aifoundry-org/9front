@@ -105,7 +105,19 @@ RELOCATED:
 	 */
 	MOV $MACHADDR(MAXMACH), R2
 	MOV	$setSB(SB), R3
-	// clear out UP and set MACH. 
+	/*
+	 * fix up absolute pointers in initialized data if we are not
+	 * running at the linked address (jl -u relocation table).
+	 * a0/a1 survive in stack slots above the call's argument area.
+	 */
+	ADD	$-48, R2
+	MOV	R10, 32(R2)
+	MOV	R11, 40(R2)
+	JAL	R1, relocfixup(SB)
+	MOV	32(R2), R10
+	MOV	40(R2), R11
+	ADD	$48, R2
+	// clear out UP and set MACH.
 	MOV $0, R6
 	MOV $MACHADDR(0), R7
 	// allow kernel to read/write user memory.
