@@ -216,6 +216,7 @@ extern Dtbuart *dtbuart(int);
 extern int dtbhasplic(void);
 extern int dtbnether(void);
 extern Dtbether *dtbether(int);
+extern int dtbsocmatch(char*);
 
 // new
 void wsatp(u64int);

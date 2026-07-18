@@ -15,7 +15,7 @@
  *   - cleandse/invaldse not yet available on riscv64: omitted
  *   - completion is interrupt-driven via intrenable(); etherclock()
  *     remains registered as a 100Hz backstop in case a wake-up is missed
- *   - SoC identified via SDHC_VID_PID (vendor 0xa1312)
+ *   - SoC identified by the DTB root compatible ("spacemit,k1*")
  */
 
 #include "u.h"
@@ -57,11 +57,6 @@ enum {
 	SMTE_DEFAULT_RXDELAY	= 100,
 	SMTE_DEFAULT_TXDELAY	= 100,
 
-	/* SDH used for SoC fingerprinting */
-	SDH1_PHYS	= 0xD4280000,
-	SDH1_SIZE	= 0x1000,
-	SDHC_VID_PID	= 0x100,
-	K1_VENDOR_ID	= 0xa1312,
 };
 
 /* DMA registers (byte offset) */
@@ -1228,32 +1223,6 @@ ethinit(Ether *edev)
 	return 0;
 }
 
-/* SoC fingerprint ------------------------------------------------------------ */
-
-static int
-checksoc(void)
-{
-	ulong *sdh;
-	u32int val, vendor;
-
-	dprint("smte: probing SoC (SDH1 @ 0x%08ux)\n", SDH1_PHYS);
-	sdh = (ulong*)vmap(SDH1_PHYS, SDH1_SIZE);
-	if(sdh == nil){
-		print("smte: ERROR vmap SDH failed\n");
-		return 0;
-	}
-	val    = csr32r(sdh, SDHC_VID_PID);
-	vendor = val & 0xFFFFF;
-	vunmap(sdh, SDH1_SIZE);
-
-	dprint("smte: SDHC_VID_PID=0x%08ux vendor=0x%05ux\n", val, vendor);
-	if(vendor == K1_VENDOR_ID)
-		return 1;
-	print("smte: unknown SoC vendor 0x%05ux (expected K1 0x%05ux)\n",
-		vendor, K1_VENDOR_ID);
-	return 0;
-}
-
 /* /net/etherN/clone/ctl handler ---------------------------------------------- */
 
 enum {
@@ -1309,8 +1278,16 @@ etherpnp(Ether *edev)
 		return -1;
 	}
 
-	if(!checksoc())
+	/*
+	 * This driver only knows the K1's EMAC; the pad mux, GPIO and
+	 * APMU addresses below are that SoC's.  Trust the DTB root
+	 * compatible rather than sniffing MMIO: reads of an absent
+	 * device fault (qemu) or hang the bus outright (other SoCs).
+	 */
+	if(!dtbsocmatch("spacemit,k1")){
+		dprint("smte: not a K1, skipping\n");
 		return -1;
+	}
 
 	/*
 	 * Locate this controller in the DTB by alias index.  No fallback

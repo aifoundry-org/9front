@@ -51,6 +51,8 @@ static char dtbalias[MAXDTBUARTS][64];	/* serial<N> → DT node path */
 static char dtbethalias[MAXDTBETHERS][64]; /* ethernet<N> → DT node path */
 static char dtbstdout[64];
 static int dtbhasplic_;			/* root interrupt controller is a PLIC */
+static char dtbrootcompat[128];		/* root "compatible": NUL-separated list */
+static int dtbrootcompatlen;
 
 /*
  * Interrupt-controller node candidates harvested during the DTB walk.
@@ -95,6 +97,29 @@ int
 dtbnether(void)
 {
 	return ndtbethers;
+}
+
+/*
+ * Match the root node's compatible list against a prefix.  The list is
+ * NUL-separated strings, most specific first; "spacemit,k1" matches
+ * both mainline "spacemit,k1" and the vendor tree's "spacemit,k1x",
+ * and nothing on any other SoC.  K1-only drivers gate on this instead
+ * of probing their MMIO, which faults (qemu) or wedges the bus (other
+ * SoCs) when the device isn't there.
+ */
+int
+dtbsocmatch(char *prefix)
+{
+	char *c;
+	int rem, n, sl;
+
+	n = strlen(prefix);
+	for(c = dtbrootcompat, rem = dtbrootcompatlen; rem > 0; c += sl, rem -= sl){
+		if(strncmp(c, prefix, n) == 0)
+			return 1;
+		sl = strlen(c) + 1;
+	}
+	return 0;
 }
 
 Dtbether*
@@ -306,6 +331,15 @@ devtreeprop(char *path, char *key, void *val, int len)
 	uvlong addr;
 	uchar *p = val;
 
+	if(path[0] == 0 && strcmp(key, "compatible") == 0){
+		/* root node: says which SoC/board this tree describes */
+		dtbrootcompatlen = len;
+		if(dtbrootcompatlen > (int)sizeof(dtbrootcompat) - 1)
+			dtbrootcompatlen = sizeof(dtbrootcompat) - 1;
+		memmove(dtbrootcompat, val, dtbrootcompatlen);
+		dtbrootcompat[dtbrootcompatlen] = 0;
+		return;
+	}
 	if((strncmp(path, "/memory", 7) == 0 || strncmp(path, "/memory@0", 9) == 0)
 	   && strcmp(key, "reg") == 0){
 		if(findconf("*maxmem") < 0 && len == 16){
