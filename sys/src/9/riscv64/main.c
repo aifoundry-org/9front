@@ -114,8 +114,14 @@ confinit(void)
 
 	print("conf.npage 0x%lx\n", conf.npage);
 	kpages = conf.npage - (conf.npage*userpcnt)/100;
-//	if(kpages > ((uintptr)-VDRAM)/BY2PG)
-//		kpages = ((uintptr)-VDRAM)/BY2PG;
+	/*
+	 * the pool allocators size in ulong bytes, so the kernel's
+	 * share must stay below 4 GiB or the arithmetic here and
+	 * mainmem->maxsize wrap; 2 GiB is plenty and leaves the rest
+	 * for user pages.
+	 */
+	if(kpages > (2ULL*GiB)/BY2PG)
+		kpages = (2ULL*GiB)/BY2PG;
 
 	print("kpages 0x%lx\n", kpages);
 	conf.upages = conf.npage - kpages;
