@@ -61,6 +61,9 @@ main(int argc, char *argv[])
 	case 'o':
 		outfile = ARGF();
 		break;
+	case 'u':
+		dlm = 1;
+		break;
 	case 'E':
 		a = ARGF();
 		if(a)
@@ -98,6 +101,10 @@ main(int argc, char *argv[])
 		thechar = 'i';
 		thestring = "riscv";
 		ptrsize = 4;
+		if(dlm){
+			diag("-u unimplemented for riscv");
+			errorexit();
+		}
 	}
 	if(*argv == 0) {
 		diag("usage: %cl [-options] objects", thechar);
