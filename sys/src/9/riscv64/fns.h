@@ -292,6 +292,9 @@ void	putsscratch(uintptr);
 void	putsts(uintptr);
 void*	putstvec(void *);
 
+/* reloc */
+void	relocfixup(void);
+
 /* archrv */
 void calibrate(void);
 uint mach2context(Mach *);
