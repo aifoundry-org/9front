@@ -48,13 +48,17 @@ TEXT	_start(SB), 1, $-4
 	 *   res1..res3   reserved
 	 *   magic        deprecated (leave 0)
 	 *   magic2       "RSC\5" — what booti actually validates
-	 * code0 jumps 64 bytes forward, past the header, into the real
-	 * relocator below.  ELF entry stays _start so bootelf and kexec
-	 * also work — they land at code0 and take the same jump.
+	 * code0 jumps 64 bytes forward, past the header.  ELF entry stays
+	 * _start so bootelf and kexec also work — they land at code0 and
+	 * take the same jump.
+	 *
+	 * The kernel runs in place wherever the loader put it and fixes up
+	 * its data pointers via the jl -u relocation table (relocfixup),
+	 * so text_offset only steers the loader, it is not a promise.
 	 */
 	WORD $0x040000ef	/* code0: jal x1, +64 */
 	WORD $0x00000013	/* code1: nop */
-	WORD $0x40200000	/* text_offset[31:0] = KTZERO (booti here treats it absolute) */
+	WORD $0x40200000	/* text_offset[31:0] (bianbu u-boot treats it absolute; spec-compliant loaders add their DRAM base) */
 	WORD $0			/* text_offset[63:32] */
 	WORD $0x01000000	/* image_size[31:0] = 16 MiB (upper bound; booti rejects 0) */
 	WORD $0			/* image_size[63:32] */
@@ -69,42 +73,18 @@ TEXT	_start(SB), 1, $-4
 	WORD $0x05435352	/* magic2 = "RSC\5" */
 	WORD $0			/* res3 */
 
-SRC:
-	ADD $-4, R1, R1
-	MOV R1, R9
-	MOV $KTZERO, R3
-	SUB R3, R1, R3
-	BEQ R3, RELOCATED
-	MOV $KTZERO, R2
-	MOV R2, R12
-	MOV $0x1000000, R4
-	SUB R2, R1, R5
-	BEQ R5, DONECOPY
-LOOP:
-	MOV 0(R1), R3
-	MOV R3, 0(R2)
-	ADD $8, R2, R2
-	ADD $8, R1, R1
-	ADD $-8, R4, R4
-	BNE R4, LOOP
-ENDLOOP:
-	JAL R1, DONECOPY
-DONECOPY:
-	ADD $10, R1
-	SUB R9, R1, R1
-	ADD R12, R1, R1
-	JAL R1, 0(R1)
-RELOCATED:
 	MOV	$setSB(SB), R3
 	JAL	R1, mmudisable<>(SB)
 	/*
-	 * Boot stack below all per-cpu Mach pages [MACHADDR(MAXMACH-1),KTZERO),
-	 * so it never grows into a secondary hart's page.  (It used to sit at
-	 * MACHADDR(1) and grew down through cpu2..N's pages, corrupting them
-	 * once those harts ran.)  cpu0's Mach stays at MACHADDR(0).
+	 * The memory layout hangs off the runtime address of _start
+	 * (== ktzero): Mach pages grow down from it, one per hart, and
+	 * the boot stack sits below all of them so it never grows into a
+	 * secondary hart's page.  cpu0's Mach is the highest, just under
+	 * _start.
 	 */
-	MOV $MACHADDR(MAXMACH), R2
-	MOV	$setSB(SB), R3
+	MOV	$_start(SB), R2
+	MOV	$((MAXMACH+1)*MACHSIZE), R8
+	SUB	R8, R2
 	/*
 	 * fix up absolute pointers in initialized data if we are not
 	 * running at the linked address (jl -u relocation table).
@@ -119,7 +99,9 @@ RELOCATED:
 	ADD	$48, R2
 	// clear out UP and set MACH.
 	MOV $0, R6
-	MOV $MACHADDR(0), R7
+	MOV	$_start(SB), R7
+	MOV	$MACHSIZE, R8
+	SUB	R8, R7
 	// allow kernel to read/write user memory.
 	MOV CSR(SSTATUS), R8
 	OR $0x40000, R8, R8
@@ -173,8 +155,8 @@ TEXT	cpumain(SB), 1, $-4
 	MOV	R8, CSR(SATP)
 	SFENCE
 
-	/* m (MACH == R7) = MACHP(hartid) = KTZERO - (hartid+1)*MACHSIZE */
-	MOV	$KTZERO, R7
+	/* m (MACH == R7) = MACHP(hartid) = ktzero - (hartid+1)*MACHSIZE */
+	MOV	$_start(SB), R7
 	ADD	$1, R12, R8
 	SLL	$13, R8			/* (hartid+1) * MACHSIZE (8 KiB) */
 	SUB	R8, R7, R7
@@ -250,6 +232,26 @@ TEXT	wstvec(SB), 1, $-4
 	SFENCE
 	MOV	RARG, CSR(STVEC)
 	SFENCE
+	RET
+
+/*
+ * read the byte at RARG under a temporary trap vector; returns the
+ * byte, or -1 if the access faults.  CONFADDR may sit inside the SBI
+ * firmware's PMP fence (it does on qemu virt), so bootargsinit probes
+ * before scanning for a preloaded plan9.ini.  On a fault the handler
+ * runs with R9 (saved stvec) and R1 (return pc) still intact.
+ */
+TEXT	peekb(SB), 1, $-4
+	MOV	CSR(STVEC), R9
+	MOV	$peekbfault<>(SB), R12
+	MOV	R12, CSR(STVEC)
+	MOVBU	(RARG), RARG
+	MOV	R9, CSR(STVEC)
+	RET
+
+TEXT	peekbfault<>(SB), 1, $-4
+	MOV	R9, CSR(STVEC)
+	MOV	$-1, RARG
 	RET
 
 TEXT	mmudisable<>(SB), 1, $-4

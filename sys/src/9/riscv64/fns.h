@@ -295,6 +295,8 @@ void*	putstvec(void *);
 /* reloc */
 void	relocfixup(void);
 
+int	peekb(void*);
+
 /* archrv */
 void calibrate(void);
 uint mach2context(Mach *);

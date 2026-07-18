@@ -31,6 +31,7 @@ static int nconf;
 static char maxmem[32];
 static int bootargs_set = 0;
 static int preloadedini = 0;
+char *bootconf;			/* BOOTARGS; see mem.h */
 
 /*
  * Per-UART information harvested from the DTB.  Filled in by devtreeprop()
@@ -676,6 +677,11 @@ inipreloaded(void)
 void
 bootargsinit(void)
 {
+	static char fenced[BOOTARGSLEN];
+
+	bootconf = (char*)CONFADDR;
+	if(peekb(bootconf) < 0)
+		bootconf = fenced;
 	preloadedini = inipreloaded();
 	if(dtbphys == 0 || dtbphys == (uintptr)-1){
 		print("bootargsinit: no DTB pointer from firmware\n");
