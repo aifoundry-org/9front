@@ -48,17 +48,16 @@
 #define TRAPFRAMESIZE	(38*8)
 
 /*
- * VDRAM is the physical DRAM base of the target board; KTZERO is where
- * l.s self-relocates the kernel image before main() runs.  The mkfile
- * injects -DVDRAM=... per CONF (0x40000000 for bpif3, 0x100000000 for
- * rv64 — see reference_riscv_load_address.md).  The fallback here just
- * matches the default rv64 build so building without -DVDRAM still
- * yields a sensible kernel.
+ * The kernel runs in place wherever the loader put it and fixes up
+ * its data pointers from the jl -u relocation table, so the memory
+ * layout is bound at boot rather than at link time: KTZERO is the
+ * runtime address of _start and VDRAM the base of the claimed region,
+ * 2 MB below it (where every loader we boot from puts the kernel
+ * relative to DRAM).  Both are set in relocfixup(), before any other
+ * C runs; l.s derives its own addresses from _start directly.
  */
-#ifndef VDRAM
-#define VDRAM		(0x0000000100000000ULL)
-#endif
-#define	KTZERO		(VDRAM + 0x200000)	/* kernel text start */
+#define VDRAM		vdram
+#define	KTZERO		ktzero		/* kernel text start */
 
 #define	KZERO		(0x0000000000000000ULL)	/* 0x00000000 - kernel address space */
 #define KLIMIT 		klimit
@@ -77,12 +76,18 @@
 
 #define MACHADDR(n)	(KTZERO-((n)+1)*MACHSIZE)
 
-#define CONFADDR	(VDRAM + 0x10000)	/* 0x40010000 */
+#define CONFADDR	(VDRAM + 0x10000)	/* 0x40010000 on the bpi-f3 */
 
-#define BOOTARGS	((char*)CONFADDR)
+/*
+ * the plan9.ini buffer: normally the memory at CONFADDR, where u-boot
+ * scripts preload the file, but bootargsinit points it at an internal
+ * buffer when the SBI firmware's PMP fence makes CONFADDR untouchable
+ * (as on qemu virt, whose firmware sits at the base of DRAM).
+ */
+#define BOOTARGS	bootconf
 #define BOOTARGSLEN	0x10000
 
-#define	REBOOTADDR	(VDRAM-KZERO + 0x20000)	/* 0x40020000 */
+#define	REBOOTADDR	(VDRAM-KZERO + 0x20000)
 
 // Sv39 max address is 1<<38-1. Choose 1<<36. (1<<32 for now)
 // This gives kernel a lot of memory, and over time,
