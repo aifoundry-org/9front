@@ -309,9 +309,9 @@ devtreeprop(char *path, char *key, void *val, int len)
 	if((strncmp(path, "/memory", 7) == 0 || strncmp(path, "/memory@0", 9) == 0)
 	   && strcmp(key, "reg") == 0){
 		if(findconf("*maxmem") < 0 && len == 16){
-			p += 4;	/* ignore */
-			addr = (uvlong)beget4(p+4)<<32 | beget4(p);
-			addr += beget4(p+8);
+			/* <base size>, two BE cells each: limit = base + size */
+			addr = (uvlong)beget4(p)<<32 | beget4(p+4);
+			addr += (uvlong)beget4(p+8)<<32 | beget4(p+12);
 			snprint(maxmem, sizeof(maxmem), "%#llux", addr);
 			print("devtreeprop: maxmem %s\n", maxmem);
 			addconf("*maxmem", maxmem);
