@@ -54,6 +54,7 @@ PORT=\
 # don't forget: l.$O must always be first
 OBJ=\
 	l.$O\
+	reloc.$O\
 	archrv.$O\
 	bootargs.$O\
 	strap.$O\
@@ -91,8 +92,8 @@ LIB=\
 9:V:	$p$CONF s$p$CONF
 
 $p$CONF:D:	$OBJ $CONF.$O $LIB
-	$LD -s -l -o $target -H6 -R0x1000 -T$loadaddr $prereq
-	$LD -s -l -o $target.elf -H5 -T4128 -R4 -T$loadaddr $prereq
+	$LD -s -l -u -o $target -H6 -R0x1000 -T$loadaddr $prereq
+	$LD -s -l -u -o $target.elf -H5 -T4128 -R4 -T$loadaddr $prereq
 
 s$p$CONF:D:	$OBJ $CONF.$O $LIB
 	$LD -l -o $target -R0x1000 -T$loadaddr $prereq
