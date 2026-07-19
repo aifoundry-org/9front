@@ -350,6 +350,11 @@ struct Soc {
 	/* physical addresses, vmapped to virtual addresses during start-up */
 	uchar	*clint;		/* local intr ctlr also a timer */
 	uchar	*plic;		/* external intr ctlr */
+	uchar	*aplic;		/* AIA wired-source aggregator, S-level domain */
+	uchar	*imsic;		/* AIA per-hart MSI files, S-level */
+	uvlong	aplicsize;
+	uvlong	imsicsize;
+	u32int	naplicsrc;	/* wired sources the APLIC domain has */
 	uchar	*l2cache;	/* sifive l2 cache controller */
 //	uchar	*pl2caches[HARTMAX]; /* sifive per-hart l2 cache controllers */
 	uchar	*l3cache;	/* sifive l3 cache controller */
