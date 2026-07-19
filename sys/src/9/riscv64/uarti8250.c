@@ -652,7 +652,13 @@ i8250enable(Uart* uart, int ie)
 		 * IIR there would storm the PLIC.  When we trust the per-UART
 		 * clock/power state, this gate can drop.
 		 */
-		if(ctlr->irq > 0 && uart->console){
+		/*
+		 * *uartpoll=1 in bootargs forces the polling path even when
+		 * the DTB gives an irq: an escape hatch for bring-up on
+		 * silicon whose interrupt routing isn't proven yet, so the
+		 * console stays interactive while that gets debugged.
+		 */
+		if(ctlr->irq > 0 && uart->console && getconf("*uartpoll") == nil){
 			intrenable(ctlr->irq, i8250interrupt, uart, BUSUNKNOWN, uart->name);
 			ctlr->poll = 0;
 			ctlr->iena = 1;
