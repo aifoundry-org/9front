@@ -679,8 +679,10 @@ i8250enable(Uart* uart, int ie)
 
 static int issupportedcompat(char *s)
 {
-	return strcmp(s, "spacemit,pxa-uart") == 0
-	    || strncmp(s, "spacemit,rcpu-pxa-uart", 22) == 0
+	/* every spacemit,* uart so far is the same PXA-derived block
+	 * (K1 pxa-uart/rcpu-pxa-uart, K3 k3-uart) */
+	return strncmp(s, "spacemit,", 9) == 0
+	    || strcmp(s, "intel,xscale-uart") == 0
 	    || strcmp(s, "ns16550a") == 0
 	    || strcmp(s, "ns16550") == 0
 	    || strcmp(s, "snps,dw-apb-uart") == 0;
