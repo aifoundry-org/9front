@@ -61,13 +61,29 @@ static int dtbrootcompatlen;
  * before or after the "reg" we want to read; so we cache reg for any
  * node whose name shape is "interrupt-controller@..." or "plic@..."
  * and resolve the PLIC at end-of-parse.
+ *
+ * AIA SoCs (K3, qemu-virt with aia=) describe up to four such nodes:
+ * an APLIC domain and an IMSIC per privilege level.  The extra fields
+ * cached here let finishdtbintc() pick the S-level pair: the S IMSIC
+ * is the one raising cause 9 (supervisor external) in its
+ * interrupts-extended, and the S APLIC is the domain whose msi-parent
+ * phandle points at that IMSIC (or, direct-delivery domains, the one
+ * raising cause 9 itself).
  */
-#define MAXDTBINTC 4
+#define MAXDTBINTC 8
 typedef struct Dtbintc Dtbintc;
 struct Dtbintc {
 	char	path[64];
+	char	compatible[64];	/* NUL-separated list */
+	int	compatlen;
 	uvlong	base;
 	uvlong	size;
+	u32int	phandle;
+	u32int	msiparent;	/* phandle of the IMSIC this APLIC sends MSIs to */
+	u32int	nsrc;		/* riscv,num-sources (APLIC) / riscv,num-ids (IMSIC) */
+	int	haschildren;	/* has riscv,children: an M-level APLIC domain */
+	int	extcause;	/* local cause from interrupts-extended; 9 = S external */
+	int	ok;		/* status = "okay" (firmware may disable M-level nodes) */
 };
 static Dtbintc dtbintc[MAXDTBINTC];
 static int ndtbintc;
@@ -246,10 +262,15 @@ isintcnode(char *path)
 	base++;
 	/*
 	 * On K1 the PLIC node is named interrupt-controller@<addr>;
-	 * other RISC-V boards prefer plic@<addr>.  Accept either.
+	 * other RISC-V boards prefer plic@<addr>, and AIA trees may
+	 * name their nodes after the block.  Accept all of them.
+	 * The per-cpu "interrupt-controller" nodes have no unit
+	 * address, so the '@' keeps them out.
 	 */
 	return strncmp(base, "interrupt-controller@", 21) == 0
-	    || strncmp(base, "plic@", 5) == 0;
+	    || strncmp(base, "plic@", 5) == 0
+	    || strncmp(base, "aplic@", 6) == 0
+	    || strncmp(base, "imsic", 5) == 0;
 }
 
 static Dtbintc*
@@ -270,7 +291,24 @@ findorallocintc(char *path)
 		n = sizeof(ic->path) - 1;
 	memmove(ic->path, path, n);
 	ic->path[n] = 0;
+	ic->extcause = -1;
+	ic->ok = 1;		/* per DT spec §2.3.4, absent status = enabled */
 	return ic;
+}
+
+static int
+intccompat(Dtbintc *ic, char *what)
+{
+	char *c;
+	int rem, n, sl;
+
+	n = strlen(what);
+	for(c = ic->compatible, rem = ic->compatlen; rem > 0; c += sl, rem -= sl){
+		if(strncmp(c, what, n) == 0)
+			return 1;
+		sl = strlen(c) + 1;
+	}
+	return 0;
 }
 
 static Dtbether*
@@ -482,9 +520,11 @@ devtreeprop(char *path, char *key, void *val, int len)
 			rem -= sl;
 		}
 	}
-	if(isintcnode(path) && strcmp(key, "reg") == 0 && len >= 8){
+	if(isintcnode(path)){
 		Dtbintc *ic = findorallocintc(path);
-		if(ic != nil){
+		if(ic == nil)
+			;
+		else if(strcmp(key, "reg") == 0 && len >= 8){
 			/*
 			 * /soc on K1 is #address-cells=2 #size-cells=2, so reg is
 			 * 16 bytes; older qemu-virt uses 8.  Cover both.
@@ -496,6 +536,27 @@ devtreeprop(char *path, char *key, void *val, int len)
 				ic->base = beget4(p);
 				ic->size = len >= 8? beget4(p + 4): 0;
 			}
+		} else if(strcmp(key, "compatible") == 0){
+			ic->compatlen = len;
+			if(ic->compatlen > (int)sizeof(ic->compatible) - 1)
+				ic->compatlen = sizeof(ic->compatible) - 1;
+			memmove(ic->compatible, val, ic->compatlen);
+			ic->compatible[ic->compatlen] = 0;
+		} else if((strcmp(key, "phandle") == 0 || strcmp(key, "linux,phandle") == 0) && len >= 4){
+			ic->phandle = beget4(p);
+		} else if(strcmp(key, "msi-parent") == 0 && len >= 4){
+			ic->msiparent = beget4(p);
+		} else if(strcmp(key, "riscv,num-sources") == 0 && len >= 4){
+			ic->nsrc = beget4(p);
+		} else if(strcmp(key, "riscv,num-ids") == 0 && len >= 4){
+			ic->nsrc = beget4(p);
+		} else if(strcmp(key, "riscv,children") == 0){
+			ic->haschildren = 1;
+		} else if(strcmp(key, "interrupts-extended") == 0 && len >= 8){
+			/* <cpu-intc-phandle cause> pairs; every pair has the same cause */
+			ic->extcause = beget4(p + 4);
+		} else if(strcmp(key, "status") == 0){
+			ic->ok = (len >= 5 && strcmp((char*)val, "okay") == 0);
 		}
 	}
 	if(isuartnode(path)){
@@ -571,26 +632,76 @@ devtreenode(Devtree *t, uchar *p, char *cp)
 }
 
 /*
+ * Pick the interrupt controller(s) the kernel will drive.  A PLIC wins
+ * when the DTB has one (K1, default qemu-virt).  Otherwise look for the
+ * S-level half of an AIA pair: the IMSIC whose interrupts-extended
+ * raises cause 9 (supervisor external), then the APLIC domain whose
+ * msi-parent phandle points at it.  A direct-delivery APLIC (no IMSIC)
+ * announces itself by raising cause 9; failing both, an APLIC without
+ * riscv,children is at least not the M-level domain.  M-level nodes the
+ * firmware marked disabled are skipped throughout.
+ */
+static void
+finishdtbintc(void)
+{
+	Dtbintc *ic, *im, *ap;
+	int i;
+
+	if(dtbhasplic_ && dtbplicpath[0] != 0){
+		for(i = 0; i < ndtbintc; i++)
+			if(strcmp(dtbintc[i].path, dtbplicpath) == 0){
+				soc.plic = (uchar*)(uintptr)dtbintc[i].base;
+				return;
+			}
+	}
+
+	im = nil;
+	for(i = 0; i < ndtbintc; i++){
+		ic = &dtbintc[i];
+		if(ic->ok && intccompat(ic, "riscv,imsic") && ic->extcause == 9){
+			im = ic;
+			break;
+		}
+	}
+	ap = nil;
+	for(i = 0; i < ndtbintc; i++){
+		ic = &dtbintc[i];
+		if(!ic->ok || !intccompat(ic, "riscv,aplic"))
+			continue;
+		if(im != nil && ic->msiparent == im->phandle){
+			ap = ic;
+			break;
+		}
+		if(ic->extcause == 9){
+			ap = ic;
+			break;
+		}
+		if(ap == nil && !ic->haschildren)
+			ap = ic;
+	}
+	if(ap != nil){
+		soc.aplic = (uchar*)(uintptr)ap->base;
+		soc.aplicsize = ap->size;
+		soc.naplicsrc = ap->nsrc;
+	}
+	if(im != nil){
+		soc.imsic = (uchar*)(uintptr)im->base;
+		soc.imsicsize = im->size;
+	}
+}
+
+/*
  * After the whole tree is walked, link each Dtbuart back to its serial<N>
- * alias, mark the entry that /chosen/stdout-path picks as the console, and
- * resolve the SoC PLIC physical base from the candidates we cached on the
- * way through.  soc.plic ends up holding the PLIC base if and only if the
- * DTB told us where it is; otherwise socidentify() falls back to a vendor-
- * specific default.
+ * alias and mark the entry that /chosen/stdout-path picks as the console.
+ * soc.plic/soc.aplic/soc.imsic end up set (by finishdtbintc) if and only
+ * if the DTB says where they are; otherwise socidentify() falls back to
+ * a vendor-specific default.
  */
 static void
 finishdtbuarts(void)
 {
 	int i, j, k, n;
 	char name[32], *path, *colon;
-
-	if(dtbhasplic_ && dtbplicpath[0] != 0){
-		for(i = 0; i < ndtbintc; i++)
-			if(strcmp(dtbintc[i].path, dtbplicpath) == 0){
-				soc.plic = (uchar*)(uintptr)dtbintc[i].base;
-				break;
-			}
-	}
 
 	for(i = 0; i < MAXDTBUARTS; i++){
 		if(dtbalias[i][0] == 0)
@@ -672,6 +783,7 @@ parsedevtree(uchar *base)
 	if(t->stab >= (char*)t->end)
 		return -1;
 	devtreenode(t, base + beget4(base+8), t->path);
+	finishdtbintc();
 	finishdtbuarts();
 	if(preloadedini)
 		plan9iniinit(BOOTARGS, 0);
