@@ -357,7 +357,27 @@ TEXT rdstimecmp(SB), 1, $-4
 	FENCE
 	MOV CSR(STIMECMP), R(ARG)
 	RET
-	
+
+/*
+ * this hart's S-level IMSIC interrupt file (AIA).  Its registers are
+ * reached indirectly: a register number goes in CSR siselect and the
+ * data moves through CSR sireg.
+ */
+#define SISELECT	0x150
+#define SIREG		0x151
+#define STOPEI		0x15c
+
+TEXT imsicswr(SB), 1, $-4		/* imsicswr(sel, val) */
+	MOV	R(ARG), CSR(SISELECT)
+	MOV	val+XLEN(FP), R9
+	MOV	R9, CSR(SIREG)
+	RET
+
+/* claim the top pending external interrupt: (id<<16|prio), 0 if none */
+TEXT stopeiclaim(SB), 1, $-4
+	CSRRW	CSR(STOPEI), R0, R(ARG)
+	RET
+
 TEXT	coherence(SB), 1, $-4
 	FENCE
 	RET

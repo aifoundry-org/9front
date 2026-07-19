@@ -31,7 +31,7 @@ static Vctl *vctl[Ngintr];
 static Plic *plic;
 
 void
-intrinit(void)
+plicinit(void)
 {
 	uint i;
 	uintptr base;
@@ -62,7 +62,7 @@ intrinit(void)
 }
 
 /*
- *  called by trap.c to handle external interrupts from the plic.
+ *  called via intr.c to handle external interrupts from the plic.
  *  returns 0; the plic never delivers clock interrupts.
  *
  *  Iteration is bounded so a stuck/spurious source can't pin the cpu
@@ -73,7 +73,7 @@ intrinit(void)
  *  unless we break out and disable the source.
  */
 int
-irq(Ureg *ureg)
+plicirq(Ureg *ureg)
 {
 	Vctl *v;
 	uint id;
@@ -126,7 +126,7 @@ irq(Ureg *ureg)
 }
 
 void
-intrenable(int irq, void (*f)(Ureg*, void*), void *a, int tbdf, char *name)
+plicintrenable(int irq, void (*f)(Ureg*, void*), void *a, int tbdf, char *name)
 {
 	Vctl *v;
 
@@ -163,7 +163,7 @@ intrenable(int irq, void (*f)(Ureg*, void*), void *a, int tbdf, char *name)
 }
 
 void
-intrdisable(int, void (*f)(Ureg*, void*), void *a, int tbdf, char*)
+plicintrdisable(int, void (*f)(Ureg*, void*), void *a, int tbdf, char*)
 {
 	if(BUSTYPE(tbdf) == BusPCI){
 		pciintrdisable(tbdf, f, a);

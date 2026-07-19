@@ -147,6 +147,16 @@ extern void intrenable(int, void (*)(Ureg*, void*), void*, int, char*);
 extern void intrdisable(int, void (*)(Ureg*, void*), void*, int, char*);
 extern int irq(Ureg*);
 extern void fiq(Ureg*);
+extern void plicinit(void);
+extern int plicirq(Ureg*);
+extern void plicintrenable(int, void (*)(Ureg*, void*), void*, int, char*);
+extern void plicintrdisable(int, void (*)(Ureg*, void*), void*, int, char*);
+extern void aplicinit(void);
+extern int aplicirq(Ureg*);
+extern void aplicintrenable(int, void (*)(Ureg*, void*), void*, int, char*);
+extern void aplicintrdisable(int, void (*)(Ureg*, void*), void*, int, char*);
+extern void imsicswr(uint, uvlong);
+extern uvlong stopeiclaim(void);
 
 /* sysreg */
 extern uvlong	sysrd(ulong);
