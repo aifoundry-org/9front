@@ -244,7 +244,7 @@
 #define Pteleafvalid	(PteP|PteA|PteD)
 #endif
 
-#define Ngintr	221
+#define Ngintr	513
 #define Firstirq	1	/* plic intr id 0 means "no interrupt" */
 
 #define Havepbmt	(1ull<<62)
