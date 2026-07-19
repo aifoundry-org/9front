@@ -22,12 +22,21 @@ enum {
 	 */
 	Suctxt		= 1,
 	Defprio		= 1,
+
+	/*
+	 * sources this driver touches (prio/enable writes at init and the
+	 * spurious/storm masking).  221 is the bound the K1 and qemu-virt
+	 * PLICs have been run with; Ngintr is larger now for the K3 APLIC,
+	 * and poking a PLIC's registers beyond what the silicon decodes
+	 * is not worth the risk.
+	 */
+	Nplicsrc	= 221,
 };
 
 extern uintptr setsie(uintptr);
 
 static Lock vctllock;
-static Vctl *vctl[Ngintr];
+static Vctl *vctl[Nplicsrc];
 static Plic *plic;
 
 void
@@ -50,7 +59,7 @@ plicinit(void)
 	soc.plic = (uchar*)plic;
 
 	/* mask every source */
-	for(i = Firstirq; i < Ngintr; i++){
+	for(i = Firstirq; i < Nplicsrc; i++){
 		plic->prio[i] = 0;
 		plic->enabits[Suctxt][i/32] &= ~(1u << (i & 31));
 	}
@@ -82,7 +91,7 @@ plicirq(Ureg *ureg)
 	m->intr++;
 	trips = 64;
 	while((id = plic->context[Suctxt].claimcompl) != 0){
-		if(id < Ngintr){
+		if(id < Nplicsrc){
 			v = vctl[id];
 			if(v == nil){
 				/*
@@ -108,7 +117,7 @@ plicirq(Ureg *ureg)
 			 * the rest of the system can keep running long enough to
 			 * print and reboot.
 			 */
-			if(id < Ngintr){
+			if(id < Nplicsrc){
 				plic->prio[id] = 0;
 				plic->enabits[Suctxt][id/32] &= ~(1u << (id & 31));
 				coherence();
@@ -137,7 +146,7 @@ plicintrenable(int irq, void (*f)(Ureg*, void*), void *a, int tbdf, char *name)
 
 	if(tbdf != BUSUNKNOWN)
 		return;
-	if((uint)irq < Firstirq || (uint)irq >= Ngintr)
+	if((uint)irq < Firstirq || (uint)irq >= Nplicsrc)
 		return;
 
 	v = mallocz(sizeof(Vctl), 1);
