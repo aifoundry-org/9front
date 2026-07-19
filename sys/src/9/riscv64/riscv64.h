@@ -311,9 +311,11 @@ enum {					/* PTE; see mem.h PTE* */
 enum {
 	/*
 	 * there are 1024 possible interrupt sources, but nothing uses them
-	 * all.  p550/eic7700x allows 520, uses irq 220.
+	 * all.  p550/eic7700x allows 520, uses irq 220; the K3 APLIC has
+	 * 512 sources and its DTB uses at least irq 281.  plic.c keeps its
+	 * own hardware-verified bound (Nplicsrc).
 	 */
-	Ngintr		= 221,
+	Ngintr		= 513,
 	Firstirq	= 1,	/* plic intr id 0 means "no interrupt" */
 };
 
