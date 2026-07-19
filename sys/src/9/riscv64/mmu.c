@@ -102,8 +102,8 @@ u64int mmumode;
 
 /*
  * Carve one page-table page out of the front of the physical pool at boot,
- * before conf.npage is known.  The pool has already been zeroed by meminit,
- * but zero again for safety.  Identity mapped, so va == pa.
+ * before conf.npage is known.  Nothing has zeroed the pool, so zero the
+ * page here.  Identity mapped, so va == pa.
  */
 static u64int*
 bootptpage(void)

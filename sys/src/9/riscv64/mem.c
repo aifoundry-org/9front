@@ -63,17 +63,6 @@ meminit(void)
 	print("CONF ZERO BASE is 0x%llx LIMIT is 0x%llx\n", conf.mem[0].base, l);
 	if(l > KLIMIT)
 		l = KLIMIT;
-	if (1) {
-		u64int *cp = (u64int *)conf.mem[0].base;
-		int amt = (conf.mem[0].limit - conf.mem[0].base)/8;
-		print("Zero %d words starting at %p\n", amt, cp);
-		for(int i = 0; i < amt ; i++)
-			cp[i] = 0;
-		for(int i = 0; i < amt; i++)
-			if (cp[i] != 0)
-				print("%p: not zero'd\n", &cp[i]);
-	}
-	print("l is now %#llx\n", l);
 	sv57 = (void *)PGROUND((uintptr)end);
 	sv48 = (void *)PGROUND((uintptr)sv57 + 1);
 	sv39 = (void *)PGROUND((uintptr)sv48 + 1);
