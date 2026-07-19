@@ -107,12 +107,10 @@ confinit(void)
 
 	if(userpcnt < 10)
 		userpcnt = 60 + cpuserver*10;
-	print("confinit start npage crap\n");
 	conf.npage = 0;
 	for(i = 0; i < nelem(conf.mem); i++)
 		conf.npage += conf.mem[i].npage;
 
-	print("conf.npage 0x%lx\n", conf.npage);
 	kpages = conf.npage - (conf.npage*userpcnt)/100;
 	/*
 	 * the pool allocators size in ulong bytes, so the kernel's
@@ -123,10 +121,8 @@ confinit(void)
 	if(kpages > (2ULL*GiB)/BY2PG)
 		kpages = (2ULL*GiB)/BY2PG;
 
-	print("kpages 0x%lx\n", kpages);
 	conf.upages = conf.npage - kpages;
 	conf.ialloc = (kpages/2)*BY2PG;
-	print("kpages 0x%lx conf.upages 0x%lx\n", kpages, conf.upages);
 
 	/* set up other configuration parameters */
 	conf.nproc = 100 + ((conf.npage*BY2PG)/MB)*5;
@@ -145,22 +141,12 @@ confinit(void)
 	 * datastructures. Mntcache and Mntrpc are not accounted for.
 	 */
 	kpages = conf.npage - conf.upages;
-	print("kpages to start is %lx = %lx - %lx \n", kpages, conf.npage, conf.upages);
 	kpages *= BY2PG;
-	print("%lx -= %lx + %lx + %lx + %lx + %x\n",
-		kpages,conf.upages*sizeof(Page)
-		, conf.nproc*sizeof(Proc*)
-		, conf.nimage*sizeof(Image)
-		, conf.nswap
-		, conf.nswppo*sizeof(Page*));
 	kpages -= conf.upages*sizeof(Page)
 		+ conf.nproc*sizeof(Proc*)
 		+ conf.nimage*sizeof(Image)
 		+ conf.nswap
 		+ conf.nswppo*sizeof(Page*);
-	print("kpages now is ... %lx\n", kpages);
-	//kpages *= BY2PG;
-	print("exit with kpages %lx\n", kpages);
 	mainmem->maxsize = kpages;
 	imagmem->maxsize = kpages;
 }

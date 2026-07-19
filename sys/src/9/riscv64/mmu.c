@@ -156,7 +156,7 @@ kmapram(uintptr, uintptr limit)
 		} else
 			/* below/above DRAM (includes MMIO): keep the 1GiB leaf */
 			sv39[i] = PA2PTE(pa) | 0xcf;
-		print("sv39:%p is %p\n", &sv39[i], sv39[i]);
+		if (Spew)print("sv39:%p is %p\n", &sv39[i], sv39[i]);
 	}
 
 	wsatp(((uintptr)sv39>>12)|(8ULL<<60));
