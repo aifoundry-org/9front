@@ -187,7 +187,7 @@ mmukmap(uintptr va, uintptr pa, usize size)
 }
 
 void*
-vmap(uvlong pa, vlong size)
+vmap(uvlong pa, vlong)
 {
 	return (void *)pa;
 }

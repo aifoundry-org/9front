@@ -522,9 +522,8 @@ devtreeprop(char *path, char *key, void *val, int len)
 	}
 	if(isintcnode(path)){
 		Dtbintc *ic = findorallocintc(path);
-		if(ic == nil)
-			;
-		else if(strcmp(key, "reg") == 0 && len >= 8){
+		if(ic != nil)
+		if(strcmp(key, "reg") == 0 && len >= 8){
 			/*
 			 * /soc on K1 is #address-cells=2 #size-cells=2, so reg is
 			 * 16 bytes; older qemu-virt uses 8.  Cover both.
