@@ -379,18 +379,17 @@ cachedwbinvse(void *vaddr, int len)
 void
 cachedinvse(void *vaddr, int len)
 {
+	USED(vaddr, len);
+	coherence();
+	print("skip all this cache inval in cachdinvse\n");
+#ifdef xxx
 	uintptr addr, last;
 	Mpl pl;
 
-	coherence();
-	print("skip all this cache inval in cachdinvse\n");
-	return;
-#ifdef xxx
 	if (!dmaincoherent || !ISCACHED(vaddr))
 		return;
 	if (!soc.havecbo)
 		return;
-#endif
 
 	pl = splhi();
 	addr = (uintptr)(iskern(vaddr)? vaddr: KADDR((uintptr)vaddr));
@@ -400,6 +399,7 @@ cachedinvse(void *vaddr, int len)
 		cboinval((void *)addr);
 	coherence();
 	splx(pl);
+#endif
 }
 
 int
@@ -958,7 +958,7 @@ stophart(int hart, int state)
 void
 hsmstartall(void)
 {
-	int hart, state, col;
+	int hart, state;
 	Hart *hartst;
 
 	// hartstatesinit();
@@ -989,7 +989,6 @@ hsmstartall(void)
 	 * hartid, and on this SoC hart ids are contiguous from 0, so
 	 * conf.nmach doubles as the hart-id ceiling.
 	 */
-	col = 0;
 	for (hart = soc.hobbled; hart < HARTMAX && hart < conf.nmach; hart++) {
 		if (hart == m->hartid) {
 			iprint("hart %d is me, already running\n", hart);

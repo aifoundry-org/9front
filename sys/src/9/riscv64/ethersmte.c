@@ -893,7 +893,8 @@ ethirq(Ureg *, void *arg)
 		 * asserted from a stale enabled-source view when plic.c
 		 * re-claims, and the 64-trip cap mistakes us for a storm.
 		 */
-		(void)csr32r(c->regs, DMA_INTR_ENABLE);
+		en = csr32r(c->regs, DMA_INTR_ENABLE);
+		USED(en);
 	}
 
 	fl = csr32r(c->regs, DMA_STATUS_IRQ);
