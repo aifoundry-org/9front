@@ -761,6 +761,54 @@ i8250pnp(void)
 	n = dtbnuart();
 	head = tail = nil;
 
+	/*
+	 * /chosen/stdout-path is supposed to name the console, but live
+	 * vendor DTBs are sloppy: aliases go missing, u-boot rewrites
+	 * /chosen.  When it didn't resolve, honor console=N from
+	 * bootargs the classic way: serial<N> (falling back to the Nth
+	 * usable node) becomes the console.  Without a console flag the
+	 * port would never be enabled for input at all.
+	 */
+	for(j = 0; j < n; j++){
+		du = dtbuart(j);
+		if(du != nil && du->isconsole)
+			break;
+	}
+	if(j == n){
+		char *p;
+		int a, k;
+
+		if((p = getconf("console")) != nil && *p >= '0' && *p <= '9'){
+			a = atoi(p);
+			du = nil;
+			for(j = 0; j < n; j++){
+				Dtbuart *d = dtbuart(j);
+				if(d == nil || !d->ok || d->base == 0)
+					continue;
+				if(d->compatible[0] && !issupportedcompat(d->compatible))
+					continue;
+				if(d->aliasidx == a){
+					du = d;
+					break;
+				}
+			}
+			for(k = 0, j = 0; du == nil && j < n; j++){
+				/* no alias matched: count usable nodes in DT order */
+				Dtbuart *d = dtbuart(j);
+				if(d == nil || !d->ok || d->base == 0 || d->aliasidx >= 0)
+					continue;
+				if(d->compatible[0] && !issupportedcompat(d->compatible))
+					continue;
+				if(k++ == a)
+					du = d;
+			}
+			if(du != nil){
+				du->isconsole = 1;
+				print("uarti8250: console=%d selects %s\n", a, du->path);
+			}
+		}
+	}
+
 	/* Iterate aliases in order so eia<N> matches DT serial<N>. */
 	for(i = 0; i < 32; i++){
 		du = nil;
