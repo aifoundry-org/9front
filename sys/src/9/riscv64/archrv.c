@@ -141,10 +141,16 @@ socidentify(void)
 	soc.impl   = (u32int)(i < 0? 0: i);
 
 	if(soc.plic == nil && soc.aplic == nil){
-		/* DTB named no interrupt controller; pick a default by vendor. */
+		/* DTB named no interrupt controller; pick a default by part. */
 		switch(soc.vendor){
-		case 0x710:	/* SpacemiT (K1 X60; the K3 X100 has an APLIC) */
-			soc.plic = (uchar*)0xe0000000;
+		case 0x710:	/* SpacemiT */
+			/*
+			 * only the K1 X60 gets the PLIC guess: the K3 X100
+			 * has an APLIC, and poking 0xe0000000 there just
+			 * yields a boot with silently dead interrupts.
+			 */
+			if(soc.impl == 0x49772200)
+				soc.plic = (uchar*)0xe0000000;
 			break;
 		default:	/* QEMU-virt and unknown */
 			soc.plic = (uchar*)0x0c000000;
