@@ -117,7 +117,6 @@ archread(Chan *c, void *a, long n, vlong offset)
 		if(c->qid.path < narchdir && (fn = readfn[c->qid.path]))
 			return fn(c, a, n, offset);
 		error(Eperm);
-		panic("archread notreached");
 	}
 }
 
@@ -246,10 +245,9 @@ pmctlwrite(Chan*, void *a, long n, vlong)
 		poweroff();
 	}
 	error(Ebadctl);
-	return -1;	/* not reached */
 }
 
-void
+static void
 archinit(void)
 {
 	snprint(vendor, sizeof(vendor), "0x%016ullx", sbigetmvendorid());
@@ -316,23 +314,22 @@ iprint("arch-specific reset...");
 static void
 haltsys(void)
 {
+	panic("mpshutdown: cpu%d: %d active cpus", m->machno, sys->nonline);
+#ifdef xxx
 	int i;
 
-	panic("iprint(\"mpshutdown: cpu%d: %d active cpus\n", m->machno, sys->nonline);
-	delay(5);
-	panic("implement devtabshutdown();");
+	devtabshutdown();
 	splhi();
 
 	/* paranoia: wait for other cpus */
-#ifdef xxx
 	for (i = 100; i > 0 && sys->nonline > 1; i--) {
 		iprint(" %d", sys->nonline);
 		delay(100);
 	}
-#endif
 	/* we can now use the uniprocessor reset */
 	archreset();
-	panic("	notreached();");
+	notreached();
+#endif
 }
 
 /*

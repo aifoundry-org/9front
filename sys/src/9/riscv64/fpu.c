@@ -347,8 +347,8 @@ fpsts2ureg(Ureg*ureg)
 		ureg->status |= up->fpstate<<Fsshft;
 }
 
-void 
-void fpukexit(Ureg*ureg, FPsave*)
+void
+fpukexit(Ureg*ureg, FPsave*)
 {
 	FPalloc *a;
 	if (TrapSpew)print("fpukexit\n");

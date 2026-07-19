@@ -184,15 +184,32 @@ static Ctlr *pollctlr;		/* drained from clock callback */
  *               real silicon).  Access width tracks regshift.
  */
 #define UREG(c, r)	((volatile void*)((c)->io + ((r) << (c)->regshift)))
-#define csr8r(c, r)	((c)->regshift >= 2 \
-			 ? (uchar)*(volatile u32int*)UREG(c, r) \
-			 : *(volatile uchar*)UREG(c, r))
-#define csr8w(c, r, v)	((c)->regshift >= 2 \
-			 ? (*(volatile u32int*)UREG(c, r) = (c)->sticky[r] | (v)) \
-			 : (*(volatile uchar*)UREG(c, r) = (c)->sticky[r] | (v)))
-#define csr8o(c, r, v)	((c)->regshift >= 2 \
-			 ? (*(volatile u32int*)UREG(c, r) = (v)) \
-			 : (*(volatile uchar*)UREG(c, r) = (v)))
+
+static int
+csr8r(Ctlr *c, int r)
+{
+	if(c->regshift >= 2)
+		return (uchar)*(volatile u32int*)UREG(c, r);
+	return *(volatile uchar*)UREG(c, r);
+}
+
+static void
+csr8w(Ctlr *c, int r, int v)
+{
+	if(c->regshift >= 2)
+		*(volatile u32int*)UREG(c, r) = c->sticky[r] | v;
+	else
+		*(volatile uchar*)UREG(c, r) = c->sticky[r] | v;
+}
+
+static void
+csr8o(Ctlr *c, int r, int v)
+{
+	if(c->regshift >= 2)
+		*(volatile u32int*)UREG(c, r) = v;
+	else
+		*(volatile uchar*)UREG(c, r) = v;
+}
 
 static char*
 i8250status(Uart* uart, char *p, char *e)
@@ -535,7 +552,7 @@ i8250interrupt(Ureg*, void* arg)
 	    iir = csr8r(ctlr, Iir)){
 		switch(iir & IirMASK){
 		case Ims:		/* modem status: just clear */
-			(void)csr8r(ctlr, Msr);
+			csr8r(ctlr, Msr);
 			break;
 		case Ithre:		/* THR empty: kick TX */
 			uartkick(uart);
@@ -573,8 +590,8 @@ i8250interrupt(Ureg*, void* arg)
 			break;
 		default:
 			/* not all IIR codes are documented for every variant; just clear */
-			(void)csr8r(ctlr, Lsr);
-			(void)csr8r(ctlr, Rbr);
+			csr8r(ctlr, Lsr);
+			csr8r(ctlr, Rbr);
 			break;
 		}
 	}
@@ -602,10 +619,10 @@ i8250enable(Uart* uart, int ie)
 	csr8o(ctlr, Fcr, ctlr->ispxa ? Pxafcr : 0);
 
 	/* Drain any stale state. */
-	(void)csr8r(ctlr, Lsr);
-	(void)csr8r(ctlr, Rbr);
-	(void)csr8r(ctlr, Iir);
-	(void)csr8r(ctlr, Msr);
+	csr8r(ctlr, Lsr);
+	csr8r(ctlr, Rbr);
+	csr8r(ctlr, Iir);
+	csr8r(ctlr, Msr);
 
 	/* 8N1 line config. */
 	ctlr->sticky[Lcr] = Wls8;
