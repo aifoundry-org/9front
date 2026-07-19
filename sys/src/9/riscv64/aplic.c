@@ -118,6 +118,7 @@ aplicinit(void)
 	coherence();
 	if((rd(Domaincfg) & Dm) == 0)
 		panic("aplicinit: domain can't do MSI delivery");
+	print("aplic: %ud sources, domaincfg %ux\n", nsrc, rd(Domaincfg));
 
 	/* enable S-mode external interrupts in SIE CSR */
 	setsie(Seie);
@@ -215,6 +216,13 @@ aplicintrenable(int irq, void (*f)(Ureg*, void*), void *a, int tbdf, char *name)
 	wr(Target + 4*(irq-1), (u32int)mhart<<Thartshift | irq);
 	wr(Setienum, irq);
 	coherence();
+	/*
+	 * read back for the boot log: both are WARL, and a sourcecfg
+	 * stuck at 0 (delegation missing) or a target stuck at 0 is
+	 * exactly what a "boots but no interrupts" report needs to show.
+	 */
+	print("aplic: src %d for %s: cfg %ux target %ux\n", irq, name,
+		rd(Sourcecfg + 4*(irq-1)), rd(Target + 4*(irq-1)));
 	unlock(&vctllock);
 }
 
