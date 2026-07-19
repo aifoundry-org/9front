@@ -140,10 +140,10 @@ socidentify(void)
 	soc.arch   = (u32int)(a < 0? 0: a);
 	soc.impl   = (u32int)(i < 0? 0: i);
 
-	if(soc.plic == nil){
-		/* DTB had no PLIC; pick a default by vendor. */
+	if(soc.plic == nil && soc.aplic == nil){
+		/* DTB named no interrupt controller; pick a default by vendor. */
 		switch(soc.vendor){
-		case 0x710:	/* SpacemiT (K1 X60 today; K3 X100 later) */
+		case 0x710:	/* SpacemiT (K1 X60; the K3 X100 has an APLIC) */
 			soc.plic = (uchar*)0xe0000000;
 			break;
 		default:	/* QEMU-virt and unknown */
@@ -151,8 +151,8 @@ socidentify(void)
 			break;
 		}
 	}
-	print("socidentify: vendor %#ullx arch %#ullx impl %#ullx plic %#p\n",
-		soc.vendor, soc.arch, soc.impl, soc.plic);
+	print("socidentify: vendor %#ullx arch %#ullx impl %#ullx plic %#p aplic %#p imsic %#p\n",
+		soc.vendor, soc.arch, soc.impl, soc.plic, soc.aplic, soc.imsic);
 }
 
 Mallocs
