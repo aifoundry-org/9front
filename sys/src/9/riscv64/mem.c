@@ -54,23 +54,19 @@ meminit(void)
 
 	if(p = getconf("*maxmem"))
 		l = strtoull(p, 0, 0);
-	print("meminit: end %p, KZERO %p, PGROUND %p\n", end, KZERO, PGROUND((uintptr)end - KTZERO));
 
-	// leave a big hole after end, for now. We need it for this and that. 
+	// leave a big hole after end, for now. We need it for this and that.
 	conf.mem[0].base = ROUND(PGROUND((uintptr)end - KTZERO) + (uintptr)(VDRAM+0x2fffff), 0x200000);
 	conf.mem[0].limit = l;
 
-	print("CONF ZERO BASE is 0x%llx LIMIT is 0x%llx\n", conf.mem[0].base, l);
 	if(l > KLIMIT)
 		l = KLIMIT;
 	sv57 = (void *)PGROUND((uintptr)end);
 	sv48 = (void *)PGROUND((uintptr)sv57 + 1);
 	sv39 = (void *)PGROUND((uintptr)sv48 + 1);
 	pGiB = (void *)PGROUND((uintptr)sv39 + 1);
-	print("%p %p %p %p\n", sv57, sv48, sv39, pGiB);
 	memset(sv57, 0, 16384);
 	kmapram(conf.mem[0].base, l);
 
 	conf.mem[0].npage = (conf.mem[0].limit - conf.mem[0].base)/BY2PG;
-	print("base %p limit %p npage %lud\n", conf.mem[0].base,  conf.mem[0].limit,conf.mem[0].npage);
 }
