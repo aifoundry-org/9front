@@ -6,6 +6,7 @@ $objtype
 		aux
 			kbdfs
 			wpa
+			listen1
 		bind
 		cat
 		cfs
@@ -15,6 +16,8 @@ $objtype
 		grep
 		ip
 			ipconfig
+			ping
+			telnetd
 		ls
 		mkdir
 		mntgen
