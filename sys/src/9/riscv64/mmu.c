@@ -141,7 +141,17 @@ kmapram(uintptr, uintptr limit)
 		n = UZERO/0x40000000ULL;
 	for(i = 0; i < n; i++){
 		pa = 0x40000000ULL*i;
-		if(pa >= VDRAM && pa < limit){
+		/*
+		 * A slot counts as "DRAM" if it overlaps [VDRAM, limit) at
+		 * all, not just when its aligned start is >= VDRAM: VDRAM
+		 * (where the bootloader actually placed the kernel) is not
+		 * itself GiB-aligned in general, so the slot straddling it
+		 * would otherwise be misclassified as a plain 1GiB leaf --
+		 * even though conf.mem[0].base (and hence the very first
+		 * pages mainmem ever hands out) lives inside that same
+		 * slot, right above VDRAM.
+		 */
+		if(pa + 0x40000000ULL > VDRAM && pa < limit){
 			/*
 			 * DRAM: map with 2MiB leaves reached through a shared L2
 			 * table rather than a single 1GiB leaf.  Every hart's mmutop
