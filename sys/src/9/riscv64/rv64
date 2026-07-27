@@ -33,6 +33,7 @@ link
 	ethermedium
 	loopbackmedium
 	ethersmte
+	etherdwqe
 #	netdevmedium
 	pciqemu		pci
 

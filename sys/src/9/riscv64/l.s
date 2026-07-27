@@ -208,6 +208,24 @@ _endpeekcopy:
 	MOV	R9, CSR(STVEC)
 	RET
 
+TEXT peekl(SB), 1, $-4
+        MOV     RARG, R1
+        MOV     dst+8(FP), R2
+        MOVWU   numwords+16(FP), R8
+TEXT _peeklinst(SB), 1, $-4
+        MOV     $recktrap(SB), R9
+        MOV     R9, CSR(STVEC)          /* if we fault here, report it */
+_peeklloop:
+        MOVW 0(R1), R3
+        MOVW R3, 0(R2)
+        ADD $4, R2, R2
+        ADD $4, R1, R1
+        ADD $-1, R8, R8 
+        BNE R4, _peekloop
+_endpeeklcopy:
+        MOV     R9, CSR(STVEC)
+        RET
+
 TEXT 	soft(SB), 1, $-4
 	RET
 

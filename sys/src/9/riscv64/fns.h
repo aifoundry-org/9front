@@ -307,6 +307,7 @@ void*	putstvec(void *);
 void	relocfixup(void);
 
 int	peekb(void*);
+int peekl(void *addr, u32int *dst, int numwords);
 
 /* archrv */
 void calibrate(void);

@@ -7,7 +7,7 @@ CONFLIST=rv64 bpif3
 # address of _start.  One image boots the bpi-f3 (booti/kexec at
 # 0x40200000), qemu virt (0x80200000) and anything else that loads it
 # 2 MB past the start of usable RAM.
-loadaddr=0x80200000
+loadaddr=0x102202000
 
 objtype=riscv64
 </$objtype/mkfile
