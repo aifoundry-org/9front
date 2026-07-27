@@ -473,21 +473,39 @@ devtreeprop(char *path, char *key, void *val, int len)
 			memmove(e->mac, val, 6);
 			e->hasmac = 1;
 		} else if(strcmp(key, "k1x,apmu-base-reg") == 0 && len >= 4){
-			/* SpacemiT extension: APMU MMIO base shared by all EMACs. */
+			/* SpacemiT extension: APMU MMIO base shared by all EMACs.
+			 * K1 binding name. */
 			e->apmubase = beget4(p);
+		} else if(strcmp(key, "spacemit,apmu") == 0 && len >= 12){
+			/*
+			 * K3 binding: spacemit,apmu = <&syscon_apmu ctrl-off
+			 * dline-off>; a phandle + 2 args, not the separate
+			 * bare ctrl-reg/dline-reg properties K1 uses.  We
+			 * don't resolve the phandle itself (there's only one
+			 * APMU syscon on this SoC family; apmubase keeps its
+			 * K3 default from etherpnp() unless k1x,apmu-base-reg
+			 * says otherwise), just the two offset cells.
+			 */
+			e->ctrlregoff = beget4(p + 4);
+			e->dlineregoff = beget4(p + 8);
 		} else if(strcmp(key, "ctrl-reg") == 0 && len >= 4){
 			/* SpacemiT extension: per-EMAC offset into APMU for
-			 * clock/reset control. */
+			 * clock/reset control.  K1 binding name. */
 			e->ctrlregoff = beget4(p);
 		} else if(strcmp(key, "dline-reg") == 0 && len >= 4){
 			/* SpacemiT extension: per-EMAC offset into APMU for
-			 * the RGMII delay-line register. */
+			 * the RGMII delay-line register.  K1 binding name. */
 			e->dlineregoff = beget4(p);
 		} else if(strcmp(key, "tx-phase") == 0 && len >= 4){
 			/* SpacemiT extension: RGMII delay in degrees of the
-			 * 125MHz clock; per-port board tuning. */
+			 * 125MHz clock; per-port board tuning.  K1 binding name. */
 			e->txphase = beget4(p);
 		} else if(strcmp(key, "rx-phase") == 0 && len >= 4){
+			e->rxphase = beget4(p);
+		} else if(strcmp(key, "spacemit,tx-phase") == 0 && len >= 4){
+			/* Same thing, K3 binding name. */
+			e->txphase = beget4(p);
+		} else if(strcmp(key, "spacemit,rx-phase") == 0 && len >= 4){
 			e->rxphase = beget4(p);
 		} else if(strcmp(key, "emac,reset-gpio") == 0 && len >= 12){
 			/* <phandle pin flags> — the PHY's reset line */
