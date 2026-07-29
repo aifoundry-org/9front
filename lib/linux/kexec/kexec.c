@@ -48,7 +48,7 @@
 #define PAGE_SIZE	4096UL
 #define PAGE_ROUND(x)	(((x) + PAGE_SIZE - 1) & ~(PAGE_SIZE - 1))
 
-#define FDT_PATH	"/sys/firmware/fdt"
+char *FDT_PATH = 	"/sys/firmware/fdt";
 #define MAX_SEGS	16
 
 struct kexec_segment {
@@ -361,6 +361,8 @@ main(int argc, char **argv)
 		if(strcmp(argv[i], "-d") == 0 && i + 1 < argc){
 			dest_override = strtoull(argv[++i], NULL, 0);
 			have_dest_override = 1;
+		} else if(strcmp(argv[i], "-f") == 0 && i + 1 < argc){
+			FDT_PATH = argv[++i];
 		} else if(strcmp(argv[i], "-b") == 0 && i + 1 < argc){
 			const char *e = argv[++i];
 			size_t newlen = extralen + (extralen ? 1 : 0) + strlen(e) + 1;
