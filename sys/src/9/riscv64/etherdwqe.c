@@ -33,10 +33,6 @@
  * ring (rxr/txr) is checked at init time to not straddle a 4G boundary.
  *
  * KNOWN-RISKY / VERIFY ON HARDWARE:
- *   - GMAC_MDIO_ADDR clock-range (CR) field: using a conservative value
- *     (CsrClk350_500 range); if MDIO reads come back all-1s/all-0s, this
- *     is the first thing to check against the actual AHB/APB clock the
- *     K3 feeds this core.
  *   - MTL FIFO sizing (TQS/RQS) and DMA burst/PBL tuning: left at
  *     conservative defaults; GMAC_HW_FEATURE1 reports the real FIFO
  *     depths if you want to size these precisely.
@@ -913,6 +909,31 @@ ethinit(Ether *edev)
 	 */
 	{
 		u32int origv = csr32r(c->apmu, c->apmuctrloff);
+
+		{
+			static uchar zero[Eaddrlen];
+			u32int hi, lo;
+			u32int v;
+			if(memcmp(edev->ea, zero, Eaddrlen) != 0){
+				dprint("dwqe: MAC from bootarg or DTB\n");
+			} else {
+			    /* APMU: clocks on, reset released -- BEFORE touching ct->regs. */
+				v = csr32r(c->apmu, c->apmuctrloff);
+    			csr32w(c->apmu, c->apmuctrloff, v | APMU_EMAC_BUS_EN);
+    			microdelay(10);
+    			csr32w(c->apmu, c->apmuctrloff, v | APMU_EMAC_BUS_EN | APMU_EMAC_BUS_RST_RELEASE);
+    			microdelay(10);
+				lo = csr32r(c->regs, GMAC_ADDR0_LOW);
+				hi = csr32r(c->regs, GMAC_ADDR0_HIGH);
+				edev->ea[0] = lo & 0xff;        edev->ea[1] = (lo>>8) & 0xff;
+				edev->ea[2] = (lo>>16) & 0xff;  edev->ea[3] = (lo>>24) & 0xff;
+				edev->ea[4] = hi & 0xff;        edev->ea[5] = (hi>>8) & 0xff;
+				dprint("dwqe: MAC read from hardware: %02X:%02X:%02X:%02X:%02X:%02X\n",
+					edev->ea[0], edev->ea[1], edev->ea[2],
+					edev->ea[3], edev->ea[4], edev->ea[5]);
+			}
+		}
+
 		u32int preserve = origv & ~(APMU_EMAC_BUS_EN
 			| APMU_EMAC_BUS_RST_RELEASE | APMU_EMAC_AXI_MST_ID
 			| APMU_EMAC_PTP_EN);
@@ -1186,6 +1207,8 @@ etherpnp(Ether *edev)
 	dprint("dwqe: ether%d regs=%p (phys=%#llux) apmu=%p (phys=%#llux)\n",
 		edev->ctlrno, ct->regs, base, ct->apmu, apmubase);
 
+	//Para leer mac por HW APMU clocks on, reset release
+
 	ct->rxdelay = DWQE_DEFAULT_RXDELAY;
 	ct->txdelay = DWQE_DEFAULT_TXDELAY;
 	if(de != nil){
@@ -1211,16 +1234,9 @@ etherpnp(Ether *edev)
 			dprint("dwqe: MAC from bootarg\n");
 		} else if(de != nil && de->hasmac && memcmp(de->mac, zero, Eaddrlen) != 0){
 			memmove(edev->ea, de->mac, Eaddrlen);
-			dprint("dwqe: MAC from DTB\n");
-		} else {
-			lo = csr32r(ct->regs, GMAC_ADDR0_LOW);
-			hi = csr32r(ct->regs, GMAC_ADDR0_HIGH);
-			edev->ea[0] = lo & 0xff;        edev->ea[1] = (lo>>8) & 0xff;
-			edev->ea[2] = (lo>>16) & 0xff;  edev->ea[3] = (lo>>24) & 0xff;
-			edev->ea[4] = hi & 0xff;        edev->ea[5] = (hi>>8) & 0xff;
-			dprint("dwqe: MAC read from hardware: %02X:%02X:%02X:%02X:%02X:%02X\n",
-				edev->ea[0], edev->ea[1], edev->ea[2],
-				edev->ea[3], edev->ea[4], edev->ea[5]);
+			dprint("dwqe: MAC from DTB: %02X:%02X:%02X:%02X:%02X:%02X\n",
+                edev->ea[0], edev->ea[1], edev->ea[2],
+                edev->ea[3], edev->ea[4], edev->ea[5]);
 		}
 	}
 
