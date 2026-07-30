@@ -309,6 +309,7 @@ main(u64int hartid, uintptr dtb)
 	cpuidprint();
 	timersinit();
 	xsummary();
+	l2init();		/* detect Zicbom / configure l2 cache before any dma-capable device (xhci, etc.) resets */
 	pageinit();
 	procinit0();
 	initseg();
@@ -450,9 +451,6 @@ reboot(void*p, void *code, ulong size)
 void
 dmaflush(int clean, void *p, ulong len)
 {
-	print("dmaflush %d %p %ld\n", clean, p, len);
-	panic("dmaflush");
-#ifdef XXX
 	uintptr s = (uintptr)p;
 	uintptr e = (uintptr)p + len;
 
@@ -476,6 +474,5 @@ dmaflush(int clean, void *p, ulong len)
 	}
 	if(s < e)
 		cachedinvse((void*)s, e - s);
-#endif
 }
 /* setconfenv() now lives in bootargs.c */

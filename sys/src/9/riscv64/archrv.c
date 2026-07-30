@@ -242,33 +242,25 @@ nol2cache(void)
 void
 l2init(void)
 {
-#ifdef xxx
-	L2cache *l2c = (L2cache *)soc.l2cache;
-
-	if (m->machno == 0 && haveinstr(cboflush, (uvlong)bdata))
+	/*
+	 * this kernel targets the RVA23 profile, which mandates Zicbom
+	 * (cache-block management: cbo.clean/cbo.flush/cbo.inval) as a
+	 * required extension.  so, unlike Geoff's kernel (which supports
+	 * older harts that may lack Zicbom and fall back to soc-specific
+	 * l2/l3 cache-controller flushes), we can just assume it's present
+	 * rather than probe for it at runtime.
+	 *
+	 * if this kernel is ever ported to a non-RVA23 hart, replace this
+	 * with a real probe (e.g. read the "riscv,isa"/"riscv,isa-extensions"
+	 * dtb string for "zicbom", since misa only encodes single-letter
+	 * extensions and can't see it) before relying on cachedwbse/
+	 * cachedwbinvse/cachedinvse, which silently no-op (coherence() only)
+	 * when soc.havecbo is 0.
+	 */
+	if (m->machno == 0) {
 		soc.havecbo = 1;
-	if (soc.havecbo) {
-		if (m->machno == 0)
-			print("l2init: have Zicbom cache flush mechanism\n");
-		return;
+		print("l2init: assuming Zicbom (RVA23-mandated cache-block ops)\n");
 	}
-	if (l2c != nil) {
-		if (m->machno == 0)
-			memcacheinit(l2c, 2, "shared l2");
-	} else {
-		/* just configure this hart's private l2 cache */
-		if ((uint)m->hartid >= nelem(soc.pl2caches))
-			l2c = (L2cache *)soc.pl2caches[m->hartid];
-		if (l2c == nil) {
-			if (m->machno == 0)
-				nol2cache();
-			return;
-		}
-		memcacheinit(l2c, 2, "private l2");
-	}
-	if (m->machno == 0)
-		memcacheinit((L2cache *)soc.l3cache, 3, "shared l3");
-#endif
 }
 
 enum {
@@ -346,66 +338,72 @@ USED(len);
 }
 
 /*
- * if dma is incoherent on this machine,
- * flush any l2 land l3 caches from virtual address `vaddr' for `len' bytes.
- * "flush" means "write back the cache line if dirty, then invalidate it".
- * not needed on most (that is, risc-v conforming) systems.
- * at minimum, always call coherence().
+ * apply the Zicbom cache-block op `op' to every cache line from vaddr to
+ * vaddr+len-1.  vaddr is a virtual address; the cbo instructions operate
+ * on the virtual address directly (unlike the sifive l2/l3 controllers,
+ * which need physical addresses), so no translation is needed here.
+ *
+ * if we don't have Zicbom, we can't do anything useful per-line, so just
+ * make sure earlier stores are visible (coherence()) and return; this is
+ * the right thing on (risc-v conforming) coherent-dma systems, which is
+ * all we currently support.
+ */
+static void
+cacheop(void (*op)(void *), void *vaddr, int len)
+{
+	uintptr addr, last;
+	Mpl pl;
+
+	if (!soc.havecbo || len <= 0 || vaddr == nil) {
+		coherence();
+		return;
+	}
+	pl = splhi();
+	addr = (uintptr)vaddr;
+	last = (addr + len + CACHELINESZ-1) & ~((uintptr)CACHELINESZ-1);
+	addr &= ~((uintptr)CACHELINESZ-1);	/* start of first cache line */
+	for (; addr < last; addr += CACHELINESZ)
+		(*op)((void *)addr);
+	splx(pl);
+	coherence();
+}
+
+/*
+ * if dma is incoherent on this machine, write back (without invalidating)
+ * any dirty cache lines covering virtual address `vaddr' for `len' bytes,
+ * so that a device can see what the cpu has written.  not needed on most
+ * (that is, risc-v conforming) systems.  at minimum, always call
+ * coherence().
+ */
+void
+cachedwbse(void *vaddr, int len)
+{
+	cacheop(cboclean, vaddr, len);
+}
+
+/*
+ * if dma is incoherent on this machine, flush (write back if dirty, then
+ * invalidate) any cache lines covering virtual address `vaddr' for `len'
+ * bytes.  not needed on most (that is, risc-v conforming) systems.  at
+ * minimum, always call coherence().
  */
 void
 cachedwbinvse(void *vaddr, int len)
 {
-	USED(vaddr);
-	USED(len);
-	coherence();
-#ifdef xxx
-	L2cache *l2c;
-	Mpl pl;
-
-	if (!dmaincoherent || !ISCACHED(vaddr))
-		return;
-#endif
-#ifdef xxx
-	l2c = (L2cache *)soc.l2cache;
-	if (!soc.havecbo && l2c == nil) {	/* no shared l2? try private */
-		/* if efficiency is an issue, could cache l2c in m->l2cache */
-		l2c = (L2cache *)soc.pl2caches[m->hartid];
-		if (l2c == nil)
-			return;		/* probably no l3 either */
-	}
-	pl = splhi();
-	memcacheflush(l2c, 2, vaddr, len);	/* force dirty l2 lines to l3 */
-	l2c = (L2cache *)soc.l3cache;
-	if (l2c != nil)
-		memcacheflush(l2c, 3, vaddr, len);
-	splx(pl);
-#endif
+	cacheop(cboflush, vaddr, len);
 }
 
+/*
+ * if dma is incoherent on this machine, invalidate (without writing back)
+ * any cache lines covering virtual address `vaddr' for `len' bytes, so
+ * that the cpu will re-read what a device just wrote to memory.  not
+ * needed on most (that is, risc-v conforming) systems.  at minimum,
+ * always call coherence().
+ */
 void
 cachedinvse(void *vaddr, int len)
 {
-	USED(vaddr, len);
-	coherence();
-	print("skip all this cache inval in cachdinvse\n");
-#ifdef xxx
-	uintptr addr, last;
-	Mpl pl;
-
-	if (!dmaincoherent || !ISCACHED(vaddr))
-		return;
-	if (!soc.havecbo)
-		return;
-
-	pl = splhi();
-	addr = (uintptr)(iskern(vaddr)? vaddr: KADDR((uintptr)vaddr));
-	last = (addr + len + CACHELINESZ-1) & ~((uintptr)CACHELINESZ-1);
-	addr &= ~((uintptr)CACHELINESZ-1);	/* start of first cache line */
-	for (; addr < last; addr += CACHELINESZ)
-		cboinval((void *)addr);
-	coherence();
-	splx(pl);
-#endif
+	cacheop(cboinval, vaddr, len);
 }
 
 int
