@@ -18,7 +18,7 @@ dev
 #	bridge	log
 	ip	arp chandial ip ipv6 ipaux iproute netlog nullmedium pktmedium inferno
 	uart
-#	usb
+	usb
 #	rtc
 	pci	pci
 	sd
@@ -27,12 +27,13 @@ dev
 
 link
 #	usbxhcipci	pci usbxhci
+	usbxhcirv64k3	usbxhci
 	sdspacemit
 	ethervirtio10 virtio10mem pci
 #	ethersink
 	ethermedium
 	loopbackmedium
-	ethersmte
+#	ethersmte
 	etherdwqe
 #	netdevmedium
 	pciqemu		pci

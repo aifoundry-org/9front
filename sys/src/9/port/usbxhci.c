@@ -1609,7 +1609,17 @@ epread(Ep *ep, void *va, long n)
 	} else if(ep->ttype == Tiso)
 		return isoread(ep, p, n);
 
-	if((uintptr)p <= KZERO){
+	/*
+	 * this port's address space is inverted vs. the imx8/lx2k arches
+	 * this code was borrowed from: kernel is low, identity-mapped
+	 * (KZERO==0), user is high (starts at UZERO).  the original
+	 * "(uintptr)p <= KZERO" test relies on KZERO being a huge value
+	 * above every user address, which never catches a user buffer
+	 * here -- it lets a raw user va reach dmaflush()/paddr() and
+	 * panic.  use iskern() (defined in mem.h precisely for this
+	 * inversion) instead.
+	 */
+	if(!iskern(p)){
 		Block *b;
 
 		b = allocb(n);
@@ -1738,7 +1748,8 @@ epwrite(Ep *ep, void *va, long n)
 	} else if(ep->ttype == Tiso)
 		return isowrite(ep, p, n);
 
-	if((uintptr)p <= KZERO){
+	/* see the matching comment in epread() above */
+	if(!iskern(p)){
 		Block *b;
 
 		b = allocb(n);

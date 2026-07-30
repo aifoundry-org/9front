@@ -519,6 +519,11 @@ TEXT islo(SB), 1, $-4
 #define CBOZERO 4		/* Zicboz */
 
 /* Zicbom extension; takes virtual addresses */
+TEXT cboclean(SB), 1, $-4			/* void cboclean(uintptr) */
+	WORD $(0xf | 2<<12 | ARG<<15 | CBOCLEAN<<20)
+	RET
+
+/* Zicbom extension; takes virtual addresses */
 TEXT cboflush(SB), 1, $-4			/* void cboflush(uintptr) */
 	WORD $(0xf | 2<<12 | ARG<<15 | CBOFLUSH<<20)
 	RET
