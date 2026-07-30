@@ -252,6 +252,8 @@ ulong	clrsipbit(ulong);
 void	clrstie(void);
 void	cboinval(void *);
 void	cboflush(void *);
+void	cboclean(void *);
+void	l2init(void);
 
 // more good 9k stuff: m mode bits. 
 // Let's keep them until we're sure we don't want them.
