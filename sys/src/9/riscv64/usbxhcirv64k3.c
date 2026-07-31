@@ -199,9 +199,20 @@ reset(Hci *hp)
     u32int *phymmio;
     void *mmio;
 
-    print("usbxhcirv64k3: reset called\n");
     if(ctlr != nil)
         return -1;
+
+    /*
+     * Unified kernel: this driver owns the K3's usb2_host DWC3
+     * controller.  Gate on the DTB root compatible so it stays quiet
+     * on any other SoC (e.g. the K1, whose usbxhcirv64 handles USB
+     * instead).  Without this gate the K3 addresses/PMU bits are poked
+     * on the K1 -- the controller reads back as mmio=0 and nothing is
+     * detected -- so bail before the first vmap/write.
+     */
+    if(!dtbsocmatch("spacemit,k3"))
+        return -1;
+    print("usbxhcirv64k3: reset called\n");
 
     /*
      * 1. APMU: enable clocks and release the controller's resets.
