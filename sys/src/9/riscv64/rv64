@@ -26,14 +26,15 @@ dev
 	dtracy
 
 link
-#	usbxhcipci	pci usbxhci
+	usbxhcipci	pci usbxhci
+	usbxhcirv64	usbxhci
 	usbxhcirv64k3	usbxhci
 	sdspacemit
 	ethervirtio10 virtio10mem pci
 #	ethersink
 	ethermedium
 	loopbackmedium
-#	ethersmte
+	ethersmte
 	etherdwqe
 #	netdevmedium
 	pciqemu		pci
