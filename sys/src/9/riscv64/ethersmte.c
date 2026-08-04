@@ -1,6 +1,7 @@
 /*
  * Driver for the SpacemiT K1 Ethernet controller (EMAC/smte)
- * for 9front / Plan 9 from Bell Labs
+ * Interrupt-driven via intrenable(); etherclock() remains
+ * as a 100Hz backstop in case a wake-up is missed
  *
  * Based on:
  *   OpenBSD if_smte.c   - Patrick Wildt, Mark Kettenis
@@ -10,12 +11,6 @@
  *   0x0000-0x002c  DMA registers
  *   0x0100-0x01e4  MAC/GMAC registers
  *   separate APMU  RGMII delay lines
- *
- * riscv64/K1 notes:
- *   - cleandse/invaldse not yet available on riscv64: omitted
- *   - completion is interrupt-driven via intrenable(); etherclock()
- *     remains registered as a 100Hz backstop in case a wake-up is missed
- *   - SoC identified by the DTB root compatible ("spacemit,k1*")
  */
 
 #include "u.h"
@@ -42,7 +37,7 @@ static int debug;
 /*
  * Default MMIO layout for the SpacemiT K1's first EMAC, used only as
  * a fallback when no matching DTB entry is found.  Normal operation
- * pulls base / IRQ / APMU base / MAC out of /soc/ethernet@... via
+ * pulls base / IRQ / APMU base / MAC out of /soc/ethernet@* via
  * the Dtbether table built by bootargs.c.
  */
 enum {
@@ -171,11 +166,9 @@ enum {
 
 /*
  * APMU registers (byte offset from APMU_PHYS = 0xd4282800).
- * Per the K1 device tree we read from /soc/ethernet@…:
+ * Per the K1 device tree we read from /soc/ethernet@*:
  *   EMAC0 ctrl-reg  = 0x3e4   (AXI ID, PHY-intf select, RMII clk select)
  *   EMAC0 dline-reg = 0x3e8   (RGMII delay line)
- * Jose's original 0x0000/0x0004 were poking at the wrong module's registers
- * (CCIC1/ISP clocks); EMAC operation came from firmware pre-init.
  */
 enum {
 	APMU_EMAC_CLK_RST_CTRL			= 0x03e4,
@@ -1280,10 +1273,9 @@ etherpnp(Ether *edev)
 	}
 
 	/*
-	 * This driver only knows the K1's EMAC; the pad mux, GPIO and
-	 * APMU addresses below are that SoC's.  Trust the DTB root
-	 * compatible rather than sniffing MMIO: reads of an absent
-	 * device fault (qemu) or hang the bus outright (other SoCs).
+	 * This driver only knows the K1's EMAC, pad mux, GPIO and APMU addresses.
+	 * Trust the DTB root compatible rather than sniffing MMIO, to avoid faulting
+	 * or hanging the bus.
 	 */
 	if(!dtbsocmatch("spacemit,k1")){
 		dprint("smte: not a K1, skipping\n");
@@ -1291,11 +1283,8 @@ etherpnp(Ether *edev)
 	}
 
 	/*
-	 * Locate this controller in the DTB by alias index.  No fallback
-	 * to hardcoded values for the secondary card — if DTB has nothing
-	 * for it, we don't know where it lives.  ether0 retains a fallback
-	 * to the K1 EMAC0 defaults so kernels booted without a DTB still
-	 * come up with one interface.
+	 * Locate this controller in the DTB by alias index.  ether0 falls back
+	 * to K1 EMAC0 defaults if the DTB is missing; the secondary doesn't.
 	 */
 	de = nil;
 	n = dtbnether();
@@ -1330,13 +1319,7 @@ etherpnp(Ether *edev)
 		return -1;
 	}
 
-	/*
-	 * plic.c's intrinit (driven by soc.plic from socidentify/DTB) has
-	 * already masked every PLIC source, so we don't need to defang the
-	 * prior stage's routing here.  intrenable() below opts us back in
-	 * for this card's IRQ once the DMA descriptors are live.
-	 */
-
+	/* plic.c's intrinit has already masked every PLIC source. */
 	ct->regs = (ulong*)vmap(base, size);
 	ct->apmu = (ulong*)vmap(apmubase, APMU_SIZE);
 	if(ct->regs == nil || ct->apmu == nil){
@@ -1352,8 +1335,7 @@ etherpnp(Ether *edev)
 	 * RGMII delays are per-port board tuning.  The DTB gives them as
 	 * degrees of the 125MHz clock (tx-phase/rx-phase); the delay line
 	 * counts 15.6ps steps, so steps = deg * 8000ps/360 / 15.6ps.
-	 * Without DTB values keep the old defaults (~70°), which are known
-	 * to work on the BPI-F3's first port.
+	 * Without DTB values, keep the old working defaults (~70 deg).
 	 */
 	ct->rxdelay = SMTE_DEFAULT_RXDELAY;
 	ct->txdelay = SMTE_DEFAULT_TXDELAY;
@@ -1380,9 +1362,6 @@ etherpnp(Ether *edev)
 	 *   1. bootarg ea= (already in edev->ea via devether.c)
 	 *   2. DT local-mac-address / mac-address
 	 *   3. hardware register
-	 * On K1 the hardware reset value is uninitialized junk
-	 * (e.g. fe:fe:fe:..) so a bootarg-supplied address must not
-	 * be clobbered.
 	 */
 	{
 		static uchar zero[Eaddrlen];
@@ -1433,16 +1412,7 @@ etherpnp(Ether *edev)
 		dprint("smte: %s irq-driven on irq %d\n", edev->name, irq);
 	}
 	if(!smteclockregistered){
-		/*
-		 * 1ms polling interval (not 1000/HZ = 10ms) because RX
-		 * completion on the K1 is currently polled rather than
-		 * interrupt-driven (RX_TRANSFER_DONE in DMA_INTR_ENABLE
-		 * breaks DHCP — see ethproc above).  The clock subsystem
-		 * supports sub-tick intervals via stimecmp; the only cost
-		 * is ~1000 timer interrupts per second instead of 100,
-		 * which is well under 1% of CPU on a 1.6GHz K1.
-		 * Bounded ping latency: ~1ms instead of ~10ms.
-		 */
+		/* 1ms rather than 10ms polling interval to improve worst-case latency */
 		addclock0link(etherclock, 1);
 		smteclockregistered = 1;
 		dprint("smte: %s clock-poll backstop tick=1ms\n", edev->name);
