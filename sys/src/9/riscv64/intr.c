@@ -7,11 +7,9 @@
 #include "ureg.h"
 
 /*
- * One kernel image boots SoCs with either style of external interrupt
- * controller: a PLIC (K1, default qemu-virt) or an AIA APLIC+IMSIC
- * pair (K3, qemu-virt with aia=).  bootargsinit/socidentify decide
- * which one the machine has; commit to the matching driver here, once,
- * so the per-interrupt path pays only an indirect call.
+ * bootargsinit/socidentify figure out whether the external interrupt controller is
+ * a PLIC (K1, default qemu-virt) or an AIA APLIC+IMSIC pair (K3, qemu-virt with aia=).
+ * Commit to the matching driver here, once; but there's still a per-interrupt indirection.
  */
 
 static int (*irqfn)(Ureg*);
@@ -19,9 +17,9 @@ static void (*enablefn)(int, void (*)(Ureg*, void*), void*, int, char*);
 static void (*disablefn)(int, void (*)(Ureg*, void*), void*, int, char*);
 
 /*
- * last resort when neither a PLIC nor an APLIC was identified: boot
- * anyway with external interrupts dead, complaining per device, so
- * the console (with *uartpoll=1) stays usable for diagnosis.
+ * last resort when neither a PLIC nor an APLIC was identified: boot anyway with
+ * external interrupts dead, complaining per device, so the console (with
+ * *uartpoll=1) stays usable for diagnosis.
  */
 static int
 noneirq(Ureg*)
@@ -55,8 +53,7 @@ intrinit(void)
 		disablefn = aplicintrdisable;
 		aplicinit();
 	} else {
-		print("intrinit: no interrupt controller in DTB; "
-			"external interrupts are dead\n");
+		print("intrinit: no interrupt controller in DTB; external interrupts are dead\n");
 		irqfn = noneirq;
 		enablefn = noneenable;
 		disablefn = nonedisable;
