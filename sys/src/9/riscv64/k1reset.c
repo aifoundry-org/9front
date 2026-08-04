@@ -1,22 +1,17 @@
 /*
- * Spacemit K1 SoC reset.
+ * Spacemit K1 reset
  *
- * SBI SRST is silently ignored on this board.  The trustworthy reset
- * is a reset request to the P1 power-management chip (bit 1 of its
- * power control register 2, at address 0x41 on TWSI8), which restarts
- * the SoC the same way the reset button does; the boot ROM then finds
- * every block in its power-on state.  We drive the TWSI unit by
- * polling, one byte per TB round, per the I2C chapter of the K1 user
- * manual.
+ * SBI SRST is silently ignored. The trustworthy reset is a reset request to the
+ * P1 power-management chip (bit 1 of its power control register 2, at address
+ * 0x41 on TWSI8), which restarts the SoC the same way the reset button does;
+ * the boot ROM then finds every block in its power-on state. We drive the TWSI
+ * by polling, one byte per TB round, per the I2C chapter of the K1 user manual.
  *
- * If the PMIC can't be reached we fall back to the on-chip watchdog:
- * shortest timeout, let it fire.  Each WDT register write must be
- * preceded by the unlock magic (0xbaba to WDT_WFAR, 0xeb10 to
- * WDT_WSAR).  Bit 2 of MPMU_WDTPCR holds the WDT in reset when set;
- * bit 4 (WDTR) of MPMU_APRR enables the WDT-driven SoC reset.  The
- * WDT reset is not a full power-on reset — peripheral state survives
- * it and the ROM may fail to boot from SD — so the SD hosts are put
- * back to their power-on state first to improve the odds.
+ * If the PMIC can't be reached, fall back to the on-chip watchdog: shortest
+ * timeout, let it fire. Each WDT register write must be preceded by the unlock
+ * magic (0xbaba to WDT_WFAR, 0xeb10 to WDT_WSAR). Bit 2 of MPMU_WDTPCR holds
+ * the WDT in reset when set; bit 4 (WDTR) of MPMU_APRR enables the WDT reset.
+ * TODO maybe remove the fallback if we never need it?
  *
  * Installed via rvreset, which exit() calls after SBI SRST returns.
  */
@@ -208,9 +203,8 @@ k1reset(void)
 	ulong v;
 
 	/*
-	 * every register this file touches (PMIC I2C, WDT, MPMU, APMU)
-	 * sits at a K1 address; on any other SoC just fall through to
-	 * exit()'s remaining SBI attempts.
+	 * every register this file touches (PMIC I2C, WDT, MPMU, APMU) sits at a
+	 * K1 address; on any other chip, fall through to exit()'s remaining SBI attempts.
 	 */
 	if(!dtbsocmatch("spacemit,k1"))
 		return;
@@ -223,11 +217,9 @@ k1reset(void)
 		return;
 
 	/*
-	 * the WDT reset is not a full power-on reset: the SD hosts keep
-	 * whatever state the kernel left, and the boot ROM then fails to
-	 * load the SPL from a card that boots fine from power-on.  Put
-	 * the SDH clock/reset controls back to their power-on values so
-	 * the ROM finds the world it expects.
+	 * WDT reset is not a full power-on reset. Put the SDH clock/reset
+	 * controls back to their power-on values so the ROM sees what it expects
+	 * and might be able to load the SPL.
 	 */
 	apmu = vmap(APMU_BASE, APMU_SIZE);
 	if (apmu != nil){
