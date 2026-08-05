@@ -50,8 +50,6 @@ ip
 	ipmux
 misc
 #	gic
-#	uartsbi
-#	uartqemu
 	uarti8250
 	sdvirtio10	pci sdscsi
 	sdmmc		sdspacemit
