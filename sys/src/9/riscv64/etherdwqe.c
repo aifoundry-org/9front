@@ -1,46 +1,9 @@
 /*
  * Driver for the SpacemiT K3 Ethernet controller (GMAC0/dwqe)
- * for 9front / Plan 9 from Bell Labs
- *
- * Hardware: Synopsys DesignWare QoS Ethernet (dwmac4/5, snps,dwmac-5.40a),
- * same IP family Linux's stmmac driver programs.  Register offsets and
- * descriptor bit definitions below were cross-checked against mainline
- * Linux drivers/net/ethernet/stmicro/stmmac/{dwmac4.h,dwmac4_dma.h,
- * dwmac4_descs.h,dwmac4_descs.c,dwmac4_lib.c,stmmac_mdio.c} rather than
- * written from memory.
  *
  * Based on:
- *   ethersmte.c (K1 EMAC driver) - overall 9front driver architecture,
- *     cache-maintenance idioms, DTB glue, kproc structure
- *   Linux stmmac driver         - dwmac4/5 register + descriptor layout
- *
- * riscv64/K3 notes:
- *   - K3 DMA is non-coherent like K1: same cbo.flush/cbo.inval pattern
- *   - IRQ is routed via APLIC in MSI mode -> IMSIC (aplic.c), not PLIC;
- *     intrenable() dispatches to the right controller already
- *   - SoC identified by the DTB root compatible ("spacemit,k3*")
- *   - dwmac4 has NIS/AIS interrupt summary bits (unlike the K1 EMAC),
- *     so the "mask everything, drain, restore" pattern from ethersmte.c
- *     still applies but W1C is against DMA_CHAN_STATUS(chan0), not a
- *     single flat status register
- *
- * K3 DDR starts at 0x1_00000000 (physical addresses handed back by
- * PADDR() are essentially always >= 4G here), so this driver runs the
- * DMA engine in 64-bit addressing mode: DMA_SYS_BUS_EAME is set, every
- * descriptor writes both the des0 (lo) and des1 (hi) halves of its
- * buffer address, and the two ring base registers use their _HI/_LO
- * pairs. The tail-pointer registers are 32-bit only by spec, so each
- * ring (rxr/txr) is checked at init time to not straddle a 4G boundary.
- *
- * KNOWN-RISKY / VERIFY ON HARDWARE:
- *   - MTL FIFO sizing (TQS/RQS) and DMA burst/PBL tuning: left at
- *     conservative defaults; GMAC_HW_FEATURE1 reports the real FIFO
- *     depths if you want to size these precisely.
- *   - DMA_CHAN_TX_END_ADDR/RX_END_ADDR ("tail pointer") semantics: on
- *     dwmac4 this replaces the old POLL_DEMAND-any-value kick.  Advancing
- *     the tail pointer past a newly-queued descriptor is what unblocks
- *     DMA; this is implemented per Linux's dwmac4_set_tx_tail_ptr /
- *     dwmac4_set_rx_tail_ptr but has not been run against real silicon.
+ *   9front ethersmte.c (K1 EMAC driver) - overall 9front driver architecture,
+ *   Linux stmmac driver - dwmac4/5 register + descriptor layout
  */
 
 #include "u.h"
@@ -54,10 +17,13 @@
 
 #define Rbsz	ROUNDUP(sizeof(Etherpkt)+16, 64)
 
+/*
+ * Verbosity. 0 = quiet (errors/warnings only); 1 = bring-up info and the
+ * periodic stats line; Set at runtime via 'echo debug 1 >/net/ether0/clone'
+ */
 static int debug;
 
 #define dprint		if(debug) print
-#define dprint2		if(debug >= 2) print
 
 /*
  * Default MMIO layout for the K3's GMAC0, used only as a fallback when
@@ -69,7 +35,6 @@ enum {
 	GMAC0_SIZE	= 0x2000,
 	GMAC0_IRQ	= 131,
 
-	/* same APMU block as the K1's EMAC -- SoC-family syscon */
 	APMU_PHYS	= 0xd4282800UL,
 	APMU_SIZE	= 0x400,
 
@@ -77,7 +42,7 @@ enum {
 	DWQE_DEFAULT_TXDELAY	= 100,
 };
 
-/* GMAC (MAC-level) registers -- verified against dwmac4.h */
+/* GMAC (MAC-level) registers -- from dwmac4.h */
 enum {
 	GMAC_CONFIG			= 0x0000,
 	GMAC_CONFIG_ARPEN		= (1U << 31),
@@ -124,12 +89,12 @@ enum {
 	MII_GMAC4_READ			= (3U << MII_GMAC4_GOC_SHIFT),		/* GOC=11 */
 	MII_ADDR_PA_SHIFT		= 21,		/* bits [25:21] */
 	MII_ADDR_GR_SHIFT		= 16,		/* bits [20:16] */
-	MII_ADDR_CR_SHIFT		= 8,		/* bits [11:8], clock range -- SEE HEADER NOTE */
-	MII_ADDR_CR_VAL			= 4,		/* conservative default; verify vs. AHB clk */
+	MII_ADDR_CR_SHIFT		= 8,		/* bits [11:8], clock range */
+	MII_ADDR_CR_VAL			= 4,
 	MII_DATA_GD_MASK		= 0xffff,
 };
 
-/* DMA (global) registers -- verified against dwmac4_dma.h */
+/* DMA (global) registers -- from dwmac4_dma.h */
 enum {
 	DMA_BUS_MODE			= 0x1000,
 	DMA_BUS_MODE_SFT_RESET		= (1U << 0),
@@ -137,39 +102,36 @@ enum {
 	DMA_SYS_BUS_MODE		= 0x1004,
 	DMA_SYS_BUS_MB			= (1U << 14),
 	DMA_SYS_BUS_EAME		= (1U << 11),	/* Enhanced Address Mode: enables all *_HI regs + des1 */
-	DMA_SYS_BUS_FB			= (1U << 0),	/* fixed burst */
+	DMA_SYS_BUS_FB			= (1U << 0),	/* Fixed Burst */
 };
 
 /* DMA per-channel registers (channel 0 only -- dwqe uses 1 queue) */
 enum {
 	DMA_CHAN_BASE			= 0x1100,
 
-	DMA_CHAN_CONTROL		= 0x00,		/* +0x00 */
-	DMA_CHAN_TX_CONTROL		= 0x04,		/* +0x04 */
+	DMA_CHAN_CONTROL		= 0x00,
+	DMA_CHAN_TX_CONTROL		= 0x04,
 	DMA_CONTROL_ST			= (1U << 0),
 
-	DMA_CHAN_RX_CONTROL		= 0x08,		/* +0x08 */
+	DMA_CHAN_RX_CONTROL		= 0x08,
 	DMA_CONTROL_SR			= (1U << 0),
 	DMA_RBSZ_SHIFT			= 1,		/* bits [14:1], raw byte count << 1 */
 	DMA_RBSZ_MASK			= 0x7ffe,
 
-	DMA_CHAN_TX_BASE_ADDR_HI	= 0x10,		/* +0x10, bits [63:32] of ring base */
-	DMA_CHAN_TX_BASE_ADDR		= 0x14,		/* +0x14, bits [31:0]  of ring base */
-	DMA_CHAN_RX_BASE_ADDR_HI	= 0x18,		/* +0x18, bits [63:32] of ring base */
-	DMA_CHAN_RX_BASE_ADDR		= 0x1c,		/* +0x1c, bits [31:0]  of ring base */
+	DMA_CHAN_TX_BASE_ADDR_HI	= 0x10,		/* bits [63:32] of ring base */
+	DMA_CHAN_TX_BASE_ADDR		= 0x14,		/* bits [31:0]  of ring base */
+	DMA_CHAN_RX_BASE_ADDR_HI	= 0x18,		/* bits [63:32] of ring base */
+	DMA_CHAN_RX_BASE_ADDR		= 0x1c,		/* bits [31:0]  of ring base */
 	/*
 	 * Tail pointer has no _HI counterpart -- the ring's upper 32 bits
-	 * come from *_BASE_ADDR_HI above and apply to the whole ring, so
-	 * rxr/txr must each fit inside a single 4G-aligned region (see
-	 * ringalloc() -- we check this after allocation and retry/panic
-	 * rather than silently truncating).
+	 * come from *_BASE_ADDR_HI above and apply to the whole ring
 	 */
-	DMA_CHAN_TX_END_ADDR		= 0x20,		/* +0x20, tail pointer, 32-bit */
-	DMA_CHAN_RX_END_ADDR		= 0x28,		/* +0x28, tail pointer, 32-bit */
-	DMA_CHAN_TX_RING_LEN		= 0x2c,		/* +0x2c, N-1 */
-	DMA_CHAN_RX_RING_LEN		= 0x30,		/* +0x30, N-1 */
+	DMA_CHAN_TX_END_ADDR		= 0x20,		/* tail pointer, 32-bit */
+	DMA_CHAN_RX_END_ADDR		= 0x28,		/* tail pointer, 32-bit */
+	DMA_CHAN_TX_RING_LEN		= 0x2c,		/* lenght N-1 */
+	DMA_CHAN_RX_RING_LEN		= 0x30,		/* lenght N-1 */
 
-	DMA_CHAN_INTR_ENA		= 0x34,		/* +0x34 */
+	DMA_CHAN_INTR_ENA		= 0x34,
 	DMA_CHAN_INTR_ENA_NIE		= (1U << 16),
 	DMA_CHAN_INTR_ENA_AIE		= (1U << 15),
 	DMA_CHAN_INTR_ENA_FBE		= (1U << 12),
@@ -177,7 +139,7 @@ enum {
 	DMA_CHAN_INTR_ENA_RIE		= (1U << 6),
 	DMA_CHAN_INTR_ENA_TIE		= (1U << 0),
 
-	DMA_CHAN_STATUS			= 0x60,		/* +0x60, W1C */
+	DMA_CHAN_STATUS			= 0x60,
 	DMA_CHAN_STATUS_NIS		= (1U << 15),
 	DMA_CHAN_STATUS_AIS		= (1U << 14),
 	DMA_CHAN_STATUS_FBE		= (1U << 12),
@@ -186,15 +148,15 @@ enum {
 	DMA_CHAN_STATUS_TI		= (1U << 0),
 };
 
-/* MTL (queue) registers -- verified against dwmac4.h */
+/* MTL (queue) registers -- from dwmac4.h */
 enum {
 	MTL_CHAN_BASE			= 0x0d00,
-	MTL_CHAN_TX_OP_MODE		= 0x00,		/* +0x00 */
+	MTL_CHAN_TX_OP_MODE		= 0x00,
 	MTL_OP_MODE_TXQEN		= (1U << 3),
 	MTL_OP_MODE_TSF			= (1U << 1),	/* store-and-forward */
 	MTL_OP_MODE_TQS_MASK		= 0x01ff0000,	/* bits [24:16] */
 
-	MTL_CHAN_RX_OP_MODE		= 0x30,		/* +0x30 */
+	MTL_CHAN_RX_OP_MODE		= 0x30,
 	MTL_OP_MODE_RSF			= (1U << 5),
 	MTL_OP_MODE_RQS_MASK		= 0x3ff00000,	/* bits [29:20] */
 
@@ -202,11 +164,7 @@ enum {
 	GMAC_HW_RXFIFOSIZE		= 0x0000001f,	/* HW_FEATURE1 bits [4:0]  */
 };
 
-/*
- * APMU registers (byte offset from APMU_PHYS = 0xd4282800), same layout
- * as the K1's EMAC0 block -- confirmed by the K3 .dtsi's
- * spacemit,apmu = <&syscon_apmu 0x3e4 0x3e8>; for eth0.
- */
+/* APMU registers */
 enum {
 	APMU_EMAC_BUS_EN		= (1U << 0),
 	APMU_EMAC_BUS_RST_RELEASE	= (1U << 1),
@@ -224,8 +182,7 @@ enum {
 /*
  * Normal descriptors, "Read Format" while owned by the DMA engine,
  * "Write-Back Format" once it hands them back -- both are the same
- * 4 x u32int words, reused as r[4*i + 0..3].  Bit values verified
- * against dwmac4_descs.h.
+ * 4 x u32int words, reused as r[4*i + 0..3].  From dwmac4_descs.h.
  */
 enum {
 	/* TDES2 (read format) */
@@ -238,7 +195,7 @@ enum {
 	TDES3_FIRST_DESCRIPTOR		= (1U << 29),
 	TDES3_OWN			= (1U << 31),
 
-	/* TDES3 (write-back format, subset we check) */
+	/* TDES3 (write-back format) */
 	TDES3_ERROR_SUMMARY		= (1U << 15),
 
 	/* RDES3 (read format) */
@@ -280,7 +237,7 @@ enum {
 	GBSR_LP1000FULL	= (1U << 11),
 	GBSR_LP1000HALF	= (1U << 10),
 
-	PHY_ADDR	= 1,	/* confirmed: dmesg said "stmmac-0:01" */
+	PHY_ADDR	= 1,
 	Linkdelay	= 500,
 };
 
@@ -358,7 +315,7 @@ csr32w(ulong *base, uintptr off, u32int v)
 	coherence();
 }
 
-/* MDIO -- GMAC4-style GOC field, verified against stmmac_mdio.c */
+/* MDIO -- GMAC4-style GOC field, from stmmac_mdio.c */
 
 static void
 mdwrite(Ctlr *c, int reg, u16int v)
@@ -398,15 +355,8 @@ mdread(Ctlr *c, int reg)
 
 /*
  * Real address filtering: unicast perfect-match against GMAC_ADDR0
- * (already programmed with AE set in ethinit()) plus broadcast, which
- * is passed by default whenever RA/PR are both clear -- there's no
- * separate "disable broadcast" bit in this core's filter register that
- * we'd need to explicitly clear.
  *
- * allmulti uses PM (pass all multicast) rather than building the 64-bit
- * CRC hash-table filter: simpler, and correct as long as you don't care
- * about filtering multicast traffic finely (fine for a single-host
- * board; revisit if you ever need HMC-based hash filtering instead).
+ * allmulti uses PM (pass all multicast)
  */
 static void
 dwqesetfilter(Ctlr *c, int promisc, int allmulti)
@@ -571,11 +521,7 @@ replenish(Ctlr *c)
 
 	/*
 	 * Self-contained critical section: rxprodi, rxs[], and the ring
-	 * memory are also touched by ethrx()'s dequeue step (a separate,
-	 * shorter critical section -- see there for why the two don't
-	 * nest) and, until we're certain interrupt routing/addclock0link
-	 * will always stay pinned to a single hart, potentially by two
-	 * different harts at once.
+	 * memory are also touched by ethrx()'s dequeue step
 	 */
 	ilock(&c->rxlock);
 
@@ -583,12 +529,7 @@ replenish(Ctlr *c)
 	 * Leave one slot permanently empty (classic circular-buffer
 	 * capacity N-1): the RX tail-pointer register has no separate
 	 * "full" indication, so head==tail must unambiguously mean
-	 * "nothing available".  Fully wrapping rxprodi back onto rxconsi
-	 * would make a completely-full ring look identical to an empty
-	 * one to the DMA engine -- which is exactly why RX never fired
-	 * a single completion even with valid OWN=1 descriptors: the
-	 * very first fill at ethinit() wrapped prod back to 0 and the
-	 * tail pointer landed right back on the base address.
+	 * "nothing available".
 	 */
 	while(c->rxs[c->rxprodi] == nil
 	    && ((c->rxprodi + 1) & (RXRING - 1)) != c->rxconsi){
@@ -603,9 +544,9 @@ replenish(Ctlr *c)
 		c->rxs[i] = bp;
 		r  = &c->rxr[4 * i];
 		pa = PADDR(bp->rp);
-		r[0] = (u32int)pa;			/* RDES0: buffer1 addr lo */
+		r[0] = (u32int)pa;				/* RDES0: buffer1 addr lo */
 		r[1] = (u32int)(pa >> 32);		/* RDES1: buffer1 addr hi -- K3 DDR is >4G, this is never 0 */
-		r[2] = 0;				/* RDES2: unused, single buffer */
+		r[2] = 0;						/* RDES2: unused, single buffer */
 		coherence();
 		r[3] = RDES3_OWN | RDES3_BUFFER1_VALID_ADDR
 			| RDES3_INT_ON_COMPLETION_EN;	/* RDES3 */
@@ -636,11 +577,8 @@ ethrx(Ether *edev)
 	c = edev->ctlr;
 	for(;;){
 		/*
-		 * Short critical section: just the dequeue.  Deliberately
-		 * released before calling replenish() below or etheriq()
-		 * further down -- replenish() takes rxlock itself, and
-		 * Plan 9's Lock isn't recursive, so holding it across
-		 * either call would self-deadlock.
+		 * Critical section: just the dequeue.  Deliberately
+		 * released before calling replenish() or etheriq()
 		 */
 		ilock(&c->rxlock);
 		r = &c->rxr[4 * c->rxconsi];	/* NC memory now; no invalidate needed to see the DMA engine's write-back */
@@ -748,7 +686,7 @@ ethtx(Ether *edev)
 		pa = PADDR(bp->rp);
 		dwqecacheflush(bp->rp, BLEN(bp));
 
-		r[0] = (u32int)pa;			/* TDES0: buffer1 addr lo */
+		r[0] = (u32int)pa;				/* TDES0: buffer1 addr lo */
 		r[1] = (u32int)(pa >> 32);		/* TDES1: buffer1 addr hi -- K3 DDR is >4G, this is never 0 */
 		r[2] = BLEN(bp) & TDES2_BUFFER1_SIZE_MASK;
 		if((c->txi & (Txirqevery - 1)) == 0)
@@ -852,7 +790,7 @@ ethattach(Ether *edev)
 	kproc("dwqeproc", ethproc, edev);
 }
 
-/* /net/etherN/clone/ctl handler ------------------------------------------- */
+/* /net/etherN/clone/ handler ---------------------------------------------- */
 
 enum { CMdebug, CMpromiscuous, CMallmulti };
 static Cmdtab dwqectlmsg[] = {
@@ -1011,8 +949,7 @@ ethinit(Ether *edev)
 
 	/*
 	 * K3 DDR starts at 0x1_00000000 -- everything iallocb()/ucallocalign()
-	 * hands us will have PADDR() >= 4G, so 64-bit DMA addressing is not
-	 * optional here the way it might be on a SoC with low DDR.
+	 * hands us will have PADDR() >= 4G, so 64-bit DMA addressing is required
 	 */
 	csr32w(c->regs, DMA_SYS_BUS_MODE, DMA_SYS_BUS_MB | DMA_SYS_BUS_FB | DMA_SYS_BUS_EAME);
 
@@ -1045,19 +982,14 @@ ethinit(Ether *edev)
 	/*
 	 * Enable RX queue 0 at the MAC's queue-routing level.  This is
 	 * upstream of MTL/DMA entirely -- without it the MAC can silently
-	 * drop everything before it ever reaches the MTL FIFO, regardless
-	 * of how correctly the DMA rings/MTL op-mode/delay-lines are
-	 * configured (which is exactly the state we were stuck in: every
-	 * other register readback looked right because this is the one
-	 * register we'd never touched at all).
+	 * drop everything before it ever reaches the MTL FIFO
 	 */
 	csr32w(c->regs, GMAC_RXQ_CTRL0, GMAC_RXQCTRL_Q0_DCB_EN);
 
 	/*
 	 * Real filtering now: unicast perfect-match on GMAC_ADDR0 +
-	 * broadcast + all multicast (see dwqesetfilter()'s comment on
-	 * why allmulti-via-PM instead of a hash table).  Toggle via the
-	 * ctl file ("promiscuous on"/"allmulti off") if you need something
+	 * broadcast + all multicast.  Toggle via the ctl file
+	 * ("promiscuous on"/"allmulti off") if you need something
 	 * tighter or looser at runtime.
 	 */
 	dwqesetfilter(c, 0, 1);
@@ -1066,10 +998,7 @@ ethinit(Ether *edev)
 	csr32w(c->regs, GMAC_CONFIG,
 		GMAC_CONFIG_JD | GMAC_CONFIG_BE | GMAC_CONFIG_DCRS | GMAC_CONFIG_ACS);
 
-	/* descriptor rings -- both non-cacheable (4 descs/line; same fix
-	 * ethersmte.c needed to stop a flush of one desc clobbering its
-	 * still-DMA-owned neighbours on the same cache line, which is why
-	 * rxr moved off xspanalloc() onto ucallocalign() too) */
+	/* descriptor rings -- both non-cacheable (4 descs/line) */
 	c->rxr = ucallocalign(sizeof(u32int) * 4 * RXRING, 16, 0);
 	c->txr = ucallocalign(sizeof(u32int) * 4 * TXRING, 16, 0);
 	if(c->rxr == nil || c->txr == nil){
@@ -1097,12 +1026,7 @@ ethinit(Ether *edev)
 		uvlong txend = txpa + 4 * TXRING * sizeof(u32int) - 1;
 		uvlong rxend = rxpa + 4 * RXRING * sizeof(u32int) - 1;
 
-		/*
-		 * The tail-pointer registers are 32-bit only (see the enum
-		 * comment above) -- the ring must not straddle a 4G boundary
-		 * or advancing the tail pointer past that boundary would
-		 * silently wrap instead of tracking the real address.
-		 */
+		/* The tail-pointer registers are 32-bit only  */
 		if((txpa >> 32) != (txend >> 32) || (rxpa >> 32) != (rxend >> 32)){
 			print("dwqe: ERROR ring straddles a 4G boundary "
 				"(tx=%#llux..%#llux rx=%#llux..%#llux)\n",
@@ -1120,9 +1044,8 @@ ethinit(Ether *edev)
 	}
 
 	/*
-	 * Fills the ring (leaving the one sentinel gap slot empty -- see
-	 * the comment in replenish()) and sets DMA_CHAN_RX_END_ADDR
-	 * itself, now that RX_BASE_ADDR is already programmed.
+	 * Fills the ring (leaving the one sentinel gap slot empty and sets
+	 * DMA_CHAN_RX_END_ADDR itself, now that RX_BASE_ADDR is already programmed.
 	 */
 	replenish(c);
 
@@ -1206,8 +1129,6 @@ etherpnp(Ether *edev)
 	ct->irq = irq;
 	dprint("dwqe: ether%d regs=%p (phys=%#llux) apmu=%p (phys=%#llux)\n",
 		edev->ctlrno, ct->regs, base, ct->apmu, apmubase);
-
-	//Para leer mac por HW APMU clocks on, reset release
 
 	ct->rxdelay = DWQE_DEFAULT_RXDELAY;
 	ct->txdelay = DWQE_DEFAULT_TXDELAY;
