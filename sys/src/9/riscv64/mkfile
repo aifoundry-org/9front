@@ -69,6 +69,7 @@ OBJ=\
 	sbicall.$O\
 	sbiecall.$O\
 	ethersmte.$O\
+	etherdwqe.$O\
 	k1reset.$O\
 	k1thermal.$O\
 	$CONF.root.$O\
