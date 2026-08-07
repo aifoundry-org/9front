@@ -2,8 +2,8 @@
  * Driver for the SpacemiT K3 Ethernet controller (GMAC0/dwqe)
  *
  * Based on:
- *   9front ethersmte.c (K1 EMAC driver) - overall 9front driver architecture,
- *   Linux stmmac driver - dwmac4/5 register + descriptor layout
+ *   9front ethersmte.c (K1 EMAC driver) - overall 9front driver architecture
+ *   Linux stmmac driver - dwmac4/5 register + descriptor layout reference
  */
 
 #include "u.h"
@@ -42,7 +42,7 @@ enum {
 	DWQE_DEFAULT_TXDELAY	= 100,
 };
 
-/* GMAC (MAC-level) registers -- from dwmac4.h */
+/* GMAC (MAC-level) registers -- verified against dwmac4.h */
 enum {
 	GMAC_CONFIG			= 0x0000,
 	GMAC_CONFIG_ARPEN		= (1U << 31),
@@ -90,11 +90,11 @@ enum {
 	MII_ADDR_PA_SHIFT		= 21,		/* bits [25:21] */
 	MII_ADDR_GR_SHIFT		= 16,		/* bits [20:16] */
 	MII_ADDR_CR_SHIFT		= 8,		/* bits [11:8], clock range */
-	MII_ADDR_CR_VAL			= 4,
+	MII_ADDR_CR_VAL			= 6,		/* matches ACLK->EMAC0_bus_clk chain (307MHz/div1) */
 	MII_DATA_GD_MASK		= 0xffff,
 };
 
-/* DMA (global) registers -- from dwmac4_dma.h */
+/* DMA (global) registers -- verified against dwmac4_dma.h */
 enum {
 	DMA_BUS_MODE			= 0x1000,
 	DMA_BUS_MODE_SFT_RESET		= (1U << 0),
@@ -148,7 +148,7 @@ enum {
 	DMA_CHAN_STATUS_TI		= (1U << 0),
 };
 
-/* MTL (queue) registers -- from dwmac4.h */
+/* MTL (queue) registers -- verified against dwmac4.h */
 enum {
 	MTL_CHAN_BASE			= 0x0d00,
 	MTL_CHAN_TX_OP_MODE		= 0x00,
@@ -164,25 +164,47 @@ enum {
 	GMAC_HW_RXFIFOSIZE		= 0x0000001f,	/* HW_FEATURE1 bits [4:0]  */
 };
 
-/* APMU registers */
+/* APMU registers  */
 enum {
-	APMU_EMAC_BUS_EN		= (1U << 0),
-	APMU_EMAC_BUS_RST_RELEASE	= (1U << 1),
-	APMU_EMAC_AXI_MST_ID		= (1U << 13),
-	APMU_EMAC_PTP_EN		= (1U << 15),
+	EMAC_BUS_EN		= (1U << 0),
+	EMAC_BUS_RST	= (1U << 1),
+	EMAC_PHY_SELECT_SHIFT	= 3,		/* bits [4:3] */
+	EMAC_PHY_SELECT_RMII	= 0,		/* 2'b00 */
+	EMAC_PHY_SELECT_RGMII	= 1,		/* 2'b01 */
+	EMAC_PHY_SELECT_MII_GMII	= 2,		/* 2'b10 */
+	EMAC_AXI_MST_ID		= (1U << 13),
+	/*
+	 * Official name is EMAC0_1588_CLK_MUX: 0 = 24M, 1 = PLL 125/25/2.5MHz
+	 * matching the current speed (1000M/100M/10M) -- a clock-source mux
+	 * for the PTP/1588 timestamp counter
+	 */
+	EMAC_1588_CLK_MUX		= (1U << 15),
 
-	APMU_EMAC_RGMII_DLINE_RX_EN		= (1U << 0),
-	APMU_EMAC_RGMII_DLINE_RX_STEP_15P6	= (0U << 4),
-	APMU_EMAC_RGMII_DLINE_RX_DELAY_SHIFT	= 8,
-	APMU_EMAC_RGMII_DLINE_TX_EN		= (1U << 16),
-	APMU_EMAC_RGMII_DLINE_TX_STEP_15P6	= (0U << 20),
-	APMU_EMAC_RGMII_DLINE_TX_DELAY_SHIFT	= 24,
+	/*
+	 * Previously left at their power-on-reset defaults; now set
+	 * explicitly so behavior doesn't depend on what a given board's
+	 * firmware happened to leave here
+	 */
+	EMAC0_CLK_REF_GATE		= (1U << 14),	/* 1 = tx 25M refclk disable, 0 = enable */
+	EMAC0_PHY_INTR_EN		= (1U << 12),	/* 1 = PHY PMT intr mask enable */
+	EMAC0_LPI_INTR_EN		= (1U << 9),	/* 1 = LPI intr mask enable */
+	EMAC0_RGMII_TXC_SRC_SEL		= (1U << 8),	/* RGMII only: 1 = TX clock from SoC, 0 = from RX clock */
+	EMAC_RX_REFCLK_PHASE_SEL	= (1U << 7),	/* 1 = inverted, 0 = normal */
+	EMAC_RMII_TX_REFCLK_PHASE_SEL	= (1U << 6),	/* RMII only, don't-care in RGMII */
+
+	EMAC_RGMII_RXC_DLINE_PU		= (1U << 0),
+	EMAC_RGMII_RXC_DLINE_STEP_15P6	= (0U << 4),
+	EMAC_RGMII_RXC_DLINE_ADJ_SHIFT	= 8,
+	EMAC_RGMII_TXC_DLINE_PU		= (1U << 16),
+	EMAC_RGMII_TXC_DLINE_STEP_15P6	= (0U << 20),
+	EMAC_RGMII_TXC_DLINE_ADJ_SHIFT	= 24,
 };
 
 /*
  * Normal descriptors, "Read Format" while owned by the DMA engine,
  * "Write-Back Format" once it hands them back -- both are the same
- * 4 x u32int words, reused as r[4*i + 0..3].  From dwmac4_descs.h.
+ * 4 x u32int words, reused as r[4*i + 0..3].  Bit values verified
+ * against dwmac4_descs.h.
  */
 enum {
 	/* TDES2 (read format) */
@@ -315,7 +337,7 @@ csr32w(ulong *base, uintptr off, u32int v)
 	coherence();
 }
 
-/* MDIO -- GMAC4-style GOC field, from stmmac_mdio.c */
+/* MDIO -- GMAC4-style GOC field, verified against stmmac_mdio.c */
 
 static void
 mdwrite(Ctlr *c, int reg, u16int v)
@@ -544,9 +566,9 @@ replenish(Ctlr *c)
 		c->rxs[i] = bp;
 		r  = &c->rxr[4 * i];
 		pa = PADDR(bp->rp);
-		r[0] = (u32int)pa;				/* RDES0: buffer1 addr lo */
+		r[0] = (u32int)pa;			/* RDES0: buffer1 addr lo */
 		r[1] = (u32int)(pa >> 32);		/* RDES1: buffer1 addr hi -- K3 DDR is >4G, this is never 0 */
-		r[2] = 0;						/* RDES2: unused, single buffer */
+		r[2] = 0;				/* RDES2: unused, single buffer */
 		coherence();
 		r[3] = RDES3_OWN | RDES3_BUFFER1_VALID_ADDR
 			| RDES3_INT_ON_COMPLETION_EN;	/* RDES3 */
@@ -686,7 +708,7 @@ ethtx(Ether *edev)
 		pa = PADDR(bp->rp);
 		dwqecacheflush(bp->rp, BLEN(bp));
 
-		r[0] = (u32int)pa;				/* TDES0: buffer1 addr lo */
+		r[0] = (u32int)pa;			/* TDES0: buffer1 addr lo */
 		r[1] = (u32int)(pa >> 32);		/* TDES1: buffer1 addr hi -- K3 DDR is >4G, this is never 0 */
 		r[2] = BLEN(bp) & TDES2_BUFFER1_SIZE_MASK;
 		if((c->txi & (Txirqevery - 1)) == 0)
@@ -795,7 +817,7 @@ ethattach(Ether *edev)
 enum { CMdebug, CMpromiscuous, CMallmulti };
 static Cmdtab dwqectlmsg[] = {
 	CMdebug,	"debug",	2,
-	CMpromiscuous,	"promiscuous",	2,
+	CMpromiscuous,	"promisc",	2,
 	CMallmulti,	"allmulti",	2,
 };
 
@@ -841,26 +863,30 @@ ethinit(Ether *edev)
 	c = edev->ctlr;
 
 	/*
-	 * APMU: bring GMAC0 out of reset with clocks enabled before
-	 * touching any MAC/DMA register -- same sequence and same
-	 * lesson learned as ethersmte.c: skipping this stalls the hart.
+	 * APMU: bring GMAC0 out of reset with clocks enabled, PHY interface
+	 * mode selected, and RGMII delay lines set -- all BEFORE touching
+	 * any MAC/DMA register. Skipping it stalls the hart
 	 */
 	{
 		u32int origv = csr32r(c->apmu, c->apmuctrloff);
 
-		{
+		/*
+		 * Grab whatever real MAC firmware left in GMAC_ADDR0 *now*,
+		 * before the sequence below forces an EMAC_BUS_RST 0->1
+		 * transition -- that's a real reset of the MAC's internal
+		 * register file (ADDR0 included). Only safe to read at all
+		 * if RST is already 1 in origv  -- if it's 0, the register
+		 * block isn't accessible yet and reading would hang the
+		 * hart the same way skipping the bring-up entirely did.
+		 */
+		if((origv & EMAC_BUS_RST) != 0){
 			static uchar zero[Eaddrlen];
-			u32int hi, lo;
-			u32int v;
-			if(memcmp(edev->ea, zero, Eaddrlen) != 0){
-				dprint("dwqe: MAC from bootarg or DTB\n");
-			} else {
-			    /* APMU: clocks on, reset released -- BEFORE touching ct->regs. */
-				v = csr32r(c->apmu, c->apmuctrloff);
-    			csr32w(c->apmu, c->apmuctrloff, v | APMU_EMAC_BUS_EN);
-    			microdelay(10);
-    			csr32w(c->apmu, c->apmuctrloff, v | APMU_EMAC_BUS_EN | APMU_EMAC_BUS_RST_RELEASE);
-    			microdelay(10);
+
+			if(memcmp(edev->ea, zero, Eaddrlen) == 0){
+				u32int hi, lo;
+
+				csr32w(c->apmu, c->apmuctrloff, origv | EMAC_BUS_EN);
+				microdelay(1000);
 				lo = csr32r(c->regs, GMAC_ADDR0_LOW);
 				hi = csr32r(c->regs, GMAC_ADDR0_HIGH);
 				edev->ea[0] = lo & 0xff;        edev->ea[1] = (lo>>8) & 0xff;
@@ -872,45 +898,44 @@ ethinit(Ether *edev)
 			}
 		}
 
-		u32int preserve = origv & ~(APMU_EMAC_BUS_EN
-			| APMU_EMAC_BUS_RST_RELEASE | APMU_EMAC_AXI_MST_ID
-			| APMU_EMAC_PTP_EN);
-		csr32w(c->apmu, c->apmuctrloff, preserve);
+		u32int preserve = origv & ~(EMAC_BUS_EN | EMAC_BUS_RST
+			| EMAC_AXI_MST_ID | EMAC_1588_CLK_MUX
+			| (3U << EMAC_PHY_SELECT_SHIFT)
+			| EMAC0_CLK_REF_GATE | EMAC0_PHY_INTR_EN | EMAC0_LPI_INTR_EN
+			| EMAC0_RGMII_TXC_SRC_SEL | EMAC_RX_REFCLK_PHASE_SEL
+			| EMAC_RMII_TX_REFCLK_PHASE_SEL);
+		u32int physel = EMAC_PHY_SELECT_RGMII << EMAC_PHY_SELECT_SHIFT;
+		/*
+		 * CLK_REF_GATE=0 (refclk enabled, unused in RGMII anyway),
+		 * PHY_INTR_EN=0 / LPI_INTR_EN=0 (no WoL/EEE handler exists),
+		 * *_PHASE_SEL=0 (no skew correction needed, RMII one is don't-care)
+		 * RGMII_TXC_SRC_SEL=0 (RX-clock-sourced TX clock)
+		 */
+		csr32w(c->apmu, c->apmuctrloff, preserve | physel);
 		microdelay(10000);
-		csr32w(c->apmu, c->apmuctrloff, preserve | APMU_EMAC_BUS_EN | APMU_EMAC_PTP_EN);
+		csr32w(c->apmu, c->apmuctrloff, preserve | physel | EMAC_BUS_EN | EMAC_1588_CLK_MUX);
 		microdelay(10000);
-		csr32w(c->apmu, c->apmuctrloff, preserve | APMU_EMAC_BUS_EN | APMU_EMAC_PTP_EN
-			| APMU_EMAC_BUS_RST_RELEASE | APMU_EMAC_AXI_MST_ID);
+		csr32w(c->apmu, c->apmuctrloff, preserve | physel | EMAC_BUS_EN | EMAC_1588_CLK_MUX
+			| EMAC_BUS_RST | EMAC_AXI_MST_ID);
 		microdelay(10000);
-		print("dwqe: APMU CLK_RST[%#ux] %#ux -> %#ux\n",
+		print("dwqe: APMU CLK_RST[%#ux] %#ux -> %#ux (PHY_SELECT=RGMII, TXC_SRC_SEL=RXclk)\n",
 			c->apmuctrloff, origv, csr32r(c->apmu, c->apmuctrloff));
 	}
 
 	/* RGMII delay lines */
-	v = APMU_EMAC_RGMII_DLINE_RX_EN | APMU_EMAC_RGMII_DLINE_TX_EN
-	  | APMU_EMAC_RGMII_DLINE_RX_STEP_15P6 | APMU_EMAC_RGMII_DLINE_TX_STEP_15P6
-	  | c->rxdelay << APMU_EMAC_RGMII_DLINE_RX_DELAY_SHIFT
-	  | c->txdelay << APMU_EMAC_RGMII_DLINE_TX_DELAY_SHIFT;
+	v = EMAC_RGMII_RXC_DLINE_PU | EMAC_RGMII_TXC_DLINE_PU
+	  | EMAC_RGMII_RXC_DLINE_STEP_15P6 | EMAC_RGMII_TXC_DLINE_STEP_15P6
+	  | c->rxdelay << EMAC_RGMII_RXC_DLINE_ADJ_SHIFT
+	  | c->txdelay << EMAC_RGMII_TXC_DLINE_ADJ_SHIFT;
 	csr32w(c->apmu, c->apmudlineoff, v);
 	print("dwqe: APMU DLINE[%#ux]=0x%08ux\n", c->apmudlineoff, v);
 
-	/*
-	 * MII_ADDR_CR_VAL diagnostic: EMAC0_BUS (which feeds this core's
-	 * register/MDIO access, i.e. the "CSR clock" stmmac_clk_csr_set()
-	 * would use) is a plain gate off pmua_aclk with no divider of its
-	 * own -- so pmua_aclk's rate IS the CSR clock.  pmua_aclk itself
-	 * is a runtime-configured mux+div (APMU_ACLK_CLK_CTRL, offset
-	 * 0x388 in this same APMU block): bit0 selects between two PLL
-	 * taps (0 -> 245.76MHz, 1 -> 307.2MHz), bits[2:1] are a /1../4
-	 * divider.  Firmware/U-Boot picks the actual value, so there's no
-	 * way to know it from source -- read it back here instead of
-	 * guessing further.
-	 */
+	/* CR sanity-check, kept as a debug-only cross-check */
 	{
 		u32int aclkctrl = csr32r(c->apmu, 0x388);
 		int mux = aclkctrl & 1;
 		int div = ((aclkctrl >> 1) & 3) + 1;
-		u32int parent = mux ? 307200000 : 245760000;
+		u32int parent = mux ? 409000000 : 307000000;
 		u32int csrclk = parent / div;
 		int wantcr;
 
@@ -923,8 +948,8 @@ ethinit(Ether *edev)
 		else if(csrclk > 35000000) wantcr = 3;
 		else wantcr = 2;
 
-		print("dwqe: APMU_ACLK_CLK_CTRL=%#08ux mux=%d div=%d -> "
-			"csrclk~%ud Hz -> CR should be %d (using %d)\n",
+		dprint("dwqe: APMU_ACLK_CLK_CTRL=%#08ux mux=%d div=%d -> "
+			"csrclk~%ud Hz -> CR=%d indicated (using %d)\n",
 			aclkctrl, mux, div, csrclk, wantcr, MII_ADDR_CR_VAL);
 	}
 
@@ -934,7 +959,21 @@ ethinit(Ether *edev)
 	csr32w(c->regs, DMA_CHAN_BASE + DMA_CHAN_TX_CONTROL, 0);
 	csr32w(c->regs, DMA_CHAN_BASE + DMA_CHAN_RX_CONTROL, 0);
 
-	/* DMA software reset -- polled, per dwmac4_dma_reset() */
+	/*
+	 * If neither a bootarg, the DTB, nor the early hardware capture
+	 * above got us a MAC address, edev->ea is still zeroed here
+	 */
+	{
+		static uchar zero[Eaddrlen];
+
+		if(memcmp(edev->ea, zero, Eaddrlen) == 0) {
+			print("dwqe: ERROR no MAC address available for %s -- set "
+				"mac-address in the DTB or pass ea= at boot\n", edev->name);
+			return -1;
+		}
+	}
+
+	/* DMA software reset -- polled */
 	csr32w(c->regs, DMA_BUS_MODE, csr32r(c->regs, DMA_BUS_MODE) | DMA_BUS_MODE_SFT_RESET);
 	for(timeout = 0; timeout < 1000; timeout++){
 		if((csr32r(c->regs, DMA_BUS_MODE) & DMA_BUS_MODE_SFT_RESET) == 0)
@@ -988,8 +1027,8 @@ ethinit(Ether *edev)
 
 	/*
 	 * Real filtering now: unicast perfect-match on GMAC_ADDR0 +
-	 * broadcast + all multicast.  Toggle via the ctl file
-	 * ("promiscuous on"/"allmulti off") if you need something
+	 * broadcast + all multicast. Toggle via the /net/etherN/clone
+	 * file ("promisc 1"/"allmulti 0") if you need something
 	 * tighter or looser at runtime.
 	 */
 	dwqesetfilter(c, 0, 1);
@@ -1026,7 +1065,7 @@ ethinit(Ether *edev)
 		uvlong txend = txpa + 4 * TXRING * sizeof(u32int) - 1;
 		uvlong rxend = rxpa + 4 * RXRING * sizeof(u32int) - 1;
 
-		/* The tail-pointer registers are 32-bit only  */
+		/* The tail-pointer registers are 32-bit only */
 		if((txpa >> 32) != (txend >> 32) || (rxpa >> 32) != (rxend >> 32)){
 			print("dwqe: ERROR ring straddles a 4G boundary "
 				"(tx=%#llux..%#llux rx=%#llux..%#llux)\n",
@@ -1150,7 +1189,6 @@ etherpnp(Ether *edev)
 
 	{
 		static uchar zero[Eaddrlen];
-		u32int hi, lo;
 		if(memcmp(edev->ea, zero, Eaddrlen) != 0){
 			dprint("dwqe: MAC from bootarg\n");
 		} else if(de != nil && de->hasmac && memcmp(de->mac, zero, Eaddrlen) != 0){
