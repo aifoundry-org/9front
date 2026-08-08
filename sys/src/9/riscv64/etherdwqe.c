@@ -14,6 +14,7 @@
 #include "io.h"
 #include "../port/netif.h"
 #include "../port/etherif.h"
+#include "../port/ethermii.h"
 
 #define Rbsz	ROUNDUP(sizeof(Etherpkt)+16, 64)
 
@@ -31,173 +32,173 @@ static int debug;
  * APMU base out of /soc/ethernet@... via the Dtbether table.
  */
 enum {
-	GMAC0_PHYS	= 0xcac80000UL,
-	GMAC0_SIZE	= 0x2000,
-	GMAC0_IRQ	= 131,
+	Gmac0Phys	= 0xcac80000UL,
+	Gmac0Size	= 0x2000,
+	Gmac0Irq	= 131,
 
-	APMU_PHYS	= 0xd4282800UL,
-	APMU_SIZE	= 0x400,
+	ApmuPhys	= 0xd4282800UL,
+	ApmuSize	= 0x400,
 
-	DWQE_DEFAULT_RXDELAY	= 100,
-	DWQE_DEFAULT_TXDELAY	= 100,
+	DwqeRxDelay	= 100,
+	DwqeTxDelay	= 100,
 };
 
 /* GMAC (MAC-level) registers -- verified against dwmac4.h */
 enum {
-	GMAC_CONFIG			= 0x0000,
-	GMAC_CONFIG_ARPEN		= (1U << 31),
-	GMAC_CONFIG_IPC			= (1U << 27),	/* rx checksum offload */
-	GMAC_CONFIG_ACS			= (1U << 20),	/* strip pad/fcs */
-	GMAC_CONFIG_BE			= (1U << 18),	/* back-off enable */
-	GMAC_CONFIG_JD			= (1U << 17),	/* jabber disable */
-	GMAC_CONFIG_JE			= (1U << 16),	/* jumbo enable */
-	GMAC_CONFIG_PS			= (1U << 15),	/* port select: 1=10/100 MII, 0=1000 GMII/RGMII */
-	GMAC_CONFIG_FES			= (1U << 14),	/* speed: with PS, selects 100 vs 10 */
-	GMAC_CONFIG_DM			= (1U << 13),	/* duplex mode: 1=full */
-	GMAC_CONFIG_DCRS		= (1U << 9),
-	GMAC_CONFIG_TE			= (1U << 1),	/* transmitter enable */
-	GMAC_CONFIG_RE			= (1U << 0),	/* receiver enable */
+	GmacConfig			= 0x0000,
+	GmacConfigArpen		= (1U << 31),
+	GmacConfigIpc			= (1U << 27),	/* rx checksum offload */
+	GmacConfigAcs			= (1U << 20),	/* strip pad/fcs */
+	GmacConfigBe			= (1U << 18),	/* back-off enable */
+	GmacConfigJd			= (1U << 17),	/* jabber disable */
+	GmacConfigJe			= (1U << 16),	/* jumbo enable */
+	GmacConfigPs			= (1U << 15),	/* port select: 1=10/100 MII, 0=1000 GMII/RGMII */
+	GmacConfigFes			= (1U << 14),	/* speed: with PS, selects 100 vs 10 */
+	GmacConfigDm			= (1U << 13),	/* duplex mode: 1=full */
+	GmacConfigDcrs		= (1U << 9),
+	GmacConfigTe			= (1U << 1),	/* transmitter enable */
+	GmacConfigRe			= (1U << 0),	/* receiver enable */
 
-	GMAC_RXQ_CTRL0			= 0x00a0,
-	GMAC_RXQCTRL_Q0_DCB_EN		= (1U << 1),	/* BIT((queue*2)+1) for queue=0 */
+	GmacRxqCtrl0			= 0x00a0,
+	GmacRxqCtrl0Q0Dcb		= (1U << 1),	/* BIT((queue*2)+1) for queue=0 */
 
-	GMAC_PACKET_FILTER		= 0x0008,
-	GMAC_PACKET_FILTER_PR		= (1U << 0),	/* promiscuous */
-	GMAC_PACKET_FILTER_HMC		= (1U << 2),	/* hash multicast */
-	GMAC_PACKET_FILTER_PM		= (1U << 4),	/* pass all multicast */
-	GMAC_PACKET_FILTER_HPF		= (1U << 10),	/* hash or perfect filter */
-	GMAC_PACKET_FILTER_RA		= (1U << 31),	/* receive all */
+	GmacPacketFilter		= 0x0008,
+	GmacPfPr		= (1U << 0),	/* promiscuous */
+	GmacPfHmc		= (1U << 2),	/* hash multicast */
+	GmacPfPm		= (1U << 4),	/* pass all multicast */
+	GmacPfHpf		= (1U << 10),	/* hash or perfect filter */
+	GmacPfRa		= (1U << 31),	/* receive all */
 
-	GMAC_INT_STATUS			= 0x00b0,
-	GMAC_INT_EN			= 0x00b4,
+	GmacIntStatus			= 0x00b0,
+	GmacIntEn			= 0x00b4,
 
-	GMAC_MDIO_ADDR			= 0x0200,
-	GMAC_MDIO_DATA			= 0x0204,
+	GmacMdioAddr			= 0x0200,
+	GmacMdioData			= 0x0204,
 
-	GMAC_HW_FEATURE0		= 0x011c,
-	GMAC_HW_FEATURE1		= 0x0120,
+	GmacHwFeature0		= 0x011c,
+	GmacHwFeature1		= 0x0120,
 
-	GMAC_ADDR0_HIGH			= 0x0300,
-	GMAC_ADDR0_LOW			= 0x0304,
+	GmacAddr0Hi			= 0x0300,
+	GmacAddr0Lo			= 0x0304,
 };
 
-/* GMAC_MDIO_ADDR fields -- verified against stmmac_mdio.c + dwmac4_core.c */
+/* GmacMdioAddr fields -- verified against stmmac_mdio.c + dwmac4_core.c */
 enum {
-	MII_ADDR_GBUSY			= (1U << 0),
-	MII_GMAC4_GOC_SHIFT		= 2,
-	MII_GMAC4_WRITE			= (1U << MII_GMAC4_GOC_SHIFT),		/* GOC=01 */
-	MII_GMAC4_READ			= (3U << MII_GMAC4_GOC_SHIFT),		/* GOC=11 */
-	MII_ADDR_PA_SHIFT		= 21,		/* bits [25:21] */
-	MII_ADDR_GR_SHIFT		= 16,		/* bits [20:16] */
-	MII_ADDR_CR_SHIFT		= 8,		/* bits [11:8], clock range */
-	MII_ADDR_CR_VAL			= 6,		/* matches ACLK->EMAC0_bus_clk chain (307MHz/div1) */
-	MII_DATA_GD_MASK		= 0xffff,
+	MdioGbusy			= (1U << 0),
+	MdioGocShift		= 2,
+	MdioWrite			= (1U << MdioGocShift),		/* GOC=01 */
+	MdioRead			= (3U << MdioGocShift),		/* GOC=11 */
+	MdioPaShift		= 21,		/* bits [25:21] */
+	MdioGrShift		= 16,		/* bits [20:16] */
+	MdioCrShift		= 8,		/* bits [11:8], clock range */
+	MdioCrVal			= 6,		/* matches ACLK->EMAC0_bus_clk chain (307MHz/div1) */
+	MdioGdMask		= 0xffff,
 };
 
 /* DMA (global) registers -- verified against dwmac4_dma.h */
 enum {
-	DMA_BUS_MODE			= 0x1000,
-	DMA_BUS_MODE_SFT_RESET		= (1U << 0),
+	DmaBusMode			= 0x1000,
+	DmaBusModeSwr		= (1U << 0),
 
-	DMA_SYS_BUS_MODE		= 0x1004,
-	DMA_SYS_BUS_MB			= (1U << 14),
-	DMA_SYS_BUS_EAME		= (1U << 11),	/* Enhanced Address Mode: enables all *_HI regs + des1 */
-	DMA_SYS_BUS_FB			= (1U << 0),	/* Fixed Burst */
+	DmaSysBusMode		= 0x1004,
+	DmaSysBusMb			= (1U << 14),
+	DmaSysBusEame		= (1U << 11),	/* Enhanced Address Mode: enables all *_HI regs + des1 */
+	DmaSysBusFb			= (1U << 0),	/* Fixed burst */
 };
 
 /* DMA per-channel registers (channel 0 only -- dwqe uses 1 queue) */
 enum {
-	DMA_CHAN_BASE			= 0x1100,
+	DmaChanBase			= 0x1100,
 
-	DMA_CHAN_CONTROL		= 0x00,
-	DMA_CHAN_TX_CONTROL		= 0x04,
-	DMA_CONTROL_ST			= (1U << 0),
+	DmaChanControl		= 0x00,
+	DmaChanTxControl		= 0x04,
+	DmaControlSt			= (1U << 0),
 
-	DMA_CHAN_RX_CONTROL		= 0x08,
-	DMA_CONTROL_SR			= (1U << 0),
-	DMA_RBSZ_SHIFT			= 1,		/* bits [14:1], raw byte count << 1 */
-	DMA_RBSZ_MASK			= 0x7ffe,
+	DmaChanRxControl		= 0x08,
+	DmaControlSr			= (1U << 0),
+	DmaRbszShift			= 1,		/* bits [14:1], raw byte count << 1 */
+	DmaRbszMask			= 0x7ffe,
 
-	DMA_CHAN_TX_BASE_ADDR_HI	= 0x10,		/* bits [63:32] of ring base */
-	DMA_CHAN_TX_BASE_ADDR		= 0x14,		/* bits [31:0]  of ring base */
-	DMA_CHAN_RX_BASE_ADDR_HI	= 0x18,		/* bits [63:32] of ring base */
-	DMA_CHAN_RX_BASE_ADDR		= 0x1c,		/* bits [31:0]  of ring base */
+	DmaChanTxBaseHi	= 0x10,		/* bits [63:32] of ring base */
+	DmaChanTxBase		= 0x14,		/* bits [31:0]  of ring base */
+	DmaChanRxBaseHi	= 0x18,		/* bits [63:32] of ring base */
+	DmaChanRxBase		= 0x1c,		/* bits [31:0]  of ring base */
 	/*
 	 * Tail pointer has no _HI counterpart -- the ring's upper 32 bits
 	 * come from *_BASE_ADDR_HI above and apply to the whole ring
 	 */
-	DMA_CHAN_TX_END_ADDR		= 0x20,		/* tail pointer, 32-bit */
-	DMA_CHAN_RX_END_ADDR		= 0x28,		/* tail pointer, 32-bit */
-	DMA_CHAN_TX_RING_LEN		= 0x2c,		/* lenght N-1 */
-	DMA_CHAN_RX_RING_LEN		= 0x30,		/* lenght N-1 */
+	DmaChanTxEnd		= 0x20,		/* tail pointer, 32-bit */
+	DmaChanRxEnd		= 0x28,		/* tail pointer, 32-bit */
+	DmaChanTxLen		= 0x2c,		/* N-1 */
+	DmaChanRxLen		= 0x30,		/* N-1 */
 
-	DMA_CHAN_INTR_ENA		= 0x34,
-	DMA_CHAN_INTR_ENA_NIE		= (1U << 16),
-	DMA_CHAN_INTR_ENA_AIE		= (1U << 15),
-	DMA_CHAN_INTR_ENA_FBE		= (1U << 12),
-	DMA_CHAN_INTR_ENA_RBU		= (1U << 7),
-	DMA_CHAN_INTR_ENA_RIE		= (1U << 6),
-	DMA_CHAN_INTR_ENA_TIE		= (1U << 0),
+	DmaChanIntrEna		= 0x34,
+	DmaIntrNie		= (1U << 16),
+	DmaIntrAie		= (1U << 15),
+	DmaIntrFbe		= (1U << 12),
+	DmaIntrRbu		= (1U << 7),
+	DmaIntrRie		= (1U << 6),
+	DmaIntrTie		= (1U << 0),
 
-	DMA_CHAN_STATUS			= 0x60,
-	DMA_CHAN_STATUS_NIS		= (1U << 15),
-	DMA_CHAN_STATUS_AIS		= (1U << 14),
-	DMA_CHAN_STATUS_FBE		= (1U << 12),
-	DMA_CHAN_STATUS_RBU		= (1U << 7),
-	DMA_CHAN_STATUS_RI		= (1U << 6),
-	DMA_CHAN_STATUS_TI		= (1U << 0),
+	DmaChanStatus			= 0x60,		/* W1C */
+	DmaStatusNis		= (1U << 15),
+	DmaStatusAis		= (1U << 14),
+	DmaStatusFbe		= (1U << 12),
+	DmaStatusRbu		= (1U << 7),
+	DmaStatusRi		= (1U << 6),
+	DmaStatusTi		= (1U << 0),
 };
 
 /* MTL (queue) registers -- verified against dwmac4.h */
 enum {
-	MTL_CHAN_BASE			= 0x0d00,
-	MTL_CHAN_TX_OP_MODE		= 0x00,
-	MTL_OP_MODE_TXQEN		= (1U << 3),
-	MTL_OP_MODE_TSF			= (1U << 1),	/* store-and-forward */
-	MTL_OP_MODE_TQS_MASK		= 0x01ff0000,	/* bits [24:16] */
+	MtlChanBase			= 0x0d00,
+	MtlTxOpMode		= 0x00,
+	MtlOpTxqEn		= (1U << 3),
+	MtlOpTsf			= (1U << 1),	/* store-and-forward */
+	MtlOpTqsMask		= 0x01ff0000,	/* bits [24:16] */
 
-	MTL_CHAN_RX_OP_MODE		= 0x30,
-	MTL_OP_MODE_RSF			= (1U << 5),
-	MTL_OP_MODE_RQS_MASK		= 0x3ff00000,	/* bits [29:20] */
+	MtlRxOpMode		= 0x30,
+	MtlOpRsf			= (1U << 5),
+	MtlOpRqsMask		= 0x3ff00000,	/* bits [29:20] */
 
-	GMAC_HW_TXFIFOSIZE		= 0x000007c0,	/* HW_FEATURE1 bits [10:6] */
-	GMAC_HW_RXFIFOSIZE		= 0x0000001f,	/* HW_FEATURE1 bits [4:0]  */
+	GmacHwTxFifoSize		= 0x000007c0,	/* HW_FEATURE1 bits [10:6] */
+	GmacHwRxFifoSize		= 0x0000001f,	/* HW_FEATURE1 bits [4:0]  */
 };
 
 /* APMU registers  */
 enum {
-	EMAC_BUS_EN		= (1U << 0),
-	EMAC_BUS_RST	= (1U << 1),
-	EMAC_PHY_SELECT_SHIFT	= 3,		/* bits [4:3] */
-	EMAC_PHY_SELECT_RMII	= 0,		/* 2'b00 */
-	EMAC_PHY_SELECT_RGMII	= 1,		/* 2'b01 */
-	EMAC_PHY_SELECT_MII_GMII	= 2,		/* 2'b10 */
-	EMAC_AXI_MST_ID		= (1U << 13),
+	EmacBusEn		= (1U << 0),
+	EmacBusRst	= (1U << 1),
+	EmacPhySelectShift	= 3,		/* bits [4:3] */
+	EmacPhySelectRmii	= 0,		/* 2'b00 */
+	EmacPhySelectRgmii	= 1,		/* 2'b01 */
+	EmacPhySelectMiiGmii	= 2,		/* 2'b10 */
+	EmacAxiMstId		= (1U << 13),
 	/*
 	 * Official name is EMAC0_1588_CLK_MUX: 0 = 24M, 1 = PLL 125/25/2.5MHz
 	 * matching the current speed (1000M/100M/10M) -- a clock-source mux
-	 * for the PTP/1588 timestamp counter
+	 * for the PTP/1588 timestamp counter.
 	 */
-	EMAC_1588_CLK_MUX		= (1U << 15),
+	Emac1588ClkMux		= (1U << 15),
 
 	/*
 	 * Previously left at their power-on-reset defaults; now set
 	 * explicitly so behavior doesn't depend on what a given board's
-	 * firmware happened to leave here
+	 * firmware happened to leave here.
 	 */
-	EMAC0_CLK_REF_GATE		= (1U << 14),	/* 1 = tx 25M refclk disable, 0 = enable */
-	EMAC0_PHY_INTR_EN		= (1U << 12),	/* 1 = PHY PMT intr mask enable */
-	EMAC0_LPI_INTR_EN		= (1U << 9),	/* 1 = LPI intr mask enable */
-	EMAC0_RGMII_TXC_SRC_SEL		= (1U << 8),	/* RGMII only: 1 = TX clock from SoC, 0 = from RX clock */
-	EMAC_RX_REFCLK_PHASE_SEL	= (1U << 7),	/* 1 = inverted, 0 = normal */
-	EMAC_RMII_TX_REFCLK_PHASE_SEL	= (1U << 6),	/* RMII only, don't-care in RGMII */
+	Emac0ClkRefGate		= (1U << 14),	/* 1 = tx 25M refclk disable, 0 = enable */
+	Emac0PhyIntrEn		= (1U << 12),	/* 1 = PHY PMT intr mask enable */
+	Emac0LpiIntrEn		= (1U << 9),	/* 1 = LPI intr mask enable */
+	Emac0RgmiiTxcSrcSel		= (1U << 8),	/* RGMII only: 1 = TX clock from SoC, 0 = from RX clock */
+	EmacRxRefclkPhaseSel	= (1U << 7),	/* 1 = inverted, 0 = normal */
+	EmacRmiiTxRefclkPhaseSel	= (1U << 6),	/* RMII only, don't-care in RGMII */
 
-	EMAC_RGMII_RXC_DLINE_PU		= (1U << 0),
-	EMAC_RGMII_RXC_DLINE_STEP_15P6	= (0U << 4),
-	EMAC_RGMII_RXC_DLINE_ADJ_SHIFT	= 8,
-	EMAC_RGMII_TXC_DLINE_PU		= (1U << 16),
-	EMAC_RGMII_TXC_DLINE_STEP_15P6	= (0U << 20),
-	EMAC_RGMII_TXC_DLINE_ADJ_SHIFT	= 24,
+	EmacRgmiiRxcDlinePu		= (1U << 0),
+	EmacRgmiiRxcDlineStep	= (0U << 4),
+	EmacRgmiiRxcDlineAdjShift	= 8,
+	EmacRgmiiTxcDlinePu		= (1U << 16),
+	EmacRgmiiTxcDlineStep	= (0U << 20),
+	EmacRgmiiTxcDlineAdjShift	= 24,
 };
 
 /*
@@ -208,69 +209,44 @@ enum {
  */
 enum {
 	/* TDES2 (read format) */
-	TDES2_BUFFER1_SIZE_MASK		= 0x3fff,	/* [13:0] */
-	TDES2_INTERRUPT_ON_COMPLETION	= (1U << 31),
+	Tdes2Buf1SizeMask		= 0x3fff,	/* [13:0] */
+	Tdes2Ioc	= (1U << 31),
 
 	/* TDES3 (read format) */
-	TDES3_PACKET_SIZE_MASK		= 0x7fff,	/* [14:0] */
-	TDES3_LAST_DESCRIPTOR		= (1U << 28),
-	TDES3_FIRST_DESCRIPTOR		= (1U << 29),
-	TDES3_OWN			= (1U << 31),
+	Tdes3PktSizeMask		= 0x7fff,	/* [14:0] */
+	Tdes3Ld		= (1U << 28),
+	Tdes3Fd		= (1U << 29),
+	Tdes3Own			= (1U << 31),
 
-	/* TDES3 (write-back format) */
-	TDES3_ERROR_SUMMARY		= (1U << 15),
+	/* TDES3 (write-back format, subset we check) */
+	Tdes3Es		= (1U << 15),
 
 	/* RDES3 (read format) */
-	RDES3_BUFFER1_VALID_ADDR	= (1U << 24),
-	RDES3_INT_ON_COMPLETION_EN	= (1U << 30),
-	RDES3_OWN			= (1U << 31),
+	Rdes3Buf1v	= (1U << 24),
+	Rdes3Ioc	= (1U << 30),
+	Rdes3Own			= (1U << 31),
 
 	/* RDES3 (write-back format) */
-	RDES3_PACKET_SIZE_MASK		= 0x7fff,	/* [14:0] */
-	RDES3_ERROR_SUMMARY		= (1U << 15),
-	RDES3_LAST_DESCRIPTOR		= (1U << 28),
-	RDES3_CONTEXT_DESCRIPTOR	= (1U << 30),
+	Rdes3PktSizeMask		= 0x7fff,	/* [14:0] */
+	Rdes3Es		= (1U << 15),
+	Rdes3Ld		= (1U << 28),
+	Rdes3Ctxt	= (1U << 30),
 };
 
-/* Standard MII registers (same PHY, RTL8211F, as ethersmte.c) */
+/* Standard MII registers (RTL8211F): all from ../port/ethermii.h */
 enum {
-	MII_BMCR	= 0,
-	MII_BMSR	= 1,
-	MII_PHYSID1	= 2,
-	MII_PHYSID2	= 3,
-	MII_ANLPAR	= 5,
-	MII_GBCR	= 9,
-	MII_GBSR	= 10,
-
-	BMCR_ANENABLE	= (1U << 12),
-	BMCR_ANRESTART	= (1U << 9),
-
-	GBCR_ADV1000FULL	= (1U << 9),
-	GBCR_ADV1000HALF	= (1U << 8),
-
-	BMSR_ANEGCOMPLETE	= (1U << 5),
-	BMSR_LSTATUS		= (1U << 2),
-
-	LPA_100FULL	= (1U << 8),
-	LPA_100HALF	= (1U << 7),
-	LPA_10FULL	= (1U << 6),
-	LPA_10HALF	= (1U << 5),
-
-	GBSR_LP1000FULL	= (1U << 11),
-	GBSR_LP1000HALF	= (1U << 10),
-
-	PHY_ADDR	= 1,
+	PhyAddr		= 1,	/* confirmed: dmesg said "stmmac-0:01" */
 	Linkdelay	= 500,
 };
 
 enum {
-	RXRING	= 512,
-	TXRING	= 512,
+	Nrxd	= 512,
+	Ntxd	= 512,
 	Txirqevery = 64,
-	MAXDWQE	= 1,		/* GMAC0 only for now; GMAC1/2 follow the same pattern */
-};
+	Ndwqe	= 1,		/* GMAC0 only for now; GMAC1/2 follow the same pattern */
 
-#define DWQE_CBSZ 64	/* X60/C908 D-cache line size */
+	Dcachelinesz = 64,	/* X60/C908 D-cache line size */
+};
 
 /* same non-coherent-DMA cache maintenance as ethersmte.c */
 static void
@@ -278,9 +254,9 @@ dwqecacheflush(void *va, int len)
 {
 	uintptr a, last;
 
-	a    = (uintptr)va & ~(uintptr)(DWQE_CBSZ - 1);
-	last = ((uintptr)va + len + DWQE_CBSZ - 1) & ~(uintptr)(DWQE_CBSZ - 1);
-	for(; a < last; a += DWQE_CBSZ)
+	a    = (uintptr)va & ~(uintptr)(Dcachelinesz - 1);
+	last = ((uintptr)va + len + Dcachelinesz - 1) & ~(uintptr)(Dcachelinesz - 1);
+	for(; a < last; a += Dcachelinesz)
 		cboflush((void*)a);
 	coherence();
 }
@@ -290,9 +266,9 @@ dwqecacheinval(void *va, int len)
 {
 	uintptr a, last;
 
-	a    = (uintptr)va & ~(uintptr)(DWQE_CBSZ - 1);
-	last = ((uintptr)va + len + DWQE_CBSZ - 1) & ~(uintptr)(DWQE_CBSZ - 1);
-	for(; a < last; a += DWQE_CBSZ)
+	a    = (uintptr)va & ~(uintptr)(Dcachelinesz - 1);
+	last = ((uintptr)va + len + Dcachelinesz - 1) & ~(uintptr)(Dcachelinesz - 1);
+	for(; a < last; a += Dcachelinesz)
 		cboinval((void*)a);
 	coherence();
 }
@@ -344,16 +320,16 @@ mdwrite(Ctlr *c, int reg, u16int v)
 {
 	u32int addr;
 
-	while(csr32r(c->regs, GMAC_MDIO_ADDR) & MII_ADDR_GBUSY)
+	while(csr32r(c->regs, GmacMdioAddr) & MdioGbusy)
 		tsleep(&up->sleep, return0, nil, 1);
-	csr32w(c->regs, GMAC_MDIO_DATA, v);
-	addr = (PHY_ADDR & 0x1f) << MII_ADDR_PA_SHIFT
-		| (reg & 0x1f) << MII_ADDR_GR_SHIFT
-		| MII_ADDR_CR_VAL << MII_ADDR_CR_SHIFT
-		| MII_GMAC4_WRITE
-		| MII_ADDR_GBUSY;
-	csr32w(c->regs, GMAC_MDIO_ADDR, addr);
-	while(csr32r(c->regs, GMAC_MDIO_ADDR) & MII_ADDR_GBUSY)
+	csr32w(c->regs, GmacMdioData, v);
+	addr = (PhyAddr & 0x1f) << MdioPaShift
+		| (reg & 0x1f) << MdioGrShift
+		| MdioCrVal << MdioCrShift
+		| MdioWrite
+		| MdioGbusy;
+	csr32w(c->regs, GmacMdioAddr, addr);
+	while(csr32r(c->regs, GmacMdioAddr) & MdioGbusy)
 		tsleep(&up->sleep, return0, nil, 1);
 }
 
@@ -362,17 +338,17 @@ mdread(Ctlr *c, int reg)
 {
 	u32int addr;
 
-	while(csr32r(c->regs, GMAC_MDIO_ADDR) & MII_ADDR_GBUSY)
+	while(csr32r(c->regs, GmacMdioAddr) & MdioGbusy)
 		tsleep(&up->sleep, return0, nil, 1);
-	addr = (PHY_ADDR & 0x1f) << MII_ADDR_PA_SHIFT
-		| (reg & 0x1f) << MII_ADDR_GR_SHIFT
-		| MII_ADDR_CR_VAL << MII_ADDR_CR_SHIFT
-		| MII_GMAC4_READ
-		| MII_ADDR_GBUSY;
-	csr32w(c->regs, GMAC_MDIO_ADDR, addr);
-	while(csr32r(c->regs, GMAC_MDIO_ADDR) & MII_ADDR_GBUSY)
+	addr = (PhyAddr & 0x1f) << MdioPaShift
+		| (reg & 0x1f) << MdioGrShift
+		| MdioCrVal << MdioCrShift
+		| MdioRead
+		| MdioGbusy;
+	csr32w(c->regs, GmacMdioAddr, addr);
+	while(csr32r(c->regs, GmacMdioAddr) & MdioGbusy)
 		tsleep(&up->sleep, return0, nil, 1);
-	return csr32r(c->regs, GMAC_MDIO_DATA) & MII_DATA_GD_MASK;
+	return csr32r(c->regs, GmacMdioData) & MdioGdMask;
 }
 
 /*
@@ -387,13 +363,13 @@ dwqesetfilter(Ctlr *c, int promisc, int allmulti)
 
 	v = 0;
 	if(promisc)
-		v |= GMAC_PACKET_FILTER_PR;
+		v |= GmacPfPr;
 	else if(allmulti)
-		v |= GMAC_PACKET_FILTER_PM;
-	csr32w(c->regs, GMAC_PACKET_FILTER, v);
+		v |= GmacPfPm;
+	csr32w(c->regs, GmacPacketFilter, v);
 	c->promisc = promisc;
 	c->allmulti = allmulti;
-	dprint("dwqe: GMAC_PACKET_FILTER=%#08ux (promisc=%d allmulti=%d)\n",
+	dprint("dwqe: GmacPacketFilter=%#08ux (promisc=%d allmulti=%d)\n",
 		v, promisc, allmulti);
 }
 
@@ -407,10 +383,10 @@ txreset(Ctlr *c)
 	u32int v;
 	int i;
 
-	v = csr32r(c->regs, DMA_CHAN_BASE + DMA_CHAN_TX_CONTROL);
-	csr32w(c->regs, DMA_CHAN_BASE + DMA_CHAN_TX_CONTROL, v & ~DMA_CONTROL_ST);
+	v = csr32r(c->regs, DmaChanBase + DmaChanTxControl);
+	csr32w(c->regs, DmaChanBase + DmaChanTxControl, v & ~DmaControlSt);
 	ilock(&c->txlock);
-	for(i = 0; i < TXRING; i++){
+	for(i = 0; i < Ntxd; i++){
 		if(c->txs[i] != nil){
 			freeb(c->txs[i]);
 			c->txs[i] = nil;
@@ -424,8 +400,8 @@ txreset(Ctlr *c)
 	c->txcons = 0;
 	coherence();	/* txr is NC memory now; no cachelines to flush, just order the zeroing */
 	iunlock(&c->txlock);
-	csr32w(c->regs, DMA_CHAN_BASE + DMA_CHAN_TX_BASE_ADDR, PADDR(c->txr));
-	csr32w(c->regs, DMA_CHAN_BASE + DMA_CHAN_TX_END_ADDR, PADDR(c->txr));
+	csr32w(c->regs, DmaChanBase + DmaChanTxBase, PADDR(c->txr));
+	csr32w(c->regs, DmaChanBase + DmaChanTxEnd, PADDR(c->txr));
 }
 
 /* PHY / link kproc -- same RTL8211F sequence as ethersmte.c */
@@ -442,91 +418,91 @@ ethproc(void *ved)
 	edev = ved;
 	c    = edev->ctlr;
 
-	id1 = mdread(c, MII_PHYSID1);
-	id2 = mdread(c, MII_PHYSID2);
+	id1 = mdread(c, Phyidr1);
+	id2 = mdread(c, Phyidr2);
 	dprint("dwqe: PHY addr=%d oui=0x%06ux model=0x%02ux rev=0x%01ux\n",
-		PHY_ADDR, ((u32int)id1 << 6) | (id2 >> 10), (id2 >> 4) & 0x3f, id2 & 0xf);
+		PhyAddr, ((u32int)id1 << 6) | (id2 >> 10), (id2 >> 4) & 0x3f, id2 & 0xf);
 
-	mdwrite(c, MII_GBCR, GBCR_ADV1000FULL | GBCR_ADV1000HALF);
-	mdwrite(c, MII_BMCR, BMCR_ANENABLE | BMCR_ANRESTART);
+	mdwrite(c, Mscr, Mscr1000TFD | Mscr1000THD);
+	mdwrite(c, Bmcr, BmcrAne | BmcrRan);
 
 	for(;;){
-		bmsr = mdread(c, MII_BMSR);
-		if((bmsr & BMSR_LSTATUS) == 0){
+		bmsr = mdread(c, Bmsr);
+		if((bmsr & BmsrLs) == 0){
 			print("dwqe: %s link down (BMSR=0x%04ux)\n", edev->name, bmsr);
 			ethersetlink(edev, 0);
-			csr32w(c->regs, GMAC_CONFIG, csr32r(c->regs, GMAC_CONFIG)
-				& ~(GMAC_CONFIG_TE | GMAC_CONFIG_RE));
+			csr32w(c->regs, GmacConfig, csr32r(c->regs, GmacConfig)
+				& ~(GmacConfigTe | GmacConfigRe));
 			txreset(c);
-			while((mdread(c, MII_BMSR) & BMSR_LSTATUS) == 0)
+			while((mdread(c, Bmsr) & BmsrLs) == 0)
 				tsleep(&up->sleep, return0, nil, Linkdelay);
 		}
 
-		while((mdread(c, MII_BMSR) & BMSR_ANEGCOMPLETE) == 0)
+		while((mdread(c, Bmsr) & BmsrAnc) == 0)
 			tsleep(&up->sleep, return0, nil, Linkdelay);
 
-		lpa  = mdread(c, MII_ANLPAR);
-		gbsr = mdread(c, MII_GBSR);
+		lpa  = mdread(c, Anlpar);
+		gbsr = mdread(c, Mssr);
 
-		cfg = csr32r(c->regs, GMAC_CONFIG)
-			& ~(GMAC_CONFIG_PS | GMAC_CONFIG_FES | GMAC_CONFIG_DM);
+		cfg = csr32r(c->regs, GmacConfig)
+			& ~(GmacConfigPs | GmacConfigFes | GmacConfigDm);
 		dup = "HD";
 
-		if(gbsr & GBSR_LP1000FULL){
-			cfg |= GMAC_CONFIG_DM;		/* PS=0,FES=0 => 1000 */
+		if(gbsr & Mssr1000TFD){
+			cfg |= GmacConfigDm;		/* PS=0,FES=0 => 1000 */
 			speed = 1000; dup = "FD";
-		} else if(gbsr & GBSR_LP1000HALF){
+		} else if(gbsr & Mssr1000THD){
 			speed = 1000;
-		} else if(lpa & LPA_100FULL){
-			cfg |= GMAC_CONFIG_PS | GMAC_CONFIG_FES | GMAC_CONFIG_DM;
+		} else if(lpa & AnaTXFD){
+			cfg |= GmacConfigPs | GmacConfigFes | GmacConfigDm;
 			speed = 100; dup = "FD";
-		} else if(lpa & LPA_100HALF){
-			cfg |= GMAC_CONFIG_PS | GMAC_CONFIG_FES;
+		} else if(lpa & AnaTXHD){
+			cfg |= GmacConfigPs | GmacConfigFes;
 			speed = 100;
-		} else if(lpa & LPA_10FULL){
-			cfg |= GMAC_CONFIG_PS | GMAC_CONFIG_DM;
+		} else if(lpa & Ana10FD){
+			cfg |= GmacConfigPs | GmacConfigDm;
 			speed = 10; dup = "FD";
 		} else {
-			cfg |= GMAC_CONFIG_PS;
+			cfg |= GmacConfigPs;
 			speed = 10;
 		}
 
-		csr32w(c->regs, GMAC_CONFIG, cfg | GMAC_CONFIG_TE | GMAC_CONFIG_RE);
+		csr32w(c->regs, GmacConfig, cfg | GmacConfigTe | GmacConfigRe);
 
-		csr32w(c->regs, DMA_CHAN_BASE + DMA_CHAN_TX_CONTROL,
-			csr32r(c->regs, DMA_CHAN_BASE + DMA_CHAN_TX_CONTROL) | DMA_CONTROL_ST);
-		v = csr32r(c->regs, DMA_CHAN_BASE + DMA_CHAN_RX_CONTROL);
-		v = (v & ~DMA_RBSZ_MASK) | ((Rbsz << DMA_RBSZ_SHIFT) & DMA_RBSZ_MASK);
-		csr32w(c->regs, DMA_CHAN_BASE + DMA_CHAN_RX_CONTROL, v | DMA_CONTROL_SR);
+		csr32w(c->regs, DmaChanBase + DmaChanTxControl,
+			csr32r(c->regs, DmaChanBase + DmaChanTxControl) | DmaControlSt);
+		v = csr32r(c->regs, DmaChanBase + DmaChanRxControl);
+		v = (v & ~DmaRbszMask) | ((Rbsz << DmaRbszShift) & DmaRbszMask);
+		csr32w(c->regs, DmaChanBase + DmaChanRxControl, v | DmaControlSr);
 		c->dmarunning = 1;
 
-		dprint("dwqe: readback GMAC_CONFIG=%#08ux RX_CONTROL=%#08ux TX_CONTROL=%#08ux "
-			"RX_BASE=%#08ux RX_END=%#08ux RX_RING_LEN=%#08ux "
-			"MTL_RX_OP=%#08ux PACKET_FILTER=%#08ux RXQ_CTRL0=%#08ux\n",
-			csr32r(c->regs, GMAC_CONFIG),
-			csr32r(c->regs, DMA_CHAN_BASE + DMA_CHAN_RX_CONTROL),
-			csr32r(c->regs, DMA_CHAN_BASE + DMA_CHAN_TX_CONTROL),
-			csr32r(c->regs, DMA_CHAN_BASE + DMA_CHAN_RX_BASE_ADDR),
-			csr32r(c->regs, DMA_CHAN_BASE + DMA_CHAN_RX_END_ADDR),
-			csr32r(c->regs, DMA_CHAN_BASE + DMA_CHAN_RX_RING_LEN),
-			csr32r(c->regs, MTL_CHAN_BASE + MTL_CHAN_RX_OP_MODE),
-			csr32r(c->regs, GMAC_PACKET_FILTER),
-			csr32r(c->regs, GMAC_RXQ_CTRL0));
+		dprint("dwqe: readback GmacConfig=%#08ux DmaChanRxControl=%#08ux DmaChanTxControl=%#08ux "
+			"DmaChanRxBase=%#08ux DmaChanRxEnd=%#08ux DmaChanRxLen=%#08ux "
+			"MtlRxOpMode=%#08ux GmacPacketFilter=%#08ux GmacRxqCtrl0=%#08ux\n",
+			csr32r(c->regs, GmacConfig),
+			csr32r(c->regs, DmaChanBase + DmaChanRxControl),
+			csr32r(c->regs, DmaChanBase + DmaChanTxControl),
+			csr32r(c->regs, DmaChanBase + DmaChanRxBase),
+			csr32r(c->regs, DmaChanBase + DmaChanRxEnd),
+			csr32r(c->regs, DmaChanBase + DmaChanRxLen),
+			csr32r(c->regs, MtlChanBase + MtlRxOpMode),
+			csr32r(c->regs, GmacPacketFilter),
+			csr32r(c->regs, GmacRxqCtrl0));
 
 		ethrx(edev);
 		ethtx(edev);
 
-		csr32w(c->regs, DMA_CHAN_BASE + DMA_CHAN_STATUS, ~0U);
-		csr32w(c->regs, DMA_CHAN_BASE + DMA_CHAN_INTR_ENA,
-			DMA_CHAN_INTR_ENA_NIE | DMA_CHAN_INTR_ENA_TIE
-			| DMA_CHAN_INTR_ENA_RIE | DMA_CHAN_INTR_ENA_RBU
-			| DMA_CHAN_INTR_ENA_AIE | DMA_CHAN_INTR_ENA_FBE);
+		csr32w(c->regs, DmaChanBase + DmaChanStatus, ~0U);
+		csr32w(c->regs, DmaChanBase + DmaChanIntrEna,
+			DmaIntrNie | DmaIntrTie
+			| DmaIntrRie | DmaIntrRbu
+			| DmaIntrAie | DmaIntrFbe);
 
 		print("dwqe: %s link up %dMbps %s\n", edev->name, speed, dup);
 		ethersetspeed(edev, speed);
 		ethersetlink(edev, 1);
 
-		while((mdread(c, MII_BMSR) & BMSR_LSTATUS) != 0)
+		while((mdread(c, Bmsr) & BmsrLs) != 0)
 			tsleep(&up->sleep, return0, nil, Linkdelay);
 	}
 }
@@ -543,7 +519,7 @@ replenish(Ctlr *c)
 
 	/*
 	 * Self-contained critical section: rxprodi, rxs[], and the ring
-	 * memory are also touched by ethrx()'s dequeue step
+	 * memory are also touched by ethrx()'s dequeue step.
 	 */
 	ilock(&c->rxlock);
 
@@ -554,7 +530,7 @@ replenish(Ctlr *c)
 	 * "nothing available".
 	 */
 	while(c->rxs[c->rxprodi] == nil
-	    && ((c->rxprodi + 1) & (RXRING - 1)) != c->rxconsi){
+	    && ((c->rxprodi + 1) & (Nrxd - 1)) != c->rxconsi){
 		i  = c->rxprodi;
 		bp = iallocb(Rbsz);
 		if(bp == nil){
@@ -570,11 +546,11 @@ replenish(Ctlr *c)
 		r[1] = (u32int)(pa >> 32);		/* RDES1: buffer1 addr hi -- K3 DDR is >4G, this is never 0 */
 		r[2] = 0;				/* RDES2: unused, single buffer */
 		coherence();
-		r[3] = RDES3_OWN | RDES3_BUFFER1_VALID_ADDR
-			| RDES3_INT_ON_COMPLETION_EN;	/* RDES3 */
+		r[3] = Rdes3Own | Rdes3Buf1v
+			| Rdes3Ioc;	/* RDES3 */
 		coherence();	/* r is NC memory now; order the descriptor write, nothing to flush */
 		dwqecacheinval(bp->rp, Rbsz);	/* bp->rp is ordinary cacheable memory -- keep */
-		c->rxprodi = (c->rxprodi + 1) & (RXRING - 1);
+		c->rxprodi = (c->rxprodi + 1) & (Nrxd - 1);
 	}
 	/*
 	 * Always advance the tail pointer, even before DMA is running --
@@ -582,7 +558,7 @@ replenish(Ctlr *c)
 	 * reads once SR is set), and it's what lets ethinit()'s initial
 	 * fill actually be visible to the DMA engine the moment it starts.
 	 */
-	csr32w(c->regs, DMA_CHAN_BASE + DMA_CHAN_RX_END_ADDR,
+	csr32w(c->regs, DmaChanBase + DmaChanRxEnd,
 		PADDR(c->rxr) + 16 * c->rxprodi);
 	iunlock(&c->rxlock);
 	return 0;
@@ -604,27 +580,27 @@ ethrx(Ether *edev)
 		 */
 		ilock(&c->rxlock);
 		r = &c->rxr[4 * c->rxconsi];	/* NC memory now; no invalidate needed to see the DMA engine's write-back */
-		if(r[3] & RDES3_OWN){
+		if(r[3] & Rdes3Own){
 			iunlock(&c->rxlock);
 			break;
 		}
-		if(r[3] & RDES3_CONTEXT_DESCRIPTOR){
+		if(r[3] & Rdes3Ctxt){
 			/* shouldn't happen with rx_ic disabled context gen, skip */
-			c->rxconsi = (c->rxconsi + 1) & (RXRING - 1);
+			c->rxconsi = (c->rxconsi + 1) & (Nrxd - 1);
 			iunlock(&c->rxlock);
 			continue;
 		}
 		s   = r[3];
-		len = s & RDES3_PACKET_SIZE_MASK;
+		len = s & Rdes3PktSizeMask;
 		bp  = c->rxs[c->rxconsi];
 		c->rxs[c->rxconsi] = nil;
-		c->rxconsi = (c->rxconsi + 1) & (RXRING - 1);
+		c->rxconsi = (c->rxconsi + 1) & (Nrxd - 1);
 		iunlock(&c->rxlock);
 
 		if(bp != nil && len > 0)
 			dwqecacheinval(bp->rp, len);
 
-		if(len < 4 || (s & RDES3_ERROR_SUMMARY) || !(s & RDES3_LAST_DESCRIPTOR)){
+		if(len < 4 || (s & Rdes3Es) || !(s & Rdes3Ld)){
 			dprint("dwqe: RX error slot=%d rdes3=0x%08ux len=%d\n",
 				c->rxconsi, s, len);
 			if(bp != nil)
@@ -648,11 +624,11 @@ ethifstat(void *arg, char *p, char *e)
 	if(p >= e)
 		return p;
 	ntx = 0;
-	for(i = 0; i < TXRING; i++)
+	for(i = 0; i < Ntxd; i++)
 		if(c->txs[i] != nil)
 			ntx++;
 	nrx = 0;
-	for(i = 0; i < RXRING; i++)
+	for(i = 0; i < Nrxd; i++)
 		if(c->rxs[i] != nil)
 			nrx++;
 	p = seprint(p, e, "tx: prod %d cons %d inflight %d done %ud\n",
@@ -661,11 +637,11 @@ ethifstat(void *arg, char *p, char *e)
 		c->rxprodi, c->rxconsi, nrx, c->rxframes);
 	p = seprint(p, e, "irq bits seen %#ux status %#ux intren %#ux\n",
 		c->irqseen,
-		csr32r(c->regs, DMA_CHAN_BASE + DMA_CHAN_STATUS),
-		csr32r(c->regs, DMA_CHAN_BASE + DMA_CHAN_INTR_ENA));
-	p = seprint(p, e, "gmac config %#ux\n", csr32r(c->regs, GMAC_CONFIG));
+		csr32r(c->regs, DmaChanBase + DmaChanStatus),
+		csr32r(c->regs, DmaChanBase + DmaChanIntrEna));
+	p = seprint(p, e, "gmac config %#ux\n", csr32r(c->regs, GmacConfig));
 	p = seprint(p, e, "filter %#ux promisc=%d allmulti=%d\n",
-		csr32r(c->regs, GMAC_PACKET_FILTER), c->promisc, c->allmulti);
+		csr32r(c->regs, GmacPacketFilter), c->promisc, c->allmulti);
 	p = seprint(p, e, "rgmii delay rx %ud tx %ud steps\n", c->rxdelay, c->txdelay);
 	return p;
 }
@@ -684,16 +660,16 @@ ethtx(Ether *edev)
 	ilock(&c->txlock);
 	while(c->txs[c->txcons] != nil){
 		r = &c->txr[4 * c->txcons];	/* NC memory now; no invalidate needed */
-		if(r[3] & TDES3_OWN)
+		if(r[3] & Tdes3Own)
 			break;
 		freeb(c->txs[c->txcons]);
 		c->txs[c->txcons] = nil;
 		c->txdone++;
-		c->txcons = (c->txcons + 1) & (TXRING - 1);
+		c->txcons = (c->txcons + 1) & (Ntxd - 1);
 	}
 	for(;;){
 		r = &c->txr[4 * c->txi];	/* NC memory now; no invalidate needed */
-		if(r[3] & TDES3_OWN){
+		if(r[3] & Tdes3Own){
 			dprint("dwqe: TX ring full (txi=%d)\n", c->txi);
 			break;
 		}
@@ -710,17 +686,17 @@ ethtx(Ether *edev)
 
 		r[0] = (u32int)pa;			/* TDES0: buffer1 addr lo */
 		r[1] = (u32int)(pa >> 32);		/* TDES1: buffer1 addr hi -- K3 DDR is >4G, this is never 0 */
-		r[2] = BLEN(bp) & TDES2_BUFFER1_SIZE_MASK;
+		r[2] = BLEN(bp) & Tdes2Buf1SizeMask;
 		if((c->txi & (Txirqevery - 1)) == 0)
-			r[2] |= TDES2_INTERRUPT_ON_COMPLETION;
+			r[2] |= Tdes2Ioc;
 		coherence();
-		r[3] = TDES3_FIRST_DESCRIPTOR | TDES3_LAST_DESCRIPTOR
-			| (BLEN(bp) & TDES3_PACKET_SIZE_MASK) | TDES3_OWN;
+		r[3] = Tdes3Fd | Tdes3Ld
+			| (BLEN(bp) & Tdes3PktSizeMask) | Tdes3Own;
 		coherence();	/* r is NC memory now; order the descriptor write, nothing to flush */
 
-		c->txi = (c->txi + 1) & (TXRING - 1);
+		c->txi = (c->txi + 1) & (Ntxd - 1);
 		if(c->dmarunning)
-			csr32w(c->regs, DMA_CHAN_BASE + DMA_CHAN_TX_END_ADDR,
+			csr32w(c->regs, DmaChanBase + DmaChanTxEnd,
 				PADDR(c->txr) + 16 * c->txi);
 	}
 	iunlock(&c->txlock);
@@ -738,21 +714,21 @@ ethirq(Ureg*, void *arg)
 	edev = arg;
 	c    = edev->ctlr;
 
-	en = csr32r(c->regs, DMA_CHAN_BASE + DMA_CHAN_INTR_ENA);
+	en = csr32r(c->regs, DmaChanBase + DmaChanIntrEna);
 	if(en != 0){
-		csr32w(c->regs, DMA_CHAN_BASE + DMA_CHAN_INTR_ENA, 0);
-		csr32r(c->regs, DMA_CHAN_BASE + DMA_CHAN_INTR_ENA);	/* drain posted write */
+		csr32w(c->regs, DmaChanBase + DmaChanIntrEna, 0);
+		csr32r(c->regs, DmaChanBase + DmaChanIntrEna);	/* drain posted write */
 	}
 
-	fl = csr32r(c->regs, DMA_CHAN_BASE + DMA_CHAN_STATUS);
+	fl = csr32r(c->regs, DmaChanBase + DmaChanStatus);
 	if(fl != 0){
-		csr32w(c->regs, DMA_CHAN_BASE + DMA_CHAN_STATUS, fl);	/* W1C */
-		if(fl & DMA_CHAN_STATUS_RBU){
+		csr32w(c->regs, DmaChanBase + DmaChanStatus, fl);	/* W1C */
+		if(fl & DmaStatusRbu){
 			iprint("dwqe: %s RX buffer unavailable (status=%#08ux prod=%d cons=%d)\n",
 				edev->name, fl, c->rxprodi, c->rxconsi);
 			replenish(c);
 		}
-		if(fl & DMA_CHAN_STATUS_FBE)
+		if(fl & DmaStatusFbe)
 			iprint("dwqe: %s fatal bus error (status=%#08ux)\n", edev->name, fl);
 	}
 
@@ -761,12 +737,12 @@ ethirq(Ureg*, void *arg)
 
 	if(en != 0){
 		coherence();
-		csr32w(c->regs, DMA_CHAN_BASE + DMA_CHAN_INTR_ENA, en);
+		csr32w(c->regs, DmaChanBase + DmaChanIntrEna, en);
 	}
 }
 
-static Ether *dwqeether[MAXDWQE];
-static Ctlr   dwqectlr[MAXDWQE];
+static Ether *dwqeether[Ndwqe];
+static Ctlr   dwqectlr[Ndwqe];
 static int    dwqeclockregistered;
 
 static void
@@ -776,7 +752,7 @@ etherserve(Ether *edev)
 	u32int fl;
 
 	c = edev->ctlr;
-	fl = csr32r(c->regs, DMA_CHAN_BASE + DMA_CHAN_STATUS);
+	fl = csr32r(c->regs, DmaChanBase + DmaChanStatus);
 	c->irqseen |= fl;
 	ethirq(nil, edev);
 
@@ -795,7 +771,7 @@ etherclock(void)
 {
 	int i;
 
-	for(i = 0; i < MAXDWQE; i++)
+	for(i = 0; i < Ndwqe; i++)
 		if(dwqeether[i] != nil)
 			etherserve(dwqeether[i]);
 }
@@ -812,7 +788,7 @@ ethattach(Ether *edev)
 	kproc("dwqeproc", ethproc, edev);
 }
 
-/* /net/etherN/clone/ handler ---------------------------------------------- */
+/* /net/etherN/clone handler ----------------------------------------------- */
 
 enum { CMdebug, CMpromiscuous, CMallmulti };
 static Cmdtab dwqectlmsg[] = {
@@ -865,46 +841,47 @@ ethinit(Ether *edev)
 	/*
 	 * APMU: bring GMAC0 out of reset with clocks enabled, PHY interface
 	 * mode selected, and RGMII delay lines set -- all BEFORE touching
-	 * any MAC/DMA register. Skipping it stalls the hart
+	 * any MAC/DMA register. Skipping it stalls the hart.
 	 */
 	{
 		u32int origv = csr32r(c->apmu, c->apmuctrloff);
 
 		/*
 		 * Grab whatever real MAC firmware left in GMAC_ADDR0 *now*,
-		 * before the sequence below forces an EMAC_BUS_RST 0->1
+		 * before the sequence below forces an EmacBusRst 0->1
 		 * transition -- that's a real reset of the MAC's internal
 		 * register file (ADDR0 included). Only safe to read at all
-		 * if RST is already 1 in origv  -- if it's 0, the register
+		 * if RST is already 1 in origv -- if it's 0, the register
 		 * block isn't accessible yet and reading would hang the
 		 * hart the same way skipping the bring-up entirely did.
 		 */
-		if((origv & EMAC_BUS_RST) != 0){
+		if((origv & EmacBusRst) != 0){
 			static uchar zero[Eaddrlen];
 
 			if(memcmp(edev->ea, zero, Eaddrlen) == 0){
 				u32int hi, lo;
 
-				csr32w(c->apmu, c->apmuctrloff, origv | EMAC_BUS_EN);
+				csr32w(c->apmu, c->apmuctrloff, origv | EmacBusEn);
 				microdelay(1000);
-				lo = csr32r(c->regs, GMAC_ADDR0_LOW);
-				hi = csr32r(c->regs, GMAC_ADDR0_HIGH);
+				lo = csr32r(c->regs, GmacAddr0Lo);
+				hi = csr32r(c->regs, GmacAddr0Hi);
 				edev->ea[0] = lo & 0xff;        edev->ea[1] = (lo>>8) & 0xff;
 				edev->ea[2] = (lo>>16) & 0xff;  edev->ea[3] = (lo>>24) & 0xff;
 				edev->ea[4] = hi & 0xff;        edev->ea[5] = (hi>>8) & 0xff;
-				dprint("dwqe: MAC read from hardware: %02X:%02X:%02X:%02X:%02X:%02X\n",
+				dprint("dwqe: MAC captured from hardware before reset: "
+					"%02X:%02X:%02X:%02X:%02X:%02X\n",
 					edev->ea[0], edev->ea[1], edev->ea[2],
 					edev->ea[3], edev->ea[4], edev->ea[5]);
 			}
 		}
 
-		u32int preserve = origv & ~(EMAC_BUS_EN | EMAC_BUS_RST
-			| EMAC_AXI_MST_ID | EMAC_1588_CLK_MUX
-			| (3U << EMAC_PHY_SELECT_SHIFT)
-			| EMAC0_CLK_REF_GATE | EMAC0_PHY_INTR_EN | EMAC0_LPI_INTR_EN
-			| EMAC0_RGMII_TXC_SRC_SEL | EMAC_RX_REFCLK_PHASE_SEL
-			| EMAC_RMII_TX_REFCLK_PHASE_SEL);
-		u32int physel = EMAC_PHY_SELECT_RGMII << EMAC_PHY_SELECT_SHIFT;
+		u32int preserve = origv & ~(EmacBusEn | EmacBusRst
+			| EmacAxiMstId | Emac1588ClkMux
+			| (3U << EmacPhySelectShift)
+			| Emac0ClkRefGate | Emac0PhyIntrEn | Emac0LpiIntrEn
+			| Emac0RgmiiTxcSrcSel | EmacRxRefclkPhaseSel
+			| EmacRmiiTxRefclkPhaseSel);
+		u32int physel = EmacPhySelectRgmii << EmacPhySelectShift;
 		/*
 		 * CLK_REF_GATE=0 (refclk enabled, unused in RGMII anyway),
 		 * PHY_INTR_EN=0 / LPI_INTR_EN=0 (no WoL/EEE handler exists),
@@ -913,24 +890,24 @@ ethinit(Ether *edev)
 		 */
 		csr32w(c->apmu, c->apmuctrloff, preserve | physel);
 		microdelay(10000);
-		csr32w(c->apmu, c->apmuctrloff, preserve | physel | EMAC_BUS_EN | EMAC_1588_CLK_MUX);
+		csr32w(c->apmu, c->apmuctrloff, preserve | physel | EmacBusEn | Emac1588ClkMux);
 		microdelay(10000);
-		csr32w(c->apmu, c->apmuctrloff, preserve | physel | EMAC_BUS_EN | EMAC_1588_CLK_MUX
-			| EMAC_BUS_RST | EMAC_AXI_MST_ID);
+		csr32w(c->apmu, c->apmuctrloff, preserve | physel | EmacBusEn | Emac1588ClkMux
+			| EmacBusRst | EmacAxiMstId);
 		microdelay(10000);
 		print("dwqe: APMU CLK_RST[%#ux] %#ux -> %#ux (PHY_SELECT=RGMII, TXC_SRC_SEL=RXclk)\n",
 			c->apmuctrloff, origv, csr32r(c->apmu, c->apmuctrloff));
 	}
 
 	/* RGMII delay lines */
-	v = EMAC_RGMII_RXC_DLINE_PU | EMAC_RGMII_TXC_DLINE_PU
-	  | EMAC_RGMII_RXC_DLINE_STEP_15P6 | EMAC_RGMII_TXC_DLINE_STEP_15P6
-	  | c->rxdelay << EMAC_RGMII_RXC_DLINE_ADJ_SHIFT
-	  | c->txdelay << EMAC_RGMII_TXC_DLINE_ADJ_SHIFT;
+	v = EmacRgmiiRxcDlinePu | EmacRgmiiTxcDlinePu
+	  | EmacRgmiiRxcDlineStep | EmacRgmiiTxcDlineStep
+	  | c->rxdelay << EmacRgmiiRxcDlineAdjShift
+	  | c->txdelay << EmacRgmiiTxcDlineAdjShift;
 	csr32w(c->apmu, c->apmudlineoff, v);
 	print("dwqe: APMU DLINE[%#ux]=0x%08ux\n", c->apmudlineoff, v);
 
-	/* CR sanity-check, kept as a debug-only cross-check */
+	/* CR sanity-check, kept as a debug-only cross-check  */
 	{
 		u32int aclkctrl = csr32r(c->apmu, 0x388);
 		int mux = aclkctrl & 1;
@@ -950,18 +927,18 @@ ethinit(Ether *edev)
 
 		dprint("dwqe: APMU_ACLK_CLK_CTRL=%#08ux mux=%d div=%d -> "
 			"csrclk~%ud Hz -> CR=%d indicated (using %d)\n",
-			aclkctrl, mux, div, csrclk, wantcr, MII_ADDR_CR_VAL);
+			aclkctrl, mux, div, csrclk, wantcr, MdioCrVal);
 	}
 
 	/* now the MAC block is reachable; stop everything */
-	csr32w(c->regs, GMAC_INT_EN, 0);
-	csr32w(c->regs, GMAC_CONFIG, 0);
-	csr32w(c->regs, DMA_CHAN_BASE + DMA_CHAN_TX_CONTROL, 0);
-	csr32w(c->regs, DMA_CHAN_BASE + DMA_CHAN_RX_CONTROL, 0);
+	csr32w(c->regs, GmacIntEn, 0);
+	csr32w(c->regs, GmacConfig, 0);
+	csr32w(c->regs, DmaChanBase + DmaChanTxControl, 0);
+	csr32w(c->regs, DmaChanBase + DmaChanRxControl, 0);
 
 	/*
 	 * If neither a bootarg, the DTB, nor the early hardware capture
-	 * above got us a MAC address, edev->ea is still zeroed here
+	 * above got us a MAC address, edev->ea is still zeroed here.
 	 */
 	{
 		static uchar zero[Eaddrlen];
@@ -974,46 +951,46 @@ ethinit(Ether *edev)
 	}
 
 	/* DMA software reset -- polled */
-	csr32w(c->regs, DMA_BUS_MODE, csr32r(c->regs, DMA_BUS_MODE) | DMA_BUS_MODE_SFT_RESET);
+	csr32w(c->regs, DmaBusMode, csr32r(c->regs, DmaBusMode) | DmaBusModeSwr);
 	for(timeout = 0; timeout < 1000; timeout++){
-		if((csr32r(c->regs, DMA_BUS_MODE) & DMA_BUS_MODE_SFT_RESET) == 0)
+		if((csr32r(c->regs, DmaBusMode) & DmaBusModeSwr) == 0)
 			break;
 		microdelay(1000);
 	}
 	if(timeout == 1000){
-		print("dwqe: ERROR DMA_BUS_MODE software reset timed out\n");
+		print("dwqe: ERROR DmaBusMode software reset timed out\n");
 		return -1;
 	}
 	dprint("dwqe: DMA reset done after %d ms\n", timeout);
 
 	/*
 	 * K3 DDR starts at 0x1_00000000 -- everything iallocb()/ucallocalign()
-	 * hands us will have PADDR() >= 4G, so 64-bit DMA addressing is required
+	 * hands us will have PADDR() >= 4G, so 64-bit DMA addressing is required.
 	 */
-	csr32w(c->regs, DMA_SYS_BUS_MODE, DMA_SYS_BUS_MB | DMA_SYS_BUS_FB | DMA_SYS_BUS_EAME);
+	csr32w(c->regs, DmaSysBusMode, DmaSysBusMb | DmaSysBusFb | DmaSysBusEame);
 
 	/* MTL: store-and-forward, enable queue 0, size FIFOs from HW_FEATURE1 */
 	{
-		u32int feat1 = csr32r(c->regs, GMAC_HW_FEATURE1);
-		u32int txfifo = 128 << ((feat1 & GMAC_HW_TXFIFOSIZE) >> 6);
-		u32int rxfifo = 128 << (feat1 & GMAC_HW_RXFIFOSIZE);
+		u32int feat1 = csr32r(c->regs, GmacHwFeature1);
+		u32int txfifo = 128 << ((feat1 & GmacHwTxFifoSize) >> 6);
+		u32int rxfifo = 128 << (feat1 & GmacHwRxFifoSize);
 		u32int tqs = txfifo / 256 - 1;
 		u32int rqs = rxfifo / 256 - 1;
 
 		print("dwqe: HW_FEATURE1=%#08ux txfifo=%ud rxfifo=%ud bytes\n",
 			feat1, txfifo, rxfifo);
 
-		csr32w(c->regs, MTL_CHAN_BASE + MTL_CHAN_TX_OP_MODE,
-			MTL_OP_MODE_TSF | MTL_OP_MODE_TXQEN
-			| ((tqs << 16) & MTL_OP_MODE_TQS_MASK));
-		csr32w(c->regs, MTL_CHAN_BASE + MTL_CHAN_RX_OP_MODE,
-			MTL_OP_MODE_RSF | ((rqs << 20) & MTL_OP_MODE_RQS_MASK));
+		csr32w(c->regs, MtlChanBase + MtlTxOpMode,
+			MtlOpTsf | MtlOpTxqEn
+			| ((tqs << 16) & MtlOpTqsMask));
+		csr32w(c->regs, MtlChanBase + MtlRxOpMode,
+			MtlOpRsf | ((rqs << 20) & MtlOpRqsMask));
 	}
 
 	/* MAC address */
-	csr32w(c->regs, GMAC_ADDR0_HIGH,
+	csr32w(c->regs, GmacAddr0Hi,
 		(1U << 31) | edev->ea[5]<<8 | edev->ea[4]);
-	csr32w(c->regs, GMAC_ADDR0_LOW,
+	csr32w(c->regs, GmacAddr0Lo,
 		edev->ea[3]<<24 | edev->ea[2]<<16 | edev->ea[1]<<8 | edev->ea[0]);
 	dprint("dwqe: MAC %02X:%02X:%02X:%02X:%02X:%02X programmed\n",
 		edev->ea[0], edev->ea[1], edev->ea[2], edev->ea[3], edev->ea[4], edev->ea[5]);
@@ -1021,9 +998,9 @@ ethinit(Ether *edev)
 	/*
 	 * Enable RX queue 0 at the MAC's queue-routing level.  This is
 	 * upstream of MTL/DMA entirely -- without it the MAC can silently
-	 * drop everything before it ever reaches the MTL FIFO
+	 * drop everything before it ever reaches the MTL FIFO.
 	 */
-	csr32w(c->regs, GMAC_RXQ_CTRL0, GMAC_RXQCTRL_Q0_DCB_EN);
+	csr32w(c->regs, GmacRxqCtrl0, GmacRxqCtrl0Q0Dcb);
 
 	/*
 	 * Real filtering now: unicast perfect-match on GMAC_ADDR0 +
@@ -1033,23 +1010,23 @@ ethinit(Ether *edev)
 	 */
 	dwqesetfilter(c, 0, 1);
 
-	/* GMAC_CONFIG base bits; RE/TE turned on by ethproc once link is up */
-	csr32w(c->regs, GMAC_CONFIG,
-		GMAC_CONFIG_JD | GMAC_CONFIG_BE | GMAC_CONFIG_DCRS | GMAC_CONFIG_ACS);
+	/* GmacConfig base bits; RE/TE turned on by ethproc once link is up */
+	csr32w(c->regs, GmacConfig,
+		GmacConfigJd | GmacConfigBe | GmacConfigDcrs | GmacConfigAcs);
 
 	/* descriptor rings -- both non-cacheable (4 descs/line) */
-	c->rxr = ucallocalign(sizeof(u32int) * 4 * RXRING, 16, 0);
-	c->txr = ucallocalign(sizeof(u32int) * 4 * TXRING, 16, 0);
+	c->rxr = ucallocalign(sizeof(u32int) * 4 * Nrxd, 16, 0);
+	c->txr = ucallocalign(sizeof(u32int) * 4 * Ntxd, 16, 0);
 	if(c->rxr == nil || c->txr == nil){
 		print("dwqe: ERROR ring alloc failed\n");
 		return -1;
 	}
-	memset(c->rxr, 0, 4 * RXRING * sizeof(u32int));
-	memset(c->txr, 0, 4 * TXRING * sizeof(u32int));
+	memset(c->rxr, 0, 4 * Nrxd * sizeof(u32int));
+	memset(c->txr, 0, 4 * Ntxd * sizeof(u32int));
 	coherence();	/* both rings are NC memory now; order the zeroing, nothing to flush */
 
-	c->rxs = mallocz(sizeof(Block*) * RXRING, 1);
-	c->txs = mallocz(sizeof(Block*) * TXRING, 1);
+	c->rxs = mallocz(sizeof(Block*) * Nrxd, 1);
+	c->txs = mallocz(sizeof(Block*) * Ntxd, 1);
 	if(c->rxs == nil || c->txs == nil){
 		print("dwqe: ERROR mallocz failed\n");
 		return -1;
@@ -1062,8 +1039,8 @@ ethinit(Ether *edev)
 
 	{
 		uvlong txpa = PADDR(c->txr), rxpa = PADDR(c->rxr);
-		uvlong txend = txpa + 4 * TXRING * sizeof(u32int) - 1;
-		uvlong rxend = rxpa + 4 * RXRING * sizeof(u32int) - 1;
+		uvlong txend = txpa + 4 * Ntxd * sizeof(u32int) - 1;
+		uvlong rxend = rxpa + 4 * Nrxd * sizeof(u32int) - 1;
 
 		/* The tail-pointer registers are 32-bit only */
 		if((txpa >> 32) != (txend >> 32) || (rxpa >> 32) != (rxend >> 32)){
@@ -1073,27 +1050,27 @@ ethinit(Ether *edev)
 			return -1;
 		}
 
-		csr32w(c->regs, DMA_CHAN_BASE + DMA_CHAN_TX_BASE_ADDR_HI, txpa >> 32);
-		csr32w(c->regs, DMA_CHAN_BASE + DMA_CHAN_TX_BASE_ADDR, (u32int)txpa);
-		csr32w(c->regs, DMA_CHAN_BASE + DMA_CHAN_RX_BASE_ADDR_HI, rxpa >> 32);
-		csr32w(c->regs, DMA_CHAN_BASE + DMA_CHAN_RX_BASE_ADDR, (u32int)rxpa);
-		csr32w(c->regs, DMA_CHAN_BASE + DMA_CHAN_TX_RING_LEN, TXRING - 1);
-		csr32w(c->regs, DMA_CHAN_BASE + DMA_CHAN_RX_RING_LEN, RXRING - 1);
-		csr32w(c->regs, DMA_CHAN_BASE + DMA_CHAN_TX_END_ADDR, (u32int)txpa);
+		csr32w(c->regs, DmaChanBase + DmaChanTxBaseHi, txpa >> 32);
+		csr32w(c->regs, DmaChanBase + DmaChanTxBase, (u32int)txpa);
+		csr32w(c->regs, DmaChanBase + DmaChanRxBaseHi, rxpa >> 32);
+		csr32w(c->regs, DmaChanBase + DmaChanRxBase, (u32int)rxpa);
+		csr32w(c->regs, DmaChanBase + DmaChanTxLen, Ntxd - 1);
+		csr32w(c->regs, DmaChanBase + DmaChanRxLen, Nrxd - 1);
+		csr32w(c->regs, DmaChanBase + DmaChanTxEnd, (u32int)txpa);
 	}
 
 	/*
 	 * Fills the ring (leaving the one sentinel gap slot empty and sets
-	 * DMA_CHAN_RX_END_ADDR itself, now that RX_BASE_ADDR is already programmed.
+	 * DmaChanRxEnd itself, now that DmaChanRxBase is already programmed.
 	 */
 	replenish(c);
 
-	dprint("dwqe: rings rxr=%p txr=%p (%d/%d slots)\n", c->rxr, c->txr, RXRING, TXRING);
+	dprint("dwqe: rings rxr=%p txr=%p (%d/%d slots)\n", c->rxr, c->txr, Nrxd, Ntxd);
 
 	/* DMA channel stays stopped (ST/SR off); ethproc starts both on link-up */
-	csr32w(c->regs, DMA_CHAN_BASE + DMA_CHAN_STATUS, ~0U);
-	csr32w(c->regs, DMA_CHAN_BASE + DMA_CHAN_INTR_ENA, 0);
-	csr32w(c->regs, GMAC_INT_EN, 0);
+	csr32w(c->regs, DmaChanBase + DmaChanStatus, ~0U);
+	csr32w(c->regs, DmaChanBase + DmaChanIntrEna, 0);
+	csr32w(c->regs, GmacIntEn, 0);
 
 	return 0;
 }
@@ -1110,7 +1087,7 @@ etherpnp(Ether *edev)
 
 	dprint("dwqe: etherpnp ctlrno=%d\n", edev->ctlrno);
 
-	if(edev->ctlrno < 0 || edev->ctlrno >= MAXDWQE){
+	if(edev->ctlrno < 0 || edev->ctlrno >= Ndwqe){
 		dprint("dwqe: ctlrno %d out of range\n", edev->ctlrno);
 		return -1;
 	}
@@ -1127,18 +1104,22 @@ etherpnp(Ether *edev)
 
 	de = nil;
 	n = dtbnether();
+	/* Walk through the array, but skip ones that are not ok.
+	 * So, e.g., if the first one in the array (0) is not marked
+	 * OK, don't count it: in one case we have, the second one (1)
+	 * becomes ether0. */
 	for(i = 0; i < n; i++){
 		Dtbether *d = dtbether(i);
-		if(d != nil && d->ok && d->aliasidx == edev->ctlrno
-		    && strstr(d->compatible, "spacemit,k3-gmac") != nil){
+		if(d != nil  && d->ok && strstr(d->compatible, "spacemit,k3-gmac") != nil) {
+ 			d->aliasidx = edev->ctlrno;
 			de = d;
 			break;
 		}
 	}
 	if(de != nil){
 		base     = de->base;
-		size     = de->size ? de->size : GMAC0_SIZE;
-		apmubase = de->apmubase ? de->apmubase : APMU_PHYS;
+		size     = de->size ? de->size : Gmac0Size;
+		apmubase = de->apmubase ? de->apmubase : ApmuPhys;
 		irq      = de->irq;
 		ct->apmuctrloff  = de->ctrlregoff  ? de->ctrlregoff  : 0x3e4;
 		ct->apmudlineoff = de->dlineregoff ? de->dlineregoff : 0x3e8;
@@ -1146,10 +1127,10 @@ etherpnp(Ether *edev)
 			edev->ctlrno, de->path, base, size, apmubase,
 			ct->apmuctrloff, ct->apmudlineoff, irq);
 	} else if(edev->ctlrno == 0 && n == 0){
-		base     = GMAC0_PHYS;
-		size     = GMAC0_SIZE;
-		apmubase = APMU_PHYS;
-		irq      = GMAC0_IRQ;
+		base     = Gmac0Phys;
+		size     = Gmac0Size;
+		apmubase = ApmuPhys;
+		irq      = Gmac0Irq;
 		ct->apmuctrloff  = 0x3e4;
 		ct->apmudlineoff = 0x3e8;
 		print("dwqe: no DTB, using K3 ether0 defaults\n");
@@ -1159,7 +1140,7 @@ etherpnp(Ether *edev)
 	}
 
 	ct->regs = (ulong*)vmap(base, size);
-	ct->apmu = (ulong*)vmap(apmubase, APMU_SIZE);
+	ct->apmu = (ulong*)vmap(apmubase, ApmuSize);
 	if(ct->regs == nil || ct->apmu == nil){
 		print("dwqe: ERROR vmap failed regs=%p apmu=%p\n", ct->regs, ct->apmu);
 		ct->regs = nil;
@@ -1169,8 +1150,8 @@ etherpnp(Ether *edev)
 	dprint("dwqe: ether%d regs=%p (phys=%#llux) apmu=%p (phys=%#llux)\n",
 		edev->ctlrno, ct->regs, base, ct->apmu, apmubase);
 
-	ct->rxdelay = DWQE_DEFAULT_RXDELAY;
-	ct->txdelay = DWQE_DEFAULT_TXDELAY;
+	ct->rxdelay = DwqeRxDelay;
+	ct->txdelay = DwqeTxDelay;
 	if(de != nil){
 		if(de->txphase > 0)
 			ct->txdelay = (de->txphase * 8000 / 360 * 10 + 78) / 156;
