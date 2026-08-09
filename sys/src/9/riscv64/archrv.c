@@ -251,10 +251,9 @@ l2init(void)
 	 *
 	 * if this kernel is ever ported to a non-RVA23 hart, replace this
 	 * with a real probe (e.g. read the "riscv,isa"/"riscv,isa-extensions"
-	 * dtb string for "zicbom", since misa only encodes single-letter
-	 * extensions and can't see it) before relying on cachedwbse/
-	 * cachedwbinvse/cachedinvse, which silently no-op (coherence() only)
-	 * when soc.havecbo is 0.
+	 * dtb string for "zicbom") before relying on cachedwbse/cachedwbinvse/
+	 * /cachedinvse, which silently no-op (coherence() only) when
+	 * soc.havecbo is 0.
 	 */
 	if (m->machno == 0) {
 		soc.havecbo = 1;
@@ -370,8 +369,7 @@ cacheop(void (*op)(void *), void *vaddr, int len)
 /*
  * if dma is incoherent on this machine, write back (without invalidating)
  * any dirty cache lines covering virtual address `vaddr' for `len' bytes,
- * so that a device can see what the cpu has written.  not needed on most
- * (that is, risc-v conforming) systems.  at minimum, always call
+ * so that a device can see what the cpu has written. At minimum, always call
  * coherence().
  */
 void
@@ -383,8 +381,7 @@ cachedwbse(void *vaddr, int len)
 /*
  * if dma is incoherent on this machine, flush (write back if dirty, then
  * invalidate) any cache lines covering virtual address `vaddr' for `len'
- * bytes.  not needed on most (that is, risc-v conforming) systems.  at
- * minimum, always call coherence().
+ * bytes. At minimum, always call coherence().
  */
 void
 cachedwbinvse(void *vaddr, int len)
@@ -395,8 +392,7 @@ cachedwbinvse(void *vaddr, int len)
 /*
  * if dma is incoherent on this machine, invalidate (without writing back)
  * any cache lines covering virtual address `vaddr' for `len' bytes, so
- * that the cpu will re-read what a device just wrote to memory.  not
- * needed on most (that is, risc-v conforming) systems.  at minimum,
+ * that the cpu will re-read what a device just wrote to memory. At minimum,
  * always call coherence().
  */
 void
