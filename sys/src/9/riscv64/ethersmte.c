@@ -21,6 +21,7 @@
 #include "io.h"
 #include "../port/netif.h"
 #include "../port/etherif.h"
+#include "../port/ethermii.h"
 
 #define Rbsz	ROUNDUP(sizeof(Etherpkt)+16, 64)
 
@@ -32,7 +33,6 @@
 static int debug;
 
 #define dprint		if(debug) print
-#define dprint2		if(debug >= 2) print
 
 /*
  * Default MMIO layout for the SpacemiT K1's first EMAC, used only as
@@ -41,137 +41,137 @@ static int debug;
  * the Dtbether table built by bootargs.c.
  */
 enum {
-	EMAC0_PHYS	= 0xcac80000UL,
-	EMAC0_SIZE	= 0x420,
-	EMAC0_IRQ	= 131,
+	Emac0Phys	= 0xcac80000UL,
+	Emac0Size	= 0x420,
+	Emac0Irq	= 131,
 
-	APMU_PHYS	= 0xd4282800UL,
-	APMU_SIZE	= 0x400,
+	ApmuPhys	= 0xd4282800UL,
+	ApmuSize	= 0x400,
 
 	/* RGMII delays: 1560 ps = 100 steps x 15.6 ps (from vendor DTS) */
-	SMTE_DEFAULT_RXDELAY	= 100,
-	SMTE_DEFAULT_TXDELAY	= 100,
+	SmteRxdelaydef	= 100,
+	SmteTxdelaydef	= 100,
 
 };
 
 /* DMA registers (byte offset) */
 enum {
-	DMA_CONFIG				= 0x0000,
-	DMA_CONFIG_SOFTWARE_RESET		= (1U << 0),
-	DMA_CONFIG_BURST_LENGTH_16		= (0x10 << 1),
-	DMA_CONFIG_STRICT_BURST			= (1U << 17),
-	DMA_CONFIG_DMA_64BIT_MODE		= (1U << 18),
+	DmaConfig		= 0x0000,
+	DmaConfigSwreset	= (1U << 0),
+	DmaConfigBurst16	= (0x10 << 1),
+	DmaConfigStrictburst	= (1U << 17),
+	DmaConfig64bit		= (1U << 18),
 
-	DMA_CTRL				= 0x0004,
-	DMA_CTRL_START_STOP_TX_DMA		= (1U << 0),
-	DMA_CTRL_START_STOP_RX_DMA		= (1U << 1),
+	DmaCtrl		= 0x0004,
+	DmaCtrlTxstart	= (1U << 0),
+	DmaCtrlRxstart	= (1U << 1),
 
 	/*
-	 * DMA_STATUS_IRQ — W1C.  This controller has no "interrupt summary"
+	 * DmaStatusIrq — W1C.  This controller has no "interrupt summary"
 	 * bits (no NIS/AIS-style aggregate); every enabled source acts on
 	 * its own and must be W1C'd individually.  Bit 8 is a separate
-	 * MAC-level interrupt that we never enable (MAC_INTR_ENABLE = 0).
+	 * MAC-level interrupt that we never enable (MacIntrena = 0).
 	 */
-	DMA_STATUS_IRQ				= 0x0008,	/* W1C */
-	DMA_STATUS_IRQ_TX_TRANSFER_DONE		= (1U << 0),
-	DMA_STATUS_IRQ_TX_DES_UNAVAILABLE	= (1U << 1),
-	DMA_STATUS_IRQ_TX_DMA_STOPPED		= (1U << 2),
-	DMA_STATUS_IRQ_RX_TRANSFER_DONE		= (1U << 4),
-	DMA_STATUS_IRQ_RX_DES_UNAVAILABLE	= (1U << 5),
-	DMA_STATUS_IRQ_RX_DMA_STOPPED		= (1U << 6),
-	DMA_STATUS_IRQ_RX_MISSED_FRAME		= (1U << 7),
-	DMA_STATUS_IRQ_MAC			= (1U << 8),
+	DmaStatusIrq		= 0x0008,	/* W1C */
+	DmaStatusIrqTxdone	= (1U << 0),
+	DmaStatusIrqTxdu	= (1U << 1),
+	DmaStatusIrqTxstop	= (1U << 2),
+	DmaStatusIrqRxdone	= (1U << 4),
+	DmaStatusIrqRxdu	= (1U << 5),
+	DmaStatusIrqRxstop	= (1U << 6),
+	DmaStatusIrqRxmiss	= (1U << 7),
+	DmaStatusIrqMac		= (1U << 8),
 
 	/*
-	 * DMA_INTR_ENABLE — per-source enables at the same bit positions
-	 * as DMA_STATUS_IRQ.  RX_DES_UNAVAILABLE fires the moment the chip
+	 * DmaIntrena — per-source enables at the same bit positions
+	 * as DmaStatusIrq.  DmaIntrenaRxdu fires the moment the chip
 	 * enters Suspended (no chip-owned descriptor at its pointer); the
-	 * mask-while-busy pattern in ethirq drains the ring and POLL_DEMAND
-	 * kicks the chip back to Running before we restore INTR_ENABLE, so
-	 * no storm in practice.  TX_DES_UNAVAILABLE stays off — TX submit
-	 * already POLL_DEMANDs and IRQ on dequeue is enough.
+	 * mask-while-busy pattern in ethirq drains the ring and DmaRxpolldemand
+	 * kicks the chip back to Running before we restore DmaIntrena, so
+	 * no storm in practice.  DmaIntrenaTxdu stays off — TX submit
+	 * already pokes DmaTxpolldemand and IRQ on dequeue is enough.
 	 */
-	DMA_INTR_ENABLE				= 0x000c,
-	DMA_INTR_ENABLE_TX_TRANSFER_DONE	= (1U << 0),
-	DMA_INTR_ENABLE_TX_DES_UNAVAILABLE	= (1U << 1),	/* not safe to enable */
-	DMA_INTR_ENABLE_TX_DMA_STOPPED		= (1U << 2),
-	DMA_INTR_ENABLE_RX_TRANSFER_DONE	= (1U << 4),
-	DMA_INTR_ENABLE_RX_DES_UNAVAILABLE	= (1U << 5),
-	DMA_INTR_ENABLE_RX_DMA_STOPPED		= (1U << 6),
-	DMA_INTR_ENABLE_RX_MISSED_FRAME		= (1U << 7),
+	DmaIntrena		= 0x000c,
+	DmaIntrenaTxdone	= (1U << 0),
+	DmaIntrenaTxdu		= (1U << 1),	/* not safe to enable */
+	DmaIntrenaTxstop	= (1U << 2),
+	DmaIntrenaRxdone	= (1U << 4),
+	DmaIntrenaRxdu		= (1U << 5),
+	DmaIntrenaRxstop	= (1U << 6),
+	DmaIntrenaRxmiss	= (1U << 7),
 
-	DMA_TRANSMIT_AUTO_POLL_COUNTER		= 0x0010,
-	DMA_TRANSMIT_POLL_DEMAND		= 0x0014,
-	DMA_RECEIVE_POLL_DEMAND			= 0x0018,
-	DMA_TRANSMIT_BASE_ADDRESS		= 0x001c,
-	DMA_RECEIVE_BASE_ADDRESS		= 0x0020,
+	DmaTxautopoll	= 0x0010,
+	DmaTxpolldemand	= 0x0014,
+	DmaRxpolldemand	= 0x0018,
+	DmaTxbase	= 0x001c,
+	DmaRxbase	= 0x0020,
 
-	DMA_RECEIVE_IRQ_MITIGATION		= 0x002c,
-	DMA_RECEIVE_IRQ_MITIGATION_ENABLE	= (1U << 31),
+	DmaRxmitigation		= 0x002c,
+	DmaRxmitigationEna	= (1U << 31),
 };
 
 /* MAC registers (byte offset) */
 enum {
-	MAC_GLOBAL_CTRL				= 0x0100,
-	MAC_GLOBAL_CTRL_SPEED_MASK		= (0x3 << 0),
-	MAC_GLOBAL_CTRL_SPEED_10		= (0x0 << 0),
-	MAC_GLOBAL_CTRL_SPEED_100		= (0x1 << 0),
-	MAC_GLOBAL_CTRL_SPEED_1000		= (0x2 << 0),
-	MAC_GLOBAL_CTRL_DUPLEX_MODE		= (1U << 2),
+	MacGlobalctrl		= 0x0100,
+	MacGlobalctrlSpeedmask	= (0x3 << 0),
+	MacGlobalctrlSpeed10	= (0x0 << 0),
+	MacGlobalctrlSpeed100	= (0x1 << 0),
+	MacGlobalctrlSpeed1000	= (0x2 << 0),
+	MacGlobalctrlDuplex	= (1U << 2),
 
-	MAC_TRANSMIT_CTRL			= 0x0104,
-	MAC_TRANSMIT_CTRL_TX_ENABLE		= (1U << 0),
-	MAC_TRANSMIT_CTRL_TX_AUTO_RETRY		= (1U << 3),
+	MacTxctrl		= 0x0104,
+	MacTxctrlEna		= (1U << 0),
+	MacTxctrlAutoretry	= (1U << 3),
 
-	MAC_RECEIVE_CTRL			= 0x0108,
-	MAC_RECEIVE_CTRL_RX_ENABLE		= (1U << 0),
-	MAC_RECEIVE_CTRL_STORE_FORWARD		= (1U << 3),
+	MacRxctrl		= 0x0108,
+	MacRxctrlEna		= (1U << 0),
+	MacRxctrlStoreforward	= (1U << 3),
 
-	MAC_MAXIMUM_FRAME_SIZE			= 0x010c,
-	MAC_TRANSMIT_JABBER_SIZE		= 0x0110,
-	MAC_RECEIVE_JABBER_SIZE			= 0x0114,
+	MacMaxframe	= 0x010c,
+	MacTxjabber	= 0x0110,
+	MacRxjabber	= 0x0114,
 
-	MAC_ADDR_CTRL				= 0x0118,
-	MAC_ADDR_CTRL_MAC_ADDR1_ENABLE		= (1U << 0),
+	MacAddrctrl		= 0x0118,
+	MacAddrctrlAddr1ena	= (1U << 0),
 
-	MAC_ADDR1_HI				= 0x0120,
-	MAC_ADDR1_ME				= 0x0124,
-	MAC_ADDR1_LO				= 0x0128,
+	MacAddr1hi	= 0x0120,
+	MacAddr1me	= 0x0124,
+	MacAddr1lo	= 0x0128,
 
-	MAC_MDIO_CTRL				= 0x01a0,
-	MAC_MDIO_CTRL_START_MDIO_TRANS		= (1U << 15),
-	MAC_MDIO_CTRL_MDIO_READ_WRITE		= (1U << 10),
-	MAC_MDIO_CTRL_REGISTER_ADDRESS_SHIFT	= 5,
-	MAC_MDIO_CTRL_PHY_ADDRESS_SHIFT		= 0,
+	MacMdioctrl		= 0x01a0,
+	MacMdioctrlStart	= (1U << 15),
+	MacMdioctrlRw		= (1U << 10),
+	MacMdioctrlRegshift	= 5,
+	MacMdioctrlPhyshift	= 0,
 
-	MAC_MDIO_DATA				= 0x01a4,
+	MacMdiodata	= 0x01a4,
 
-	MAC_TRANSMIT_FIFO_ALMOST_FULL		= 0x01c0,
-	MAC_TRANSMIT_PACKET_START_THRESHOLD	= 0x01c4,
-	MAC_RECEIVE_PACKET_START_THRESHOLD	= 0x01c8,
+	MacTxfifoalmostfull	= 0x01c0,
+	MacTxthresh		= 0x01c4,
+	MacRxthresh		= 0x01c8,
 
-	MAC_STATUS_IRQ				= 0x01e0,	/* W1C: underrun, jabber */
-	MAC_INTR_ENABLE				= 0x01e4,
+	MacStatusirq	= 0x01e0,	/* W1C: underrun, jabber */
+	MacIntrena	= 0x01e4,
 
 	/*
 	 * IEEE-1588 / PTP timestamping block.  We don't use PTP, but the
 	 * status and enable registers need to be quiesced at init: a
-	 * prior boot stage can leave PTP_1588_IRQ_EN non-zero with
-	 * PTP_1588_IRQ_STS bits latched, and those will keep the chip's
-	 * IRQ line asserted regardless of what we do to DMA_INTR_ENABLE.
+	 * prior boot stage can leave Ptp1588Irqena non-zero with
+	 * Ptp1588Irqsts bits latched, and those will keep the chip's
+	 * IRQ line asserted regardless of what we do to DmaIntrena.
 	 */
-	PTP_1588_IRQ_STS			= 0x0360,	/* W1C */
-	PTP_1588_IRQ_EN				= 0x0364,
+	Ptp1588Irqsts	= 0x0360,	/* W1C */
+	Ptp1588Irqena	= 0x0364,
 };
 
 /*
- * APMU registers (byte offset from APMU_PHYS = 0xd4282800).
+ * APMU registers (byte offset from ApmuPhys = 0xd4282800).
  * Per the K1 device tree we read from /soc/ethernet@*:
  *   EMAC0 ctrl-reg  = 0x3e4   (AXI ID, PHY-intf select, RMII clk select)
  *   EMAC0 dline-reg = 0x3e8   (RGMII delay line)
  */
 enum {
-	APMU_EMAC_CLK_RST_CTRL			= 0x03e4,
+	ApmuEmacClkrstctrl	= 0x03e4,
 	/*
 	 * EMAC0_CLK_RST_CTRL bit fields (from the K1 user manual,
 	 * "High-Speed Interface System / EMAC0_CLK_RST_CTRL"):
@@ -180,71 +180,50 @@ enum {
 	 *   bit 13 = AXI_MST_ID — use single AXI ID for transfers
 	 * EMAC1 is at offset +0x8 with the same layout.
 	 */
-	APMU_EMAC_BUS_EN			= (1U << 0),
-	APMU_EMAC_BUS_RST_RELEASE		= (1U << 1),
-	APMU_EMAC_AXI_MST_ID			= (1U << 13),
-	APMU_EMAC_PTP_EN			= (1U << 15),
+	ApmuEmacBusena		= (1U << 0),
+	ApmuEmacBusrstrelease	= (1U << 1),
+	ApmuEmacAximstid	= (1U << 13),
+	ApmuEmacPtpena		= (1U << 15),
 
-	APMU_EMAC_RGMII_DLINE			= 0x03e8,
-	APMU_EMAC_RGMII_DLINE_RX_EN		= (1U << 0),
-	APMU_EMAC_RGMII_DLINE_RX_STEP_15P6	= (0U << 4),
-	APMU_EMAC_RGMII_DLINE_RX_DELAY_SHIFT	= 8,
-	APMU_EMAC_RGMII_DLINE_TX_EN		= (1U << 16),
-	APMU_EMAC_RGMII_DLINE_TX_STEP_15P6	= (0U << 20),
-	APMU_EMAC_RGMII_DLINE_TX_DELAY_SHIFT	= 24,
+	ApmuEmacRgmiidline		= 0x03e8,
+	ApmuEmacRgmiidlineRxena		= (1U << 0),
+	ApmuEmacRgmiidlineRxstep15P6	= (0U << 4),
+	ApmuEmacRgmiidlineRxshift	= 8,
+	ApmuEmacRgmiidlineTxena		= (1U << 16),
+	ApmuEmacRgmiidlineTxstep15P6	= (0U << 20),
+	ApmuEmacRgmiidlineTxshift	= 24,
 };
 
 /* RX descriptors */
 enum {
-	RX_DESC0_FRAME_PACKET_LENGTH_MASK	= (0x3fff << 0),
-	RX_DESC0_FRAME_RUNT			= (1U << 15),
-	RX_DESC0_FRAME_CRC_ERR			= (1U << 20),
-	RX_DESC0_FRAME_MAX_LEN_ERR		= (1U << 21),
-	RX_DESC0_FRAME_JABBER_ERR		= (1U << 22),
-	RX_DESC0_FRAME_LENGTH_ERR		= (1U << 23),
-	RX_DESC0_OWN				= (1U << 31),
-	RX_DESC1_SIZE1_MASK			= (0xfffff << 0),
-	RX_DESC1_END_RING			= (1U << 26),
+	RxDesc0Lenmask		= (0x3fff << 0),
+	RxDesc0Runt		= (1U << 15),
+	RxDesc0Crcerr		= (1U << 20),
+	RxDesc0Maxlenerr	= (1U << 21),
+	RxDesc0Jabbererr	= (1U << 22),
+	RxDesc0Lenerr		= (1U << 23),
+	RxDesc0Own		= (1U << 31),
+	RxDesc1Sizemask		= (0xfffff << 0),
+	RxDesc1Endring		= (1U << 26),
 };
 
 /* TX descriptors */
 enum {
-	TX_DESC0_OWN				= (1U << 31),
-	TX_DESC1_SIZE1_MASK			= (0xfff << 0),
-	TX_DESC1_END_RING			= (1U << 26),
-	TX_DESC1_FIRST_SEGMENT			= (1U << 29),
-	TX_DESC1_LAST_SEGMENT			= (1U << 30),
-	TX_DESC1_INTERRUPT_ON_COMPLETION	= (1U << 31),
+	TxDesc0Own		= (1U << 31),
+	TxDesc1Sizemask		= (0xfff << 0),
+	TxDesc1Endring		= (1U << 26),
+	TxDesc1First		= (1U << 29),
+	TxDesc1Last		= (1U << 30),
+	TxDesc1Irqoncomplete	= (1U << 31),
 };
 
-/* Standard MII registers */
+/*
+ * Standard MII registers/bits come from ethermii.h (Bmcr, Bmsr, Anlpar,
+ * Mscr/Mssr — the IEEE 802.3 Master-Slave Control/Status registers used
+ * for 1000BASE-T — etc).  Only board-specific constants stay local.
+ */
 enum {
-	MII_BMCR	= 0,
-	MII_BMSR	= 1,
-	MII_PHYSID1	= 2,
-	MII_PHYSID2	= 3,
-	MII_ANLPAR	= 5,
-	MII_GBCR	= 9,	/* 1000BASE-T control (advertisement) */
-	MII_GBSR	= 10,
-
-	BMCR_ANENABLE	= (1U << 12),
-	BMCR_ANRESTART	= (1U << 9),
-
-	GBCR_ADV1000FULL	= (1U << 9),
-	GBCR_ADV1000HALF	= (1U << 8),
-
-	BMSR_ANEGCOMPLETE	= (1U << 5),
-	BMSR_LSTATUS		= (1U << 2),
-
-	LPA_100FULL	= (1U << 8),
-	LPA_100HALF	= (1U << 7),
-	LPA_10FULL	= (1U << 6),
-	LPA_10HALF	= (1U << 5),
-
-	GBSR_LP1000FULL	= (1U << 11),
-	GBSR_LP1000HALF	= (1U << 10),
-
-	PHY_ADDR	= 1,
+	Phyaddr		= 1,
 	Linkdelay	= 500,
 };
 
@@ -256,7 +235,7 @@ enum {
 };
 
 
-#define SMTE_CBSZ 64	/* X60/C908 D-cache line size */
+#define SmteCbsz 64	/* X60/C908 D-cache line size */
 
 /*
  * K1 DMA is non-coherent (dma-noncoherent in the vendor DT).
@@ -272,9 +251,9 @@ smtecacheflush(void *va, int len)
 {
 	uintptr a, last;
 
-	a    = (uintptr)va & ~(uintptr)(SMTE_CBSZ - 1);
-	last = ((uintptr)va + len + SMTE_CBSZ - 1) & ~(uintptr)(SMTE_CBSZ - 1);
-	for(; a < last; a += SMTE_CBSZ)
+	a    = (uintptr)va & ~(uintptr)(SmteCbsz - 1);
+	last = ((uintptr)va + len + SmteCbsz - 1) & ~(uintptr)(SmteCbsz - 1);
+	for(; a < last; a += SmteCbsz)
 		cboflush((void*)a);
 	coherence();
 }
@@ -284,9 +263,9 @@ smtecacheinval(void *va, int len)
 {
 	uintptr a, last;
 
-	a    = (uintptr)va & ~(uintptr)(SMTE_CBSZ - 1);
-	last = ((uintptr)va + len + SMTE_CBSZ - 1) & ~(uintptr)(SMTE_CBSZ - 1);
-	for(; a < last; a += SMTE_CBSZ)
+	a    = (uintptr)va & ~(uintptr)(SmteCbsz - 1);
+	last = ((uintptr)va + len + SmteCbsz - 1) & ~(uintptr)(SmteCbsz - 1);
+	for(; a < last; a += SmteCbsz)
 		cboinval((void*)a);
 	coherence();
 }
@@ -304,7 +283,7 @@ struct Ctlr {
 	int	rstpin;		/* PHY reset GPIO; -1 if unknown */
 	int	txcons;		/* oldest unreclaimed TX slot */
 	int	attach;
-	int	dmarunning;	/* DMA started at link-up; gates POLL_DEMAND writes */
+	int	dmarunning;	/* DMA started at link-up; gates poll-demand writes */
 	Lock	txlock;
 	/* debug / bring-up stats */
 	u32int	irqseen;
@@ -332,7 +311,7 @@ gmacpins(uvlong base)
 	u32int v;
 	int i, n, fixed;
 
-	if(base == EMAC0_PHYS){
+	if(base == Emac0Phys){
 		pins = pins0;
 		n = nelem(pins0);
 	}else{
@@ -405,26 +384,26 @@ csr32w(ulong *base, uintptr off, u32int v)
 static void
 mdwrite(Ctlr *c, int reg, u16int v)
 {
-	csr32w(c->regs, MAC_MDIO_DATA, v);
-	csr32w(c->regs, MAC_MDIO_CTRL,
-		MAC_MDIO_CTRL_START_MDIO_TRANS
-		| (reg & 0x1f) << MAC_MDIO_CTRL_REGISTER_ADDRESS_SHIFT
-		| (PHY_ADDR & 0x1f) << MAC_MDIO_CTRL_PHY_ADDRESS_SHIFT);
-	while(csr32r(c->regs, MAC_MDIO_CTRL) & MAC_MDIO_CTRL_START_MDIO_TRANS)
+	csr32w(c->regs, MacMdiodata, v);
+	csr32w(c->regs, MacMdioctrl,
+		MacMdioctrlStart
+		| (reg & 0x1f) << MacMdioctrlRegshift
+		| (Phyaddr & 0x1f) << MacMdioctrlPhyshift);
+	while(csr32r(c->regs, MacMdioctrl) & MacMdioctrlStart)
 		tsleep(&up->sleep, return0, nil, 1);
 }
 
 static u16int
 mdread(Ctlr *c, int reg)
 {
-	csr32w(c->regs, MAC_MDIO_DATA, 0);
-	csr32w(c->regs, MAC_MDIO_CTRL,
-		MAC_MDIO_CTRL_START_MDIO_TRANS | MAC_MDIO_CTRL_MDIO_READ_WRITE
-		| (reg & 0x1f) << MAC_MDIO_CTRL_REGISTER_ADDRESS_SHIFT
-		| (PHY_ADDR & 0x1f) << MAC_MDIO_CTRL_PHY_ADDRESS_SHIFT);
-	while(csr32r(c->regs, MAC_MDIO_CTRL) & MAC_MDIO_CTRL_START_MDIO_TRANS)
+	csr32w(c->regs, MacMdiodata, 0);
+	csr32w(c->regs, MacMdioctrl,
+		MacMdioctrlStart | MacMdioctrlRw
+		| (reg & 0x1f) << MacMdioctrlRegshift
+		| (Phyaddr & 0x1f) << MacMdioctrlPhyshift);
+	while(csr32r(c->regs, MacMdioctrl) & MacMdioctrlStart)
 		tsleep(&up->sleep, return0, nil, 1);
-	return csr32r(c->regs, MAC_MDIO_DATA) & 0xffff;
+	return csr32r(c->regs, MacMdiodata) & 0xffff;
 }
 
 /* PHY kproc ------------------------------------------------------------------ */
@@ -446,8 +425,8 @@ txreset(Ctlr *c)
 	u32int v;
 	int i;
 
-	v = csr32r(c->regs, DMA_CTRL);
-	csr32w(c->regs, DMA_CTRL, v & ~DMA_CTRL_START_STOP_TX_DMA);
+	v = csr32r(c->regs, DmaCtrl);
+	csr32w(c->regs, DmaCtrl, v & ~DmaCtrlTxstart);
 	ilock(&c->txlock);
 	for(i = 0; i < TXRING; i++){
 		if(c->txs[i] != nil){
@@ -463,7 +442,7 @@ txreset(Ctlr *c)
 	c->txcons = 0;
 	smtecacheflush(c->txr, 4 * TXRING * sizeof(u32int));
 	iunlock(&c->txlock);
-	csr32w(c->regs, DMA_TRANSMIT_BASE_ADDRESS, PADDR(c->txr));
+	csr32w(c->regs, DmaTxbase, PADDR(c->txr));
 }
 
 static void
@@ -479,10 +458,10 @@ ethproc(void *ved)
 	edev = ved;
 	c    = edev->ctlr;
 
-	id1 = mdread(c, MII_PHYSID1);
-	id2 = mdread(c, MII_PHYSID2);
+	id1 = mdread(c, Phyidr1);
+	id2 = mdread(c, Phyidr2);
 	dprint("smte: PHY addr=%d oui=0x%06ux model=0x%02ux rev=0x%01ux\n",
-		PHY_ADDR,
+		Phyaddr,
 		((u32int)id1 << 6) | (id2 >> 10),
 		(id2 >> 4) & 0x3f,
 		id2 & 0xf);
@@ -494,82 +473,82 @@ ethproc(void *ved)
 	 * default, which on this board does not include gigabit, so the link
 	 * settles at 100BASE-TX and every transfer is capped near 100Mbps.
 	 */
-	mdwrite(c, MII_GBCR, GBCR_ADV1000FULL | GBCR_ADV1000HALF);
-	mdwrite(c, MII_BMCR, BMCR_ANENABLE | BMCR_ANRESTART);
+	mdwrite(c, Mscr, Mscr1000TFD | Mscr1000THD);
+	mdwrite(c, Bmcr, BmcrAne | BmcrRan);
 
 	for(;;){
-		bmsr = mdread(c, MII_BMSR);
-		if((bmsr & BMSR_LSTATUS) == 0){
+		bmsr = mdread(c, Bmsr);
+		if((bmsr & BmsrLs) == 0){
 			print("smte: %s link down (BMSR=0x%04ux)\n", edev->name, bmsr);
 			ethersetlink(edev, 0);
-			csr32w(c->regs, MAC_TRANSMIT_CTRL, 0);
-			csr32w(c->regs, MAC_RECEIVE_CTRL, 0);
+			csr32w(c->regs, MacTxctrl, 0);
+			csr32w(c->regs, MacRxctrl, 0);
 			txreset(c);
 			dprint("smte: MAC TX/RX disabled, waiting for link\n");
-			while((mdread(c, MII_BMSR) & BMSR_LSTATUS) == 0)
+			while((mdread(c, Bmsr) & BmsrLs) == 0)
 				tsleep(&up->sleep, return0, nil, Linkdelay);
 			dprint("smte: physical link detected\n");
 		}
 
-		dprint("smte: waiting for autoneg (BMSR=0x%04ux)\n", mdread(c, MII_BMSR));
-		while((mdread(c, MII_BMSR) & BMSR_ANEGCOMPLETE) == 0)
+		dprint("smte: waiting for autoneg (BMSR=0x%04ux)\n", mdread(c, Bmsr));
+		while((mdread(c, Bmsr) & BmsrAnc) == 0)
 			tsleep(&up->sleep, return0, nil, Linkdelay);
 
-		lpa  = mdread(c, MII_ANLPAR);
-		gbsr = mdread(c, MII_GBSR);
+		lpa  = mdread(c, Anlpar);
+		gbsr = mdread(c, Mssr);
 		dprint("smte: autoneg complete ANLPAR=0x%04ux GBSR=0x%04ux\n", lpa, gbsr);
 
-		ctrl = csr32r(c->regs, MAC_GLOBAL_CTRL)
-			& ~(MAC_GLOBAL_CTRL_SPEED_MASK | MAC_GLOBAL_CTRL_DUPLEX_MODE);
+		ctrl = csr32r(c->regs, MacGlobalctrl)
+			& ~(MacGlobalctrlSpeedmask | MacGlobalctrlDuplex);
 		dup  = "HD";
 
-		if(gbsr & GBSR_LP1000FULL){
-			ctrl |= MAC_GLOBAL_CTRL_SPEED_1000 | MAC_GLOBAL_CTRL_DUPLEX_MODE;
+		if(gbsr & Mssr1000TFD){
+			ctrl |= MacGlobalctrlSpeed1000 | MacGlobalctrlDuplex;
 			speed = 1000; dup = "FD";
-		} else if(gbsr & GBSR_LP1000HALF){
-			ctrl |= MAC_GLOBAL_CTRL_SPEED_1000;
+		} else if(gbsr & Mssr1000THD){
+			ctrl |= MacGlobalctrlSpeed1000;
 			speed = 1000;
-		} else if(lpa & LPA_100FULL){
-			ctrl |= MAC_GLOBAL_CTRL_SPEED_100 | MAC_GLOBAL_CTRL_DUPLEX_MODE;
+		} else if(lpa & AnaTXFD){
+			ctrl |= MacGlobalctrlSpeed100 | MacGlobalctrlDuplex;
 			speed = 100; dup = "FD";
-		} else if(lpa & LPA_100HALF){
-			ctrl |= MAC_GLOBAL_CTRL_SPEED_100;
+		} else if(lpa & AnaTXHD){
+			ctrl |= MacGlobalctrlSpeed100;
 			speed = 100;
-		} else if(lpa & LPA_10FULL){
-			ctrl |= MAC_GLOBAL_CTRL_SPEED_10 | MAC_GLOBAL_CTRL_DUPLEX_MODE;
+		} else if(lpa & Ana10FD){
+			ctrl |= MacGlobalctrlSpeed10 | MacGlobalctrlDuplex;
 			speed = 10; dup = "FD";
 		} else {
-			ctrl |= MAC_GLOBAL_CTRL_SPEED_10;
+			ctrl |= MacGlobalctrlSpeed10;
 			speed = 10;
 		}
 
-		csr32w(c->regs, MAC_GLOBAL_CTRL, ctrl);
-		csr32w(c->regs, MAC_TRANSMIT_CTRL,
-			MAC_TRANSMIT_CTRL_TX_ENABLE | MAC_TRANSMIT_CTRL_TX_AUTO_RETRY);
-		csr32w(c->regs, MAC_RECEIVE_CTRL,
-			MAC_RECEIVE_CTRL_RX_ENABLE | MAC_RECEIVE_CTRL_STORE_FORWARD);
+		csr32w(c->regs, MacGlobalctrl, ctrl);
+		csr32w(c->regs, MacTxctrl,
+			MacTxctrlEna | MacTxctrlAutoretry);
+		csr32w(c->regs, MacRxctrl,
+			MacRxctrlEna | MacRxctrlStoreforward);
 
 		/*
 		 * Link is up.  Start TX/RX DMA now, after MAC TX/RX are armed
 		 * so only frames the MAC has just accepted flow into our
 		 * descriptors — no kexec-leftover FIFO residue.  Then drain
-		 * once for safety, W1C status, and finally arm DMA_INTR_ENABLE
+		 * once for safety, W1C status, and finally arm DmaIntrena
 		 * for IRQ-driven completion.  This order matches Linux's
 		 * emac_configure_{tx,rx}.
 		 */
-		csr32w(c->regs, DMA_CTRL,
-			DMA_CTRL_START_STOP_TX_DMA | DMA_CTRL_START_STOP_RX_DMA);
-		c->dmarunning = 1;	/* POLL_DEMAND writes are now safe */
+		csr32w(c->regs, DmaCtrl,
+			DmaCtrlTxstart | DmaCtrlRxstart);
+		c->dmarunning = 1;	/* poll-demand writes are now safe */
 		ethrx(edev);
 		ethtx(edev);
-		csr32w(c->regs, DMA_STATUS_IRQ, ~0U);
+		csr32w(c->regs, DmaStatusIrq, ~0U);
 		/*
-		 * RX_TRANSFER_DONE deliberately omitted: enabling it after a
+		 * DmaIntrenaRxdone deliberately omitted: enabling it after a
 		 * Linux kexec breaks DHCP/RX (the chip seems to refuse further RX
 		 * until bit 4 is acked, and W1C of bit 4 doesn't reliably clear on
 		 * this silicon); RX completion is served by the 1ms etherclock poll.
 		 *
-		 * TX_TRANSFER_DONE stays enabled, but ethtx only sets the per-
+		 * DmaIntrenaTxdone stays enabled, but ethtx only sets the per-
 		 * descriptor IRQ-on-completion bit every Txirqevery frames.  A
 		 * per-frame TX IRQ (the default) outpaces ethirq's drain once
 		 * secondaries generate TX concurrently, pinning plic.c's bounded
@@ -578,27 +557,27 @@ ethproc(void *ved)
 		 * enough to avoid TX stalls while cutting the IRQ rate ~Txirqevery-
 		 * fold; the 1ms poll still mops up the tail when TX goes idle.
 		 */
-		csr32w(c->regs, DMA_INTR_ENABLE,
-			DMA_INTR_ENABLE_TX_TRANSFER_DONE
-			| DMA_INTR_ENABLE_TX_DMA_STOPPED
-			| DMA_INTR_ENABLE_RX_DES_UNAVAILABLE
-			| DMA_INTR_ENABLE_RX_DMA_STOPPED
-			| DMA_INTR_ENABLE_RX_MISSED_FRAME);
+		csr32w(c->regs, DmaIntrena,
+			DmaIntrenaTxdone
+			| DmaIntrenaTxstop
+			| DmaIntrenaRxdu
+			| DmaIntrenaRxstop
+			| DmaIntrenaRxmiss);
 		/* readback drains the posted write */
-		ctrl = csr32r(c->regs, DMA_INTR_ENABLE);
-		dprint("smte: %s irq-driven DMA_INTR_ENABLE=%#ux DMA_STATUS=%#ux\n",
-			edev->name, ctrl, csr32r(c->regs, DMA_STATUS_IRQ));
+		ctrl = csr32r(c->regs, DmaIntrena);
+		dprint("smte: %s irq-driven DmaIntrena=%#ux DmaStatusIrq=%#ux\n",
+			edev->name, ctrl, csr32r(c->regs, DmaStatusIrq));
 
 		print("smte: %s link up %dMbps %s\n", edev->name, speed, dup);
-		dprint("smte:   MAC_GLOBAL_CTRL=0x%08ux\n", ctrl);
-		dprint("smte:   MAC_TX_CTRL=0x%08ux MAC_RX_CTRL=0x%08ux\n",
-			csr32r(c->regs, MAC_TRANSMIT_CTRL),
-			csr32r(c->regs, MAC_RECEIVE_CTRL));
+		dprint("smte:   MacGlobalctrl=0x%08ux\n", ctrl);
+		dprint("smte:   MacTxctrl=0x%08ux MacRxctrl=0x%08ux\n",
+			csr32r(c->regs, MacTxctrl),
+			csr32r(c->regs, MacRxctrl));
 
 		ethersetspeed(edev, speed);
 		ethersetlink(edev, 1);
 
-		while((mdread(c, MII_BMSR) & BMSR_LSTATUS) != 0)
+		while((mdread(c, Bmsr) & BmsrLs) != 0)
 			tsleep(&up->sleep, return0, nil, Linkdelay);
 	}
 }
@@ -617,7 +596,7 @@ replenish(Ctlr *c)
 	 * is rxs[]-based rather than the classic prod/cons gap because the
 	 * gap creates a structural lockstep once the chip catches up to it:
 	 * the chip suspends on the OWN=host gap, the loop refuses to refill
-	 * it, and POLL_DEMAND just bounces off.  With all RXRING slots
+	 * it, and the poll-demand write just bounces off.  With all RXRING slots
 	 * usable, replenish can always close the loop. */
 	while(c->rxs[c->rxprodi] == nil){
 		i  = c->rxprodi;
@@ -633,28 +612,28 @@ replenish(Ctlr *c)
 		pa = PADDR(bp->rp);		/* physical address for DMA */
 		/* don't pre-clear r[0]: leaving it OWN=0 in the dirty cache
 		 * line races chip-side reads — see ethrx skip handling */
-		r[1] = Rbsz & RX_DESC1_SIZE1_MASK;
+		r[1] = Rbsz & RxDesc1Sizemask;
 		if(i == RXRING - 1)
-			r[1] |= RX_DESC1_END_RING;
+			r[1] |= RxDesc1Endring;
 		r[2] = (u32int)pa;
 		r[3] = 0;
 		coherence();
-		r[0] = RX_DESC0_OWN;
+		r[0] = RxDesc0Own;
 		/* push descriptor, drop any stale buffer cache so HW writes win */
 		smtecacheflush(r, 16);
 		smtecacheinval(bp->rp, Rbsz);
 		c->rxprodi = (c->rxprodi + 1) & (RXRING - 1);
 	}
 	/*
-	 * POLL_DEMAND is only meaningful while DMA RX is in Running or
+	 * DmaRxpolldemand is only meaningful while DMA RX is in Running or
 	 * Suspended state.  Writing it while DMA is Stopped (the initial
-	 * fill from ethinit before link-up) latches DMA_STATUS_IRQ bit 4
-	 * (RECEIVE_TRANSFER_DONE_IRQ) — and that bit then refuses to W1C,
+	 * fill from ethinit before link-up) latches DmaStatusIrqRxdone
+	 * (bit 4) — and that bit then refuses to W1C,
 	 * driving the chip's IRQ line high and storming the PLIC once we
 	 * enable the source.
 	 */
 	if(c->dmarunning)
-		csr32w(c->regs, DMA_RECEIVE_POLL_DEMAND, 0xFF);
+		csr32w(c->regs, DmaRxpolldemand, 0xFF);
 	return 0;
 }
 
@@ -673,7 +652,7 @@ ethrx(Ether *edev)
 	for(;;){
 		r = &c->rxr[4 * c->rxconsi];
 		smtecacheinval(r, 16);		/* discard stale cache before reading HW status */
-		if(r[0] & RX_DESC0_OWN){
+		if(r[0] & RxDesc0Own){
 			/*
 			 * The K1 RX engine occasionally lands frames in later
 			 * descriptors while leaving an earlier slot's OWN bit
@@ -687,7 +666,7 @@ ethrx(Ether *edev)
 			for(k = 1; k < 64; k++){
 				rn = &c->rxr[4 * ((c->rxconsi + k) & (RXRING - 1))];
 				smtecacheinval(rn, 16);
-				if((rn[0] & RX_DESC0_OWN) == 0){
+				if((rn[0] & RxDesc0Own) == 0){
 					found = k;
 					break;
 				}
@@ -707,15 +686,15 @@ ethrx(Ether *edev)
 			continue;
 		}
 		s   = r[0];
-		len = s & RX_DESC0_FRAME_PACKET_LENGTH_MASK;
+		len = s & RxDesc0Lenmask;
 		bp  = c->rxs[c->rxconsi];
 		c->rxs[c->rxconsi] = nil;
 		if(bp != nil && len > 0)
 			smtecacheinval(bp->rp, len);
 
-		if(len < 4 || s & (RX_DESC0_FRAME_RUNT   | RX_DESC0_FRAME_CRC_ERR |
-		                    RX_DESC0_FRAME_MAX_LEN_ERR | RX_DESC0_FRAME_JABBER_ERR |
-		                    RX_DESC0_FRAME_LENGTH_ERR)){
+		if(len < 4 || s & (RxDesc0Runt   | RxDesc0Crcerr |
+		                    RxDesc0Maxlenerr | RxDesc0Jabbererr |
+		                    RxDesc0Lenerr)){
 			dprint("smte: RX error slot=%d desc0=0x%08ux len=%d\n",
 				c->rxconsi, s, len);
 			freeb(bp);
@@ -778,13 +757,13 @@ ethifstat(void *arg, char *p, char *e)
 	p = seprint(p, e, "rx: prod %d cons %d bufs %d frames %ud\n",
 		c->rxprodi, c->rxconsi, nrx, c->rxframes);
 	p = seprint(p, e, "irq bits seen %#ux dma ctl %#ux status %#ux intren %#ux\n",
-		c->irqseen, csr32r(c->regs, DMA_CTRL),
-		csr32r(c->regs, DMA_STATUS_IRQ),
-		csr32r(c->regs, DMA_INTR_ENABLE));
+		c->irqseen, csr32r(c->regs, DmaCtrl),
+		csr32r(c->regs, DmaStatusIrq),
+		csr32r(c->regs, DmaIntrena));
 	p = seprint(p, e, "mac global %#ux tx %#ux rx %#ux\n",
-		csr32r(c->regs, MAC_GLOBAL_CTRL),
-		csr32r(c->regs, MAC_TRANSMIT_CTRL),
-		csr32r(c->regs, MAC_RECEIVE_CTRL));
+		csr32r(c->regs, MacGlobalctrl),
+		csr32r(c->regs, MacTxctrl),
+		csr32r(c->regs, MacRxctrl));
 	p = seprint(p, e, "rgmii delay rx %ud tx %ud steps, phy reset pin %d\n",
 		c->rxdelay, c->txdelay, c->rstpin);
 	return p;
@@ -809,7 +788,7 @@ ethtx(Ether *edev)
 	while(c->txs[c->txcons] != nil){
 		r = &c->txr[4 * c->txcons];
 		smtecacheinval(r, 16);
-		if(r[0] & TX_DESC0_OWN)
+		if(r[0] & TxDesc0Own)
 			break;
 		freeb(c->txs[c->txcons]);
 		c->txs[c->txcons] = nil;
@@ -819,7 +798,7 @@ ethtx(Ether *edev)
 	for(;;){
 		r = &c->txr[4 * c->txi];
 		smtecacheinval(r, 16);		/* discard stale cache before reading HW status */
-		if(r[0] & TX_DESC0_OWN){
+		if(r[0] & TxDesc0Own){
 			dprint("smte: TX ring full (txi=%d)\n", c->txi);
 			break;
 		}
@@ -834,20 +813,20 @@ ethtx(Ether *edev)
 		pa  = PADDR(bp->rp);		/* physical address for DMA */
 		/* push frame payload to DRAM before HW reads it */
 		smtecacheflush(bp->rp, BLEN(bp));
-		r[1] = (BLEN(bp) & TX_DESC1_SIZE1_MASK)
-			| TX_DESC1_FIRST_SEGMENT | TX_DESC1_LAST_SEGMENT;
+		r[1] = (BLEN(bp) & TxDesc1Sizemask)
+			| TxDesc1First | TxDesc1Last;
 		/* coalesce: only every Nth frame raises a completion IRQ */
 		if((c->txi & (Txirqevery - 1)) == 0)
-			r[1] |= TX_DESC1_INTERRUPT_ON_COMPLETION;
+			r[1] |= TxDesc1Irqoncomplete;
 		if(c->txi == TXRING - 1)
-			r[1] |= TX_DESC1_END_RING;
+			r[1] |= TxDesc1Endring;
 		r[2] = (u32int)pa;
 		r[3] = 0;
 		coherence();
-		r[0] = TX_DESC0_OWN;
+		r[0] = TxDesc0Own;
 		smtecacheflush(r, 16);		/* push descriptor to DRAM for HW */
 		if(c->dmarunning)
-			csr32w(c->regs, DMA_TRANSMIT_POLL_DEMAND, 0xFF);
+			csr32w(c->regs, DmaTxpolldemand, 0xFF);
 		c->txi = (c->txi + 1) & (TXRING - 1);
 	}
 	iunlock(&c->txlock);
@@ -857,15 +836,15 @@ ethtx(Ether *edev)
 
 /*
  * Mask-then-clear interrupt handling.  The chip's IRQ output is the
- * level of (DMA_STATUS_IRQ & DMA_INTR_ENABLE) — any enabled source
+ * level of (DmaStatusIrq & DmaIntrena) — any enabled source
  * that re-asserts between our W1C and our return drives the PLIC's
  * level-triggered gateway to re-forward on every completion message
  * (PLIC v1.0 spec, "Interrupt Gateways"), and plic.c's claim/complete
- * loop will keep dispatching us forever.  We zero DMA_INTR_ENABLE
+ * loop will keep dispatching us forever.  We zero DmaIntrena
  * entirely for the duration of one handler entry, drain both rings,
  * and restore.  Doing the full mask (not just the two completion
  * bits) is paranoia that costs a single MMIO write per IRQ and means
- * a stale DMA_STOPPED or MISSED_FRAME also can't pin the line high.
+ * a stale DMA-stopped or missed-frame status bit also can't pin the line high.
  */
 static void
 ethirq(Ureg *, void *arg)
@@ -877,53 +856,53 @@ ethirq(Ureg *, void *arg)
 	edev = arg;
 	c    = edev->ctlr;
 
-	en = csr32r(c->regs, DMA_INTR_ENABLE);
+	en = csr32r(c->regs, DmaIntrena);
 	if(en != 0){
-		csr32w(c->regs, DMA_INTR_ENABLE, 0);
+		csr32w(c->regs, DmaIntrena, 0);
 		/*
 		 * Read back to force the posted write to commit before we
 		 * sample status: otherwise the chip's IRQ line can still be
 		 * asserted from a stale enabled-source view when plic.c
 		 * re-claims, and the 64-trip cap mistakes us for a storm.
 		 */
-		en = csr32r(c->regs, DMA_INTR_ENABLE);
+		en = csr32r(c->regs, DmaIntrena);
 		USED(en);
 	}
 
-	fl = csr32r(c->regs, DMA_STATUS_IRQ);
-	macsts = csr32r(c->regs, MAC_STATUS_IRQ);
-	ptpsts = csr32r(c->regs, PTP_1588_IRQ_STS);
+	fl = csr32r(c->regs, DmaStatusIrq);
+	macsts = csr32r(c->regs, MacStatusirq);
+	ptpsts = csr32r(c->regs, Ptp1588Irqsts);
 	/* Belt-and-suspenders: W1C the other two too, in case one of them
 	 * is feeding the chip's IRQ line. */
 	if(macsts != 0)
-		csr32w(c->regs, MAC_STATUS_IRQ, macsts);
+		csr32w(c->regs, MacStatusirq, macsts);
 	if(ptpsts != 0)
-		csr32w(c->regs, PTP_1588_IRQ_STS, ptpsts);
+		csr32w(c->regs, Ptp1588Irqsts, ptpsts);
 	if(fl != 0){
 		/* W1C every bit we observed.  No NIS/AIS summary on this part. */
-		csr32w(c->regs, DMA_STATUS_IRQ, fl);
+		csr32w(c->regs, DmaStatusIrq, fl);
 
 		/*
 		 * Diagnostics use iprint() because ethirq runs at interrupt
 		 * level once intrenable() wires us up; print() can block on
 		 * the output queue, which is not legal here.
 		 */
-		if(fl & DMA_STATUS_IRQ_RX_DES_UNAVAILABLE)
+		if(fl & DmaStatusIrqRxdu)
 			/* chip just entered Suspended; silent kick (fires often) */
-			csr32w(c->regs, DMA_RECEIVE_POLL_DEMAND, 0xFF);
-		if(fl & DMA_STATUS_IRQ_RX_MISSED_FRAME){
+			csr32w(c->regs, DmaRxpolldemand, 0xFF);
+		if(fl & DmaStatusIrqRxmiss){
 			iprint("smte: %s RX missed frame (status=%#08ux "
 				"prod=%d cons=%d)\n",
 				edev->name, fl, c->rxprodi, c->rxconsi);
-			csr32w(c->regs, DMA_RECEIVE_POLL_DEMAND, 0xFF);
+			csr32w(c->regs, DmaRxpolldemand, 0xFF);
 		}
-		if(fl & DMA_STATUS_IRQ_RX_DMA_STOPPED){
+		if(fl & DmaStatusIrqRxstop){
 			iprint("smte: %s RX DMA stopped, restarting\n", edev->name);
-			csr32w(c->regs, DMA_RECEIVE_POLL_DEMAND, 0xFF);
+			csr32w(c->regs, DmaRxpolldemand, 0xFF);
 		}
-		if(fl & DMA_STATUS_IRQ_TX_DMA_STOPPED){
+		if(fl & DmaStatusIrqTxstop){
 			iprint("smte: %s TX DMA stopped, restarting\n", edev->name);
-			csr32w(c->regs, DMA_TRANSMIT_POLL_DEMAND, 0xFF);
+			csr32w(c->regs, DmaTxpolldemand, 0xFF);
 		}
 	}
 
@@ -938,7 +917,7 @@ ethirq(Ureg *, void *arg)
 
 	if(en != 0){
 		coherence();
-		csr32w(c->regs, DMA_INTR_ENABLE, en);
+		csr32w(c->regs, DmaIntrena, en);
 	}
 }
 
@@ -956,7 +935,7 @@ etherserve(Ether *edev)
 	c = edev->ctlr;
 
 	/* accumulate raw DMA status bits before ethirq() W1Cs them */
-	fl = csr32r(c->regs, DMA_STATUS_IRQ);
+	fl = csr32r(c->regs, DmaStatusIrq);
 	c->irqseen |= fl;
 
 	ethirq(nil, edev);
@@ -972,9 +951,9 @@ etherserve(Ether *edev)
 			edev->name, c->irqseen, c->rxconsi, c->rxprodi, c->rxframes,
 			c->txi, c->txdone,
 			c->rxr[4*c->rxconsi], lasttxi, c->txr[4*lasttxi],
-			csr32r(c->regs, MAC_RECEIVE_CTRL),
-			csr32r(c->regs, MAC_TRANSMIT_CTRL),
-			csr32r(c->regs, DMA_CTRL));
+			csr32r(c->regs, MacRxctrl),
+			csr32r(c->regs, MacTxctrl),
+			csr32r(c->regs, DmaCtrl));
 		c->irqseen = 0;
 	}
 }
@@ -1023,7 +1002,7 @@ ethinit(Ether *edev)
 	 * is still gated + reset asserted; any csr32 to c->regs then
 	 * stalls the hart.  Do APMU first so the MAC block responds.
 	 *
-	 * Gate the AXI clock AND assert bus-reset (BUS_RST_RELEASE=0 =
+	 * Gate the AXI clock AND assert bus-reset (ApmuEmacBusrstrelease=0 =
 	 * held in reset), then after a generous delay re-enable the
 	 * clock and release reset, preserving unrelated clock-config
 	 * bits firmware may have set (1588/PTP, RGMII TXC source, etc).
@@ -1032,109 +1011,109 @@ ethinit(Ether *edev)
 	 */
 	{
 		u32int origv = csr32r(c->apmu, c->apmuctrloff);
-		u32int preserve = origv & ~(APMU_EMAC_BUS_EN
-			| APMU_EMAC_BUS_RST_RELEASE | APMU_EMAC_AXI_MST_ID
-			| APMU_EMAC_PTP_EN);
+		u32int preserve = origv & ~(ApmuEmacBusena
+			| ApmuEmacBusrstrelease | ApmuEmacAximstid
+			| ApmuEmacPtpena);
 		csr32w(c->apmu, c->apmuctrloff, preserve);	/* clock off + reset asserted */
 		microdelay(10000);
 		csr32w(c->apmu, c->apmuctrloff,
-			preserve | APMU_EMAC_BUS_EN | APMU_EMAC_PTP_EN);	/* clocks on, still in reset */
+			preserve | ApmuEmacBusena | ApmuEmacPtpena);	/* clocks on, still in reset */
 		microdelay(10000);
 		csr32w(c->apmu, c->apmuctrloff,
-			preserve | APMU_EMAC_BUS_EN | APMU_EMAC_PTP_EN
-			| APMU_EMAC_BUS_RST_RELEASE | APMU_EMAC_AXI_MST_ID);
+			preserve | ApmuEmacBusena | ApmuEmacPtpena
+			| ApmuEmacBusrstrelease | ApmuEmacAximstid);
 		microdelay(10000);
-		print("smte: APMU CLK_RST[%#ux] %#ux -> %#ux\n",
+		print("smte: APMU ApmuEmacClkrstctrl[%#ux] %#ux -> %#ux\n",
 			c->apmuctrloff, origv, csr32r(c->apmu, c->apmuctrloff));
 	}
 
 	/* Now the MAC block is reachable; stop everything. */
-	csr32w(c->regs, MAC_INTR_ENABLE,   0);
-	csr32w(c->regs, DMA_INTR_ENABLE,   0);
-	csr32w(c->regs, MAC_TRANSMIT_CTRL, 0);
-	csr32w(c->regs, MAC_RECEIVE_CTRL,  0);
-	csr32w(c->regs, DMA_CTRL,          0);
+	csr32w(c->regs, MacIntrena,   0);
+	csr32w(c->regs, DmaIntrena,   0);
+	csr32w(c->regs, MacTxctrl, 0);
+	csr32w(c->regs, MacRxctrl,  0);
+	csr32w(c->regs, DmaCtrl,          0);
 	print("smte: MAC/DMA stopped\n");
 
 	phyreset(c);
 
 	/* APMU: RGMII delay lines */
-	v = APMU_EMAC_RGMII_DLINE_RX_EN   | APMU_EMAC_RGMII_DLINE_TX_EN
-	  | APMU_EMAC_RGMII_DLINE_RX_STEP_15P6 | APMU_EMAC_RGMII_DLINE_TX_STEP_15P6
-	  | c->rxdelay << APMU_EMAC_RGMII_DLINE_RX_DELAY_SHIFT
-	  | c->txdelay << APMU_EMAC_RGMII_DLINE_TX_DELAY_SHIFT;
+	v = ApmuEmacRgmiidlineRxena   | ApmuEmacRgmiidlineTxena
+	  | ApmuEmacRgmiidlineRxstep15P6 | ApmuEmacRgmiidlineTxstep15P6
+	  | c->rxdelay << ApmuEmacRgmiidlineRxshift
+	  | c->txdelay << ApmuEmacRgmiidlineTxshift;
 	csr32w(c->apmu, c->apmudlineoff, v);
 	print("smte: APMU DLINE[%#ux]=0x%08ux (rx=%d tx=%d steps x 15.6ps)\n",
 		c->apmudlineoff, v, c->rxdelay, c->txdelay);
 
 	/* MAC address */
-	csr32w(c->regs, MAC_ADDR1_HI, edev->ea[1]<<8 | edev->ea[0]);
-	csr32w(c->regs, MAC_ADDR1_ME, edev->ea[3]<<8 | edev->ea[2]);
-	csr32w(c->regs, MAC_ADDR1_LO, edev->ea[5]<<8 | edev->ea[4]);
-	csr32w(c->regs, MAC_ADDR_CTRL, MAC_ADDR_CTRL_MAC_ADDR1_ENABLE);
+	csr32w(c->regs, MacAddr1hi, edev->ea[1]<<8 | edev->ea[0]);
+	csr32w(c->regs, MacAddr1me, edev->ea[3]<<8 | edev->ea[2]);
+	csr32w(c->regs, MacAddr1lo, edev->ea[5]<<8 | edev->ea[4]);
+	csr32w(c->regs, MacAddrctrl, MacAddrctrlAddr1ena);
 	dprint("smte: MAC %02X:%02X:%02X:%02X:%02X:%02X programmed\n",
 		edev->ea[0], edev->ea[1], edev->ea[2],
 		edev->ea[3], edev->ea[4], edev->ea[5]);
 
 	/* FIFO thresholds and frame size limits */
-	csr32w(c->regs, MAC_TRANSMIT_FIFO_ALMOST_FULL,        0x1f8);
-	csr32w(c->regs, MAC_TRANSMIT_PACKET_START_THRESHOLD,  192);
-	csr32w(c->regs, MAC_RECEIVE_PACKET_START_THRESHOLD,   12);
-	csr32w(c->regs, MAC_MAXIMUM_FRAME_SIZE,               1536);
-	csr32w(c->regs, MAC_TRANSMIT_JABBER_SIZE,             1514+18);
-	csr32w(c->regs, MAC_RECEIVE_JABBER_SIZE,              1514+18);
+	csr32w(c->regs, MacTxfifoalmostfull,        0x1f8);
+	csr32w(c->regs, MacTxthresh,  192);
+	csr32w(c->regs, MacRxthresh,   12);
+	csr32w(c->regs, MacMaxframe,               1536);
+	csr32w(c->regs, MacTxjabber,             1514+18);
+	csr32w(c->regs, MacRxjabber,              1514+18);
 	dprint("smte: FIFO thresholds and frame sizes programmed\n");
 
 	/* reset DMA engine */
-	csr32w(c->regs, DMA_CONFIG, DMA_CONFIG_SOFTWARE_RESET);
+	csr32w(c->regs, DmaConfig, DmaConfigSwreset);
 	microdelay(10000);
-	csr32w(c->regs, DMA_CONFIG, 0);
+	csr32w(c->regs, DmaConfig, 0);
 	microdelay(10000);
 	/*
-	 * DMA_64BIT: enables 64-bit buffer addresses in descriptors
+	 * DmaConfig64bit: enables 64-bit buffer addresses in descriptors
 	 * (d2=bits[31:0] + d3=bits[63:32] per buffer). Required because
 	 * iallocb() returns blocks above 4 GB on this system.
-	 * The ring BASE address is still 32-bit (DMA_RECEIVE_BASE_ADDRESS),
+	 * The ring BASE address is still 32-bit (DmaRxbase),
 	 * so descriptor rings must stay below 4 GB.
 	 */
-	v = DMA_CONFIG_DMA_64BIT_MODE | DMA_CONFIG_STRICT_BURST | DMA_CONFIG_BURST_LENGTH_16;
-	csr32w(c->regs, DMA_CONFIG, v);
-	dprint("smte: DMA reset, DMA_CONFIG=%#ux\n", csr32r(c->regs, DMA_CONFIG));
+	v = DmaConfig64bit | DmaConfigStrictburst | DmaConfigBurst16;
+	csr32w(c->regs, DmaConfig, v);
+	dprint("smte: DMA reset, DmaConfig=%#ux\n", csr32r(c->regs, DmaConfig));
 
 	/* Enable flow-control decode; harmless even without pause frames. */
-	csr32w(c->regs, 0x0160 /* MAC_FC_CONTROL */, 1 /* DECODE_ENABLE */);
+	csr32w(c->regs, 0x0160 /* MacFcctrl */, 1 /* DecodeEnable */);
 
 	/*
 	 * Post-reset DMA tunables.  These registers are wiped by
-	 * DMA_CONFIG_SOFTWARE_RESET above, so they MUST be programmed
+	 * DmaConfigSwreset above, so they MUST be programmed
 	 * after the reset completes.
 	 *
 	 * RX interrupt coalescing: disabled.  We poll from etherclock()
-	 * at HZ rate; with coalescing on, RX_TRANSFER_DONE is held off
+	 * at HZ rate; with coalescing on, DmaStatusIrqRxdone is held off
 	 * until either 64 frames pile up or the timer fires.
 	 *
 	 * TX auto-poll: when the engine finds OWN=0 (no work pending)
 	 * it idles until either this counter expires or someone writes
-	 * TRANSMIT_POLL_DEMAND.  The reset value on the K1 EMAC produces
+	 * DmaTxpolldemand.  The reset value on the K1 EMAC produces
 	 * a ~40 ms idle->recheck period, which matched the ICMP echo
 	 * latency pattern we observed.  Set to the minimum so the
 	 * engine effectively spins on the descriptor.
 	 */
 	/*
-	 * Do NOT clear DMA_RECEIVE_IRQ_MITIGATION here.  The reset default
+	 * Do NOT clear DmaRxmitigation here.  The reset default
 	 * (0x00FFFF01: frame_count=1, timeout=0xFFFF, mitigation disabled)
 	 * is what we want.  Writing 0 sets frame_count to 0 which the spec
 	 * says is illegal ("Legal values: 1 - 255") — and the K1 silicon
-	 * responds by *permanently* latching DMA_STATUS_IRQ bit 4
-	 * (RECEIVE_TRANSFER_DONE_IRQ).  Once latched it will not W1C even
+	 * responds by *permanently* latching DmaStatusIrq bit 4
+	 * (DmaStatusIrqRxdone, bit 4).  Once latched it will not W1C even
 	 * with DMA running, which stalls IRQ-driven RX entirely.
 	 *
-	 * DMA_TRANSMIT_AUTO_POLL_COUNTER default is 0 already, so leave
+	 * DmaTxautopoll default is 0 already, so leave
 	 * it alone too.
 	 */
 	dprint("smte: leaving MITIGATION=%#ux AUTOPOLL=%#ux at reset defaults\n",
-		csr32r(c->regs, DMA_RECEIVE_IRQ_MITIGATION),
-		csr32r(c->regs, DMA_TRANSMIT_AUTO_POLL_COUNTER));
+		csr32r(c->regs, DmaRxmitigation),
+		csr32r(c->regs, DmaTxautopoll));
 
 	/* K1 EMAC uses 32-bit DMA addresses */
 	c->rxr = xspanalloc(sizeof(u32int) * 4 * RXRING, 16, 0);
@@ -1145,7 +1124,7 @@ ethinit(Ether *edev)
 	 * three descriptors -- clobbering OWN=host completions the chip just
 	 * wrote to them.  The completions are then lost (the ring jams full,
 	 * inflight stuck near TXRING) and the chip sees OWN=cpu, reports
-	 * TX_DES_UNAVAILABLE and suspends, so bulk TX trickles.  Put the ring
+	 * DmaStatusIrqTxdu and suspends, so bulk TX trickles.  Put the ring
 	 * in non-cacheable memory (Svpbmt NC) so there is no line to clobber;
 	 * the cbo calls on it become no-ops.
 	 */
@@ -1174,44 +1153,44 @@ ethinit(Ether *edev)
 	uintptr rxpa, txpa;
 	rxpa = PADDR(c->rxr);
 	txpa = PADDR(c->txr);
-	csr32w(c->regs, DMA_RECEIVE_BASE_ADDRESS, (u32int)rxpa);
-	csr32w(c->regs, DMA_TRANSMIT_BASE_ADDRESS, (u32int)txpa);
+	csr32w(c->regs, DmaRxbase, (u32int)rxpa);
+	csr32w(c->regs, DmaTxbase, (u32int)txpa);
 	dprint("smte: DMA base RX=0x%08ux TX=0x%08ux (readback RX=0x%08ux TX=0x%08ux)\n",
 		(u32int)rxpa, (u32int)txpa,
-		csr32r(c->regs, DMA_RECEIVE_BASE_ADDRESS),
-		csr32r(c->regs, DMA_TRANSMIT_BASE_ADDRESS));
+		csr32r(c->regs, DmaRxbase),
+		csr32r(c->regs, DmaTxbase));
 
 	/*
 	 * Clear stale interrupt state from whoever ran before us (typically
 	 * a Linux kexec source kernel that had MAC RX enabled with PTP and
 	 * traffic in flight).  The chip's IRQ output is the OR of
-	 * DMA_STATUS_IRQ, MAC_STATUS_IRQ, and PTP_1588_IRQ_STS — clear all.
+	 * DmaStatusIrq, MacStatusirq, and Ptp1588Irqsts — clear all.
 	 *
-	 * DMA_INTR_ENABLE stays at 0 across this window: even with MAC RX
+	 * DmaIntrena stays at 0 across this window: even with MAC RX
 	 * disabled, the previous stage's frames are still buffered in the
 	 * RX FIFO, and starting DMA RX (below) immediately writes them into
-	 * our descriptors and asserts RX_TRANSFER_DONE much faster than we
+	 * our descriptors and asserts DmaStatusIrqRxdone much faster than we
 	 * can drain.  We let the 100Hz etherclock polling path consume that
-	 * residue; ethproc flips DMA_INTR_ENABLE on once the link is up.
+	 * residue; ethproc flips DmaIntrena on once the link is up.
 	 */
-	csr32w(c->regs, PTP_1588_IRQ_EN, 0);
-	csr32w(c->regs, PTP_1588_IRQ_STS, ~0U);
-	csr32w(c->regs, DMA_STATUS_IRQ, ~0U);
-	csr32w(c->regs, MAC_STATUS_IRQ, ~0U);
-	csr32w(c->regs, MAC_INTR_ENABLE, 0);
-	csr32w(c->regs, DMA_INTR_ENABLE, 0);
-	dprint("smte: post-init DMA_STATUS_IRQ=%#ux PTP_STS=%#ux (polled until link up)\n",
-		csr32r(c->regs, DMA_STATUS_IRQ),
-		csr32r(c->regs, PTP_1588_IRQ_STS));
+	csr32w(c->regs, Ptp1588Irqena, 0);
+	csr32w(c->regs, Ptp1588Irqsts, ~0U);
+	csr32w(c->regs, DmaStatusIrq, ~0U);
+	csr32w(c->regs, MacStatusirq, ~0U);
+	csr32w(c->regs, MacIntrena, 0);
+	csr32w(c->regs, DmaIntrena, 0);
+	dprint("smte: post-init DmaStatusIrq=%#ux Ptp1588Irqsts=%#ux (polled until link up)\n",
+		csr32r(c->regs, DmaStatusIrq),
+		csr32r(c->regs, Ptp1588Irqsts));
 
 	/*
 	 * DMA stays stopped until ethproc sees the link come up and turns
 	 * both MAC TX/RX and the corresponding DMA channels on together.
 	 * Starting RX DMA here, with MAC RX off but kexec residue in the
 	 * RX FIFO, made DMA pull those frames into our descriptors and
-	 * latch RX_TRANSFER_DONE faster than we could W1C it.
+	 * latch DmaStatusIrqRxdone faster than we could W1C it.
 	 */
-	csr32w(c->regs, DMA_CTRL, 0);
+	csr32w(c->regs, DmaCtrl, 0);
 	dprint("smte: DMA held stopped; ethproc starts on link up\n");
 
 	return 0;
@@ -1298,21 +1277,21 @@ etherpnp(Ether *edev)
 	}
 	if(de != nil){
 		base     = de->base;
-		size     = de->size ? de->size : EMAC0_SIZE;
-		apmubase = de->apmubase ? de->apmubase : APMU_PHYS;
+		size     = de->size ? de->size : Emac0Size;
+		apmubase = de->apmubase ? de->apmubase : ApmuPhys;
 		irq      = de->irq;
-		ct->apmuctrloff  = de->ctrlregoff  ? de->ctrlregoff  : APMU_EMAC_CLK_RST_CTRL;
-		ct->apmudlineoff = de->dlineregoff ? de->dlineregoff : APMU_EMAC_RGMII_DLINE;
+		ct->apmuctrloff  = de->ctrlregoff  ? de->ctrlregoff  : ApmuEmacClkrstctrl;
+		ct->apmudlineoff = de->dlineregoff ? de->dlineregoff : ApmuEmacRgmiidline;
 		print("smte: ether%d from DTB %s base=%#llux size=%#llux apmu=%#llux+{%#ux,%#ux} irq=%d\n",
 			edev->ctlrno, de->path, base, size, apmubase,
 			ct->apmuctrloff, ct->apmudlineoff, irq);
 	} else if(edev->ctlrno == 0 && n == 0){
-		base     = EMAC0_PHYS;
-		size     = EMAC0_SIZE;
-		apmubase = APMU_PHYS;
-		irq      = EMAC0_IRQ;
-		ct->apmuctrloff  = APMU_EMAC_CLK_RST_CTRL;
-		ct->apmudlineoff = APMU_EMAC_RGMII_DLINE;
+		base     = Emac0Phys;
+		size     = Emac0Size;
+		apmubase = ApmuPhys;
+		irq      = Emac0Irq;
+		ct->apmuctrloff  = ApmuEmacClkrstctrl;
+		ct->apmudlineoff = ApmuEmacRgmiidline;
 		print("smte: no DTB, using K1 ether0 defaults\n");
 	} else {
 		dprint("smte: no DTB entry for ether%d\n", edev->ctlrno);
@@ -1321,7 +1300,7 @@ etherpnp(Ether *edev)
 
 	/* plic.c's intrinit has already masked every PLIC source. */
 	ct->regs = (ulong*)vmap(base, size);
-	ct->apmu = (ulong*)vmap(apmubase, APMU_SIZE);
+	ct->apmu = (ulong*)vmap(apmubase, ApmuSize);
 	if(ct->regs == nil || ct->apmu == nil){
 		print("smte: ERROR vmap failed regs=%p apmu=%p\n", ct->regs, ct->apmu);
 		ct->regs = nil;
@@ -1337,8 +1316,8 @@ etherpnp(Ether *edev)
 	 * counts 15.6ps steps, so steps = deg * 8000ps/360 / 15.6ps.
 	 * Without DTB values, keep the old working defaults (~70 deg).
 	 */
-	ct->rxdelay = SMTE_DEFAULT_RXDELAY;
-	ct->txdelay = SMTE_DEFAULT_TXDELAY;
+	ct->rxdelay = SmteRxdelaydef;
+	ct->txdelay = SmteTxdelaydef;
 	ct->rstpin = -1;
 	if(de != nil){
 		if(de->txphase > 0)
@@ -1377,9 +1356,9 @@ etherpnp(Ether *edev)
 				edev->ea[0], edev->ea[1], edev->ea[2],
 				edev->ea[3], edev->ea[4], edev->ea[5]);
 		} else {
-			hi = csr32r(ct->regs, MAC_ADDR1_HI);
-			me = csr32r(ct->regs, MAC_ADDR1_ME);
-			lo = csr32r(ct->regs, MAC_ADDR1_LO);
+			hi = csr32r(ct->regs, MacAddr1hi);
+			me = csr32r(ct->regs, MacAddr1me);
+			lo = csr32r(ct->regs, MacAddr1lo);
 			edev->ea[0] = hi & 0xff;  edev->ea[1] = (hi>>8) & 0xff;
 			edev->ea[2] = me & 0xff;  edev->ea[3] = (me>>8) & 0xff;
 			edev->ea[4] = lo & 0xff;  edev->ea[5] = (lo>>8) & 0xff;
