@@ -244,10 +244,14 @@ coreinit(u32int *reg)
     enum {
         GCTL             = 0xC110/4,
         /* Additional global registers */
-        GUCTL            = 0xC12C/4,    /* Global User Control Register */
+        GUCTL1           = 0xC11C/4,    /* Global User Control Register 1 */
         GUSB2PHYCFG      = 0xC200/4,    /* USB2 (UTMI/ULPI) PHY config, port 0 */
         GUSB3PIPECTL     = 0xC2C0/4,    /* USB3 PIPE control, port 0 */
         GFLADJ           = 0xC630/4,    /* Global Frame Length Adjustment */
+
+        /* GUCTL1 host quirk bits for the K1 DWC_usb3 core */
+        TX_IPGAP_LINECHECK_DIS = 1<<28,	/* disable TX inter-packet-gap line check */
+        PARKMODE_DISABLE_SS    = 1<<17,	/* disable SuperSpeed host park mode */
         PWRDNSCALE_SHIFT = 19,
 
         PWRDNSCALE_MASK  = 0x3FFF << PWRDNSCALE_SHIFT,
@@ -258,9 +262,6 @@ coreinit(u32int *reg)
         PRTCAPDIR_MASK   = 3 << PRTCAPDIR_SHIFT,
         DISSCRAMBLE      = 1<<3,
         DSBLCLKGTNG      = 1<<0,
-
-        /* Specific bits */
-        USBHSTINAUTORETRY = 1<<14,      /* Host IN Auto-Retry Enable */
 
         GFLADJ_30MHZ_MASK       = 0x3F,
         GFLADJ_30MHZ_SDBND_SEL  = 1<<7,
@@ -286,10 +287,17 @@ coreinit(u32int *reg)
     v |= Pwrdnscale_125m<<PWRDNSCALE_SHIFT | 1<<PRTCAPDIR_SHIFT;
     reg[GCTL] = v;
 
-    /* 2. Enable Automatic Retry of IN Transactions (GUCTL) */
-    /* This bit lets the host automatically retry when there are CRC
-       errors instead of waiting for software intervention. */
-    reg[GUCTL] |= USBHSTINAUTORETRY;
+    /*
+     * 2. Host-mode global user-control quirks for the K1's DWC_usb3 core.
+     * Leave GUCTL Host-IN-Auto-Retry (bit 14) clear; the K1 host
+     * configuration does not use it (when set, a NAKed bulk IN retries
+     * internally without bound).  Instead set two GUCTL1 quirks - the bits
+     * exist on this >=2.50a core - matching the K1's documented host setup:
+     * bit 28 TX_IPGAP_LINECHECK_DIS disables the transmit inter-packet-gap
+     * line-state check, and bit 17 PARKMODE_DISABLE_SS disables SuperSpeed
+     * host park mode.
+     */
+    reg[GUCTL1] |= TX_IPGAP_LINECHECK_DIS | PARKMODE_DISABLE_SS;
 
     /* 3. Frame Length Adjustment (GFLADJ) */
     /* A typical adjustment value of 0x20 is used for synchronization,
