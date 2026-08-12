@@ -408,7 +408,7 @@ reset(Hci *hp)
 }
 
 void
-usbxhcirv64link(void)
+usbxhcibpif3link(void)
 {
     addhcitype("xhci", reset);
 }

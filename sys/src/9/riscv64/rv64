@@ -27,8 +27,9 @@ dev
 
 link
 	usbxhcipci	pci usbxhci
-	usbxhcirv64	usbxhci
-	usbxhcirv64k3	usbxhci
+	usbxhcibpif3	usbxhci
+	usbxhcipicoitx	usbxhci
+	usbxhcicom260	usbxhci
 	sdspacemit
 	ethervirtio10 virtio10mem pci
 #	ethersink
@@ -53,6 +54,7 @@ misc
 	uarti8250
 	sdvirtio10	pci sdscsi
 	sdmmc		sdspacemit
+#	sdufs		sdscsi
 
 	dtracysys
 	dtracytimer
