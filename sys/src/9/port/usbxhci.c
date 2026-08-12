@@ -804,9 +804,21 @@ waittd(Wait *w, int tmout)
 {
 	Ring *r = w->ring;
 	Ctlr *c = r->ctlr;
+	u32int flush;
 
 	coherence();
 	*r->doorbell = r->id;
+	/*
+	 * the doorbell is a posted MMIO write; on this controller it can sit
+	 * in a write buffer and never reach the core - so the transfer never
+	 * starts - until some later read of the doorbell region flushes it
+	 * (which is why an unrelated endpoint's interrupt would "unstick" a
+	 * wedged transfer).  read the doorbell back to force it out now; the
+	 * flush is region-specific here, so reading another register (e.g.
+	 * USBSTS) does not suffice - it must be the doorbell.
+	 */
+	flush = *r->doorbell;
+	USED(flush);
 
 	while(waserror()){
 		if(r->stopped) {
@@ -828,7 +840,25 @@ waittd(Wait *w, int tmout)
 		tmout = 5000;
 	}
 	if(tmout > 0){
-		tsleep(&up->sleep, waitdone, w, tmout);
+		int waited;
+
+		/*
+		 * the first doorbell can race the TRB's cache writeback: if the
+		 * core sees the doorbell before the TRB reaches memory it reads a
+		 * stale (unowned) TRB and parks on it.  re-ring - each time with
+		 * the read-back flush above - until the transfer completes or we
+		 * time out; a later ring, after the writeback has landed, restarts
+		 * it.
+		 */
+		for(waited = 0; waited < tmout; waited += 20){
+			tsleep(&up->sleep, waitdone, w, 20);
+			if(waitdone(w))
+				break;
+			coherence();
+			*r->doorbell = r->id;
+			flush = *r->doorbell;
+			USED(flush);
+		}
 		if(!waitdone(w))
 			error("timed out");
 	} else {
@@ -1554,26 +1584,50 @@ static char*
 unstall(Ep *ep, Ring *r)
 {
 	char *err;
+	int state;
 
-	switch(r->ctx[0]&7){
-	case 2:	/* halted */
-	case 4:	/* error */
-		ep->clrhalt = 1;
-	}
-	if(ep->clrhalt){
+	/*
+	 * the controller writes the endpoint state into the output
+	 * device context by DMA.  on a machine without coherent DMA
+	 * our cached copy is stale, so invalidate it before trusting
+	 * the state field; otherwise we ring the doorbell on an
+	 * endpoint the controller has already parked and get a
+	 * context-state error.
+	 */
+	dmaflush(0, r->ctx, 8*4 << r->ctlr->csz);
+	state = r->ctx[0]&7;
+
+	/*
+	 * reset-endpoint is only legal on a halted endpoint; issuing it
+	 * on a stopped one earns a context-state error.  drive the reset
+	 * off the actual endpoint state, not off clrhalt (which nusb sets
+	 * blindly after any failed transfer).  either way we then re-arm
+	 * the transfer ring with set-tr-dequeue below.
+	 */
+	if(state == 2 || state == 4){		/* halted or error */
 		ep->clrhalt = 0;
 		err = ctlrcmd(r->ctlr, CR_RESETEP | (r->id<<16) | (r->slot->id<<24), 0, 0, nil);
 		dmaflush(0, r->ctx, 8*4 << r->ctlr->csz);
 		if(err != nil)
 			return err;
 		r->stopped = 1;
+	} else if(state == 3){			/* stopped */
+		ep->clrhalt = 0;
+		r->stopped = 1;
 	}
 	if(r->stopped){
-		err = ctlrcmd(r->ctlr, CR_SETTRDQP | (r->id<<16) | (r->slot->id<<24), 0, resetring(r), nil);
+		u32int er[4];
+
+		err = ctlrcmd(r->ctlr, CR_SETTRDQP | (r->id<<16) | (r->slot->id<<24), 0, resetring(r), er);
 		dmaflush(0, r->ctx, 8*4 << r->ctlr->csz);
-		if(err != nil)
-			return err;
 		r->stopped = 0;
+		/*
+		 * a context-state error (cc 19) means the endpoint was still
+		 * running - our short-packet stop had not settled, or it never
+		 * stopped.  that is harmless: just ring the doorbell normally.
+		 */
+		if(err != nil && (er[2]>>24) != 19)
+			return err;
 	}
 	if(r->wp - r->rp >= r->mask)
 		return "Ring Full";
@@ -1587,6 +1641,7 @@ epread(Ep *ep, void *va, long n)
 	Ctlr *ctlr;
 	uchar *p;
 	char *err;
+	int tries;
 	Wait w[1];
 
 	if(ep->dev->depth < 0)
@@ -1643,15 +1698,24 @@ epread(Ep *ep, void *va, long n)
 		nexterror();
 	}
 
-	if((err = unstall(ep, io->ring)) != nil)
-		error(err);
+	for(tries = 0;; tries++){
+		if((err = unstall(ep, io->ring)) != nil)
+			error(err);
 
-	dmaflush(1, p, n);
-	queuetd(io->ring, TR_NORMAL | TR_IOC, n, (*ctlr->dmaaddr)(p), w);
-	err = waittd(w, ep->tmout);
-	dmaflush(0, p, n);
-	if(err != nil)
-		error(err);
+		dmaflush(1, p, n);
+		queuetd(io->ring, TR_NORMAL | TR_IOC, n, (*ctlr->dmaaddr)(p), w);
+		err = waittd(w, ep->tmout);
+		dmaflush(0, p, n);
+		if(err == nil)
+			break;
+		/*
+		 * safety net: a context-state error (cc 19) or a timed-out,
+		 * aborted transfer (stopped, cc 26).  by the retry the
+		 * endpoint has settled and unstall() re-arms it.
+		 */
+		if(tries >= 4 || ((w->er[2]>>24) != 19 && (w->er[2]>>24) != 26))
+			error(err);
+	}
 
 	qunlock(io);
 	poperror();
@@ -1671,6 +1735,7 @@ epwrite(Ep *ep, void *va, long n)
 	Epio *io;
 	uchar *p;
 	char *err;
+	int tries;
 
 	if(ep->dev->depth < 0)
 		error(Egreg);
@@ -1773,13 +1838,19 @@ epwrite(Ep *ep, void *va, long n)
 		nexterror();
 	}
 
-	if((err = unstall(ep, io->ring)) != nil)
-		error(err);
+	for(tries = 0;; tries++){
+		if((err = unstall(ep, io->ring)) != nil)
+			error(err);
 
-	dmaflush(1, p, n);
-	queuetd(io->ring, TR_NORMAL | TR_IOC, n, (*ctlr->dmaaddr)(p), w);
-	if((err = waittd(w, ep->tmout)) != nil)
-		error(err);
+		dmaflush(1, p, n);
+		queuetd(io->ring, TR_NORMAL | TR_IOC, n, (*ctlr->dmaaddr)(p), w);
+		err = waittd(w, ep->tmout);
+		if(err == nil)
+			break;
+		/* see the matching retry in epread() */
+		if(tries >= 4 || ((w->er[2]>>24) != 19 && (w->er[2]>>24) != 26))
+			error(err);
+	}
 
 	qunlock(io);
 	poperror();
