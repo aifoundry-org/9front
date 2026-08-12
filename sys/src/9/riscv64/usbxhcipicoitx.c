@@ -4,7 +4,7 @@
  * Based on:
  *   9front usbxhciimx.c  - general driver structure on imx8 arch
  *   9front usbxhcilx2k.c - general driver structure on lx2k arch
- *   usbxhcirv64.c         - original SpacemiT K1 port (this file's ancestor)
+ *   usbxhcibpif3.c         - original SpacemiT K1 port (this file's ancestor)
  *
  * Add USB2.0 support" (applied to k3.dtsi):
  *   usb2_host (dwc3):  reg 0xC0A00000, len 0x10000
@@ -122,7 +122,7 @@ coreinit(u32int *reg)
     v &= ~(Pwrdnscalemask | Disscramble | Dsblclkgtng | Prtcapdirmask);
     v |= Pwrdnscale125m<<Pwrdnscaleshift | 1<<Prtcapdirshift;
     reg[Gctl] = v;
-    print("usbxhcirv64k3: gctl=%ux\n", reg[Gctl]);
+    print("usbxhcipicoitx: gctl=%ux\n", reg[Gctl]);
 
     /* 2. Enable Automatic Retry of IN Transactions (GUCTL) */
     reg[Guctl] |= Usbhstinautoretry;
@@ -147,30 +147,30 @@ reset(Hci *hp)
      * controller.  Gate on the DTB root compatible so it stays quiet
      * on any other SoC
      */
-    if(!dtbsocmatch("spacemit,k3"))
+    if(!dtbsocmatch("spacemit,k3-pico-itx"))
         return -1;
-    print("usbxhcirv64k3: reset called\n");
+    print("usbxhcipicoitx: reset called\n");
 
     /* 1. APMU: enable clocks and release the controller's resets */
     apmureg = vmap(Apmubase, Apmulen);
     if(apmureg != nil){
-        print("usbxhcirv64k3: apmu usbclkres=%ux\n", apmureg[Usbclkres]);
+        print("usbxhcipicoitx: apmu usbclkres=%ux\n", apmureg[Usbclkres]);
         apmureg[Usbclkres] |= Usb2mask;
         vunmap(apmureg, Apmulen);
     } else {
-        print("usbxhcirv64k3: vmap apmu failed, base=%ux len=%ux\n", Apmubase, Apmulen);
+        print("usbxhcipicoitx: vmap apmu failed, base=%ux len=%ux\n", Apmubase, Apmulen);
         return -1;
     }
 
     /* 2. Set up the Xhci structure and the DWC3 core */
     mmio = vmap(Xhcibase, Xhcilen);
     if(mmio == nil) {
-        print("usbxhcirv64k3: vmap xhci failed\n");
+        print("usbxhcipicoitx: vmap xhci failed\n");
         return -1;
     }
     ctlr = xhcialloc(mmio, Xhcibase, Xhcilen);
     if(ctlr == nil){
-        print("usbxhcirv64k3: xhcialloc failed\n");
+        print("usbxhcipicoitx: xhcialloc failed\n");
         vunmap(mmio, Xhcilen);
         return -1;
     }
@@ -186,7 +186,7 @@ reset(Hci *hp)
         usb2phyinit(phymmio);
         vunmap(phymmio, Usb2phylen);
     } else {
-        print("usbxhcirv64k3: vmap usb2phy failed, base=%ux len=%ux\n",
+        print("usbxhcipicoitx: vmap usb2phy failed, base=%ux len=%ux\n",
             Usb2phybase, Usb2phylen);
         /* not necessarily fatal -- PHY may already be in a usable
          * state depending on what the FSBL/U-Boot left it in, but
@@ -204,7 +204,7 @@ reset(Hci *hp)
 }
 
 void
-usbxhcirv64k3link(void)
+usbxhcipicoitxlink(void)
 {
     addhcitype("xhci", reset);
 }
