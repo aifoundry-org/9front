@@ -706,6 +706,7 @@ struct Tentry {
 enum {
 	NTentry = 4,
 	Tentrysiz = 16,
+	Mbrsize = 512,	/* MBR is always fixed at 512 bytes from the start of the disk */
 };
 
 static uchar*
@@ -717,13 +718,13 @@ readmbr(Disk *disk)
 	int i;
 
 	mbr = getblock(disk, 0);
-	magic = &mbr[disk->secsize - 2];
+	magic = &mbr[Mbrsize - 2];
 	if(magic[0] != 0x55 || magic[1] != 0xAA)
 		sysfatal("did not find master boot record");
 
 	dosparts = protected = 0;
 	for(i=0; i<NTentry; i++){
-		t = (Tentry*)&mbr[disk->secsize - 2 - (i+1)*Tentrysiz];
+		t = (Tentry*)&mbr[Mbrsize - 2 - (i+1)*Tentrysiz];
 		switch(t->type){
 		case 0xEE:
 			protected = 1;
@@ -806,11 +807,11 @@ initmbr(Disk *disk)
 
 	mbr = getblock(disk, 0);
 
-	magic = &mbr[disk->secsize - 2];
+	magic = &mbr[Mbrsize - 2];
 	magic[0] = 0x55;
 	magic[1] = 0xAA;
 
-	t = (Tentry*)&mbr[disk->secsize - 2 - NTentry*Tentrysiz];
+	t = (Tentry*)&mbr[Mbrsize - 2 - NTentry*Tentrysiz];
 	memset(t, 0, NTentry * Tentrysiz);
 
 	t->type = 0xEE;
