@@ -76,7 +76,7 @@ OBJ=\
 	usbxhcipicoitx.$O\
 	usbxhcicom260.$O\
 	sdscsi.$O\
-#	sdufs.$O\
+	sdufs.$O\
 	$CONF.root.$O\
 	$CONF.rootc.$O\
 	$DEVS\
