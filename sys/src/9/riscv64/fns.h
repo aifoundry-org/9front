@@ -226,6 +226,8 @@ extern Dtbuart *dtbuart(int);
 extern int dtbhasplic(void);
 extern int dtbnether(void);
 extern Dtbether *dtbether(int);
+extern int dtbnufs(void);
+extern Dtbufs *dtbufs(int);
 extern int dtbsocmatch(char*);
 
 // new
@@ -255,7 +257,7 @@ void	cboflush(void *);
 void	cboclean(void *);
 void	l2init(void);
 
-// more good 9k stuff: m mode bits. 
+// more good 9k stuff: m mode bits.
 // Let's keep them until we're sure we don't want them.
 ulong	getfcsr(void);
 ulong	setfcsr(uintptr);

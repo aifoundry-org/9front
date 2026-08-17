@@ -54,7 +54,7 @@ misc
 	uarti8250
 	sdvirtio10	pci sdscsi
 	sdmmc		sdspacemit
-#	sdufs		sdscsi
+	sdufs		sdscsi
 
 	dtracysys
 	dtracytimer
