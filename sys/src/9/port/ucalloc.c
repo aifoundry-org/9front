@@ -77,7 +77,7 @@ ucpoollock(Pool* p)
 }
 
 static void*
-ucarena(usize size)
+ucarena(ulong size)
 {
 	void *uv, *v;
 
