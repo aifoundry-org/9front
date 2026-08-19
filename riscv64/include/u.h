@@ -13,7 +13,7 @@ typedef unsigned long long uintptr;
  * changing usize width from ulong changes system call binary interface due to
  * dubious use of va_arg(list, usize) in 9k/port.
  */
-typedef unsigned long	usize;
+typedef unsigned long long usize;
 typedef	uint		Rune;
 typedef union FPdbleword FPdbleword;
 
