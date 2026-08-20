@@ -126,4 +126,4 @@ initcode.out:		init9.$O initcode.$O /$objtype/lib/libc.a
 #	$LD -l -H6 -R1 -T0x40020000 -s -o $target $prereq
 
 $CONF.clean:
-	rm -rf $p$CONF s$p$CONF errstr.h $CONF.c boot$CONF.c
+	rm -rf $p$CONF $p$CONF.elf s$p$CONF errstr.h $CONF.c boot$CONF.c
