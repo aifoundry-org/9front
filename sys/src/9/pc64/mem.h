@@ -52,6 +52,7 @@
  */
 #define KZERO		(0xffffffff80000000ull)
 #define KTZERO		(KZERO+1*MiB+64*KiB)
+#define iskern(v) (((uintptr)v)>KZERO)
 
 #define VMAP		(0xfffffe8000000000ull)
 #define VMAPSIZE	(1024ull*GiB)

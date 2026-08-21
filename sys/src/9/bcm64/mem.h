@@ -58,6 +58,7 @@
 #define VDRAM		KZERO
 
 #define	KZERO		(0xFFFFFFFFC0000000ULL)	/* kernel address space */
+#define iskern(v) 	(((uintptr)v)>KZERO)
 
 #define SPINTABLE	(KZERO+0xd8)
 #define CONFADDR	(KZERO+0x100)
