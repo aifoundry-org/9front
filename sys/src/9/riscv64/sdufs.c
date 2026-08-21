@@ -427,15 +427,25 @@ ufsintr(Ureg*, void *arg)
 	HCR(c, Ris) = is;		/* RWC: write-1-to-clear */
 
 	if(is & ISutrcs){
-		/* walk UTRLDBR vs our busy bitmap, wake completed slots */
-		u32int db = HCR(c, Rutrldbr);
-		uint done = c->busy & ~db;
+		/* walk UTRLDBR vs our busy bitmap, wake completed slots.
+		 * c->busy is shared with ufsslotalloc/ufsslotfree/ufsrio,
+		 * all of which mutate it under ilock(c) -- this interrupt
+		 * can fire on any hart while one of those is mid-update
+		 * there, so take the same lock here before touching it.
+		 * (wakeup() itself is safe to call outside the lock, so
+		 * it stays out to keep the locked section short.) */
+		u32int db;
+		uint done;
 		uint i;
+
+		ilock(c);
+		db = HCR(c, Rutrldbr);
+		done = c->busy & ~db;
+		c->busy &= ~done;
+		iunlock(c);
 		for(i = 0; i < Maxutr; i++)
-			if(done & (1<<i)){
-				c->busy &= ~(1<<i);
+			if(done & (1<<i))
 				wakeup(&c->slotr[i]);
-			}
 	}
 	if(is & (ISue|ISdfes|ISutpes|IShcfes|ISsbfes)){
 		/*
@@ -1009,6 +1019,10 @@ ufswaitslot(Ctlr *c, int slot)
 	return 0;
 }
 
+static void ufsrestorephy(Ctlr*);	/* forward decl: defined below, used
+					 * by both ufssubmit() and ufsrio()'s
+					 * stuck-completion retry loops */
+
 /*
  * ufsslotalloc/ufsslotfree: allocate/release a UTP transfer request
  * slot. Shared by every command path.
@@ -1027,6 +1041,18 @@ ufsslotalloc(Ctlr *c)
 	else
 		c->busy |= 1<<slot;
 	iunlock(c);
+	/*
+	 * EXPERIMENTAL: with driver debug prints on, this fault never
+	 * reproduces; with them off, it reproduces fast and reliably.
+	 * Each print() to the (slow) UART burns several ms, so that
+	 * strongly suggests a minimum turnaround time is needed between
+	 * one use of a slot completing and the next use of that same
+	 * slot being submitted, which the debug traffic was providing
+	 * by accident. Reproduce that spacing deliberately here. Once
+	 * confirmed, this should be tuned down to the real minimum (or
+	 * replaced with a proper hw-documented value) instead of staying
+	 * at this deliberately generous placeholder.
+	 */
 	return slot;
 }
 
@@ -1052,6 +1078,70 @@ ufsslotfree(Ctlr *c, int slot)
  *   return -1  -- timed out (ufswaitslot failed)
  *   return -2  -- OCS error (see c->utrl[slot].dw2)
  */
+/*
+ * ufsreapocs: after ufswaitslot() confirms the doorbell cleared (hw
+ * says the transfer is done), read back the real completion code.
+ * Ocsinvalid (0xf) is the sw-preloaded sentinel -- not a value hw is
+ * ever defined to leave behind. Seeing it here means the DMA write of
+ * dw2 into this slot's Utrd hasn't become visible to the CPU yet:
+ * either a residual race on this array's shared 64-byte cache lines
+ * (two Utrd entries per line, see the locking in ufssubmit/ufsrio),
+ * or fabric/completion-ordering latency between the doorbell-clear
+ * signal and the posted DMA write actually landing in RAM -- both
+ * are timing gaps, not permanent failures. Re-invalidate and reread
+ * a bounded number of times before treating a persistent 0xf as a
+ * genuine fault; a real hw error code (0x1-0x7) or success (0x0) is
+ * returned immediately on the first read.
+ */
+static u32int
+ufsreapocs(Ctlr *c, Utrd *ut)
+{
+	int i;
+	u32int dw2;
+
+	dw2 = Ocsinvalid;
+	/* Phase 1: fast poll, catches short visibility/ordering gaps. */
+	for(i = 0; i < 50; i++){
+		ilock(c);
+		cachedinvse(ut, sizeof *ut);
+		dw2 = ut->dw2;
+		iunlock(c);
+		if((dw2 & Ocsmask) != Ocsinvalid){
+			if(i > 0 && debug)
+				print("ufs: dw2 needed %d re-read(s) to settle "
+					"(%dus)\n", i, i*20);
+			return dw2;
+		}
+		microdelay(20);
+	}
+	/*
+	 * dw2 didn't settle within 1ms even on a single-hart boot, which
+	 * rules out every cross-hart race this driver has been checked
+	 * for. Poll a bit longer (100ms) purely to catch a genuinely slow
+	 * completion; in testing this phase has never once resolved on
+	 * its own (every occurrence stayed stuck through the full poll),
+	 * so real recovery lives in the caller's resubmit loop, not here
+	 * -- keep this short so it doesn't multiply into a multi-second
+	 * stall across several resubmit attempts.
+	 */
+	for(i = 0; i < 100; i++){
+		ilock(c);
+		cachedinvse(ut, sizeof *ut);
+		dw2 = ut->dw2;
+		iunlock(c);
+		if((dw2 & Ocsmask) != Ocsinvalid){
+			print("ufs: dw2 resolved to %#ux after %dms total\n",
+				dw2, 1+i);
+			return dw2;
+		}
+		microdelay(1000);
+	}
+	if(debug)
+		print("ufs: dw2 still %#ux (Ocsinvalid) after doorbell cleared "
+			"and a %dms total poll\n", dw2, 1+i);
+	return dw2;
+}
+
 static int
 ufssubmit(Ctlr *c, int slot)
 {
@@ -1067,7 +1157,20 @@ ufssubmit(Ctlr *c, int slot)
 	ut->prdt = 0;
 
 	cachedwbse(cd, Cdbsize);
+	/*
+	 * sizeof(Utrd) is 32 bytes, so two adjacent slots in c->utrl
+	 * share a 64-byte cache line. cachedwbse/cachedinvse operate at
+	 * whole-cache-line granularity (see the r->data comment in
+	 * ufsrio below), so an invalidate on a neighboring slot running
+	 * concurrently on another hart could discard this slot's fields
+	 * before they ever reach RAM. Serialize the flush against any
+	 * other hart's cache maintenance on c->utrl with the same lock
+	 * that guards c->busy -- held only across the cache op itself,
+	 * not the doorbell/poll below.
+	 */
+	ilock(c);
 	cachedwbse(ut, sizeof *ut);
+	iunlock(c);
 	coherence();
 	HCR(c, Rutrldbr) = 1<<slot;
 
@@ -1076,9 +1179,35 @@ ufssubmit(Ctlr *c, int slot)
 		return -1;
 	}
 	ufsslotfree(c, slot);
-	cachedinvse(ut, sizeof *ut);
-	if((ut->dw2 & Ocsmask) != Ocssuccess)
-		return -2;
+	{
+		int try;
+		u32int dw2 = Ocsinvalid;
+
+		for(try = 0; try < 5; try++){
+			if(try > 0){
+				/* see the matching comment in ufsrio() */
+				if(c->linereset){
+					ufsrestorephy(c);
+					c->linereset = 0;
+				}
+				ut->dw2 = Ocsinvalid;
+				ilock(c);
+				cachedwbse(ut, sizeof *ut);
+				iunlock(c);
+				coherence();
+				print("ufs: submit slot %d: resubmitting after "
+					"stuck completion (attempt %d)\n", slot, try+1);
+				HCR(c, Rutrldbr) = 1<<slot;
+				if(ufswaitslot(c, slot) < 0)
+					return -1;
+			}
+			dw2 = ufsreapocs(c, ut);
+			if((dw2 & Ocsmask) != Ocsinvalid)
+				break;
+		}
+		if((dw2 & Ocsmask) != Ocssuccess)
+			return -2;
+	}
 	cachedinvse(cd, Cdbsize);
 	return 0;
 }
@@ -2196,7 +2325,17 @@ ufsrio(SDreq *r)
 	 * request, the caller's data buffer also needs writing back.
 	 */
 	cachedwbse(cd, Cdbsize);
+	/*
+	 * sizeof(Utrd) is 32 bytes, half a 64-byte cache line, so two
+	 * adjacent slots in c->utrl share a line. Serialize this
+	 * writeback against any other hart's cachedinvse() on the
+	 * neighboring slot (see the matching lock in ufssubmit() and
+	 * below in this function) so an invalidate elsewhere can never
+	 * discard these fields before they reach RAM.
+	 */
+	ilock(c);
 	cachedwbse(ut, sizeof *ut);
+	iunlock(c);
 	if(r->dlen && r->write)
 		cachedwbse(r->data, r->dlen);
 
@@ -2224,17 +2363,61 @@ ufsrio(SDreq *r)
 		print("ufs: rio slot %d TIMED OUT waiting for completion "
 			"(UTRLDBR bit never cleared, no interrupt ever seen "
 			"either)\n", slot);
-	cachedinvse(ut, sizeof *ut);
-	ilock(c);
-	c->busy &= ~(1<<slot);
-	iunlock(c);
-	if(debug)
-		print("ufs: rio slot %d done (polled), dw2=%#ux\n", slot, ut->dw2);
+	{
+		int try;
+		u32int dw2 = Ocsinvalid;
 
-	if((ut->dw2 & Ocsmask) != Ocssuccess){
-		print("ufs: rio slot %d OCS error dw2=%#ux\n", slot, ut->dw2);
-		r->status = SDcheck;
-		return SDcheck;
+		for(try = 0; try < 5; try++){
+			if(try > 0){
+				/*
+				 * dw2 never resolved on the previous attempt even
+				 * after a full ufsreapocs() poll: per Ocsinvalid's
+				 * definition, the hw is documented to never leave
+				 * this sentinel behind, so this is a genuinely lost
+				 * completion, not a real command/data fault (those
+				 * come back as a real OCS code, 0x1-0x7). Testing
+				 * has shown this isn't reliably tied to c->linereset
+				 * (LINERESET does explain SOME occurrences, so still
+				 * restore the PHY when it fired), so retry
+				 * unconditionally rather than only in that one case.
+				 * Resubmitting the identical descriptor is safe:
+				 * cd's CDB/PRDT content is unchanged (a WRITE/READ
+				 * resubmit is idempotent), only the OCS preload
+				 * needs refreshing before ringing the doorbell
+				 * again.
+				 */
+				if(c->linereset){
+					ufsrestorephy(c);
+					c->linereset = 0;
+				}
+				ut->dw2 = Ocsinvalid;
+				ilock(c);
+				cachedwbse(ut, sizeof *ut);
+				iunlock(c);
+				coherence();
+				print("ufs: rio slot %d: resubmitting after stuck "
+					"completion (attempt %d)\n", slot, try+1);
+				HCR(c, Rutrldbr) = 1<<slot;
+				if(ufswaitslot(c, slot) < 0)
+					print("ufs: rio slot %d TIMED OUT waiting "
+						"for completion (retry)\n", slot);
+			}
+			dw2 = ufsreapocs(c, ut);
+			if((dw2 & Ocsmask) != Ocsinvalid)
+				break;
+		}
+
+		ilock(c);
+		c->busy &= ~(1<<slot);
+		iunlock(c);
+		if(debug)
+			print("ufs: rio slot %d done (polled), dw2=%#ux\n", slot, dw2);
+
+		if((dw2 & Ocsmask) != Ocssuccess){
+			print("ufs: rio slot %d OCS error dw2=%#ux\n", slot, dw2);
+			r->status = SDcheck;
+			return SDcheck;
+		}
 	}
 	/*
 	 * Invalidate what the DEVICE wrote: the response UPIU inside cd
