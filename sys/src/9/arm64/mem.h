@@ -50,6 +50,7 @@
 #define	VIRTIO		(0xFFFFFFFFB0000000ULL)
 
 #define	KZERO		(0xFFFFFFFF80000000ULL)	/* 0x00000000 - kernel address space */
+#define iskern(v) 	(((uintptr)v)>KZERO)
 
 #define VMAP		(0xFFFFFFFF00000000ULL)	/* 0x00000000 - 0x40000000 */
 

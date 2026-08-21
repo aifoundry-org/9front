@@ -36,6 +36,7 @@
  */
 #define	KZERO		0xF0000000		/* base of kernel address space */
 #define	KTZERO		(KZERO+0x100000)	/* first address in kernel text - 9load sits below */
+#define iskern(v) 	(((uintptr)v)>KZERO)
 #define	VPT		(KZERO-VPTSIZE)
 #define	VPTSIZE		BY2XPG
 #define	NVPT		(VPTSIZE/BY2WD)
