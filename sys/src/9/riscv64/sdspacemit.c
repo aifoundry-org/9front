@@ -52,7 +52,7 @@ enum {
 	 Rxbiasctl		= 1<<5,
 
 	/* Control0 */
-	V3_3			= 7<<9,
+	V3v3			= 7<<9,
 	Buspower		= 1<<8,
 	Dwidth8			= 1<<5,	/* SDHCI v3 extended 8-bit data width */
 	Hispeed			= 1<<2,
@@ -65,7 +65,7 @@ enum {
 	Srsthc			= 1<<24,	/* reset complete host controller */
 	Datatoshift		= 16,		/* data timeout unit exponent */
 	Datatomask		= 0xF0000,
-		DTO		= 14,		/* data timeout exponent (guesswork) */
+		Dto		= 14,		/* data timeout exponent (guesswork) */
 	Clkfreq8shift		= 8,		/* SD clock base divider LSBs */
 	Clkfreq8mask		= 0xFF00,
 	Clkfreqms2shift		= 6,		/* SD clock base divider MSBs */
@@ -109,9 +109,8 @@ enum {
 	Ctoerr		= 1<<16,
 	Err		= 1<<15,
 	/*
-	 * the upper half of Irpten is the error-signal enable; the Err
-	 * summary bit itself is fixed to zero in the enable registers, so
-	 * an error only raises the IRQ if its individual bit is set here.
+	 * upper half of Irpten is the error-signal enable;
+	 * an error only raises the IRQ if its individual bit is set here
 	 */
 	Anyerr		= Wrcrctoken|Acmderr|Denderr|Dcrcerr|Dtoerr|
 			  Cbaderr|Cenderr|Ccrcerr|Ctoerr,
@@ -137,50 +136,45 @@ enum {
 	Cmdinhibit	= 1<<0,
 
 	/* K1 SoC */
-	SDH_SIZE	= 0x200,
-	SD_PHYS		= 0xd4280000UL,
-	SD_IRQ		= 99,
-	EMMC_PHYS	= 0xd4281000UL,
-	EMMC_IRQ	= 101,
-	SDH_EXTCLK	= 102400000,	/* fallback when APMU decode fails */
+	SdhSize		= 0x200,
+	SdPhys		= 0xd4280000UL,
+	SdIrq		= 99,
+	EmmcPhys	= 0xd4281000UL,
+	EmmcIrq		= 101,
+	SdhExtclk	= 102400000,	/* fallback when APMU decode fails */
 
-	APMU_PHYS	= 0xd4282800UL,
-	APMU_SIZE	= 0x400,
+	ApmuPhys	= 0xd4282800UL,
+	ApmuSize	= 0x400,
 
 	/*
 	 * pad configuration: pins 104-110 sit at (pin+6)*4 from the pad
 	 * controller base; drive strength is a 3-bit field at bits 12:10,
-	 * code 1 = 19mA on a 3.3V pad.  The BPI-F3 device tree runs all
-	 * six mmc1 pads (d3 d2 d1 d0 cmd clk = pins 104-109) at 19mA.
+	 * code 1 = 19mA on a 3.3V pad, used for all mmc1 pads.
 	 */
-	AIB_PHYS	= 0xd401e000UL,
-	AIB_SIZE	= 0x1000,
-	PAD_MMC1	= (104+6)*4,	/* first mmc1 pad register */
-	NMMC1PADS	= 6,
+	AibPhys		= 0xd401e000UL,
+	AibSize		= 0x1000,
+	PadMmc1		= (104+6)*4,	/* first mmc1 pad register */
+	Nmmc1pads	= 6,
 	Paddrivemask	= 7<<10,
 	Paddrive19ma	= 1<<10,
 
 	/*
-	 * each pad group also has a power-domain register selecting 1.8V
-	 * or 3.3V pad mode; the mmc group's is at 0x81c from the pad
-	 * controller base, bit 2 set meaning 1.8V.  These registers are
-	 * key-protected: each access must be preceded by the 0xbaba /
-	 * 0xeb10 magic writes to the APBC access-security registers.
+	 * mmc pad group power-domain register at 0x81c: bit 2 set for 1.8V
 	 */
-	IOPD_MMC	= 0x81c,
+	IopdMmc		= 0x81c,
 	 Iopdv18en	= 1<<2,
-	APBC_PHYS	= 0xd4015000UL,
-	APBC_SIZE	= 0x100,
-	APBC_ASFAR	= 0x50,
-	APBC_ASSAR	= 0x54,
+	ApbcPhys	= 0xd4015000UL,
+	ApbcSize	= 0x100,
+	ApbcAsfar	= 0x50,
+	ApbcAssar	= 0x54,
 
 	/*
 	 * the slot's pad rail vqmmc comes from the power-management
 	 * chip's aldo1: enable bit 0 at register 0x5b, 7-bit voltage
 	 * selector at 0x5c, 500mV + (sel-11)*25mV.
 	 */
-	PMIC_ALDO1EN	= 0x5b,
-	PMIC_ALDO1V	= 0x5c,
+	PmicAldo1en	= 0x5b,
+	PmicAldo1v	= 0x5c,
 	Aldosel3v3	= 123,
 	Aldoselmask	= 0x7f,
 
@@ -191,16 +185,16 @@ enum {
 	 * (GPIOs 64..95) lives at controller base + 0x8 with GPLR at +0;
 	 * GPIO 80 is bit 16 within the bank.
 	 */
-	GPIO_PHYS	= 0xd4019000UL,
-	GPIO_SIZE	= 0x800,
-	GPIO_BPIF3_SDCD_OFF = 0x8,	/* bank 2 GPLR offset within controller */
-	GPIO_BPIF3_SDCD_BIT = 16,	/* GPIO 80 mod 32 */
-	APMU_SDH0	= 0x054,	/* shared SDH_AXI + per-SDH0 bits */
-	APMU_SDH2	= 0x0e0,	/* per-SDH2 bits */
-	Sdh_axi_gate	= 1<<3,
-	Sdh_axi_rst	= 1<<0,
-	Sdh_gate	= 1<<11,
-	Sdh_rst		= 1<<1,
+	GpioPhys	= 0xd4019000UL,
+	GpioSize	= 0x800,
+	GpioBpif3SdcdOff = 0x8,	/* bank 2 GPLR offset within controller */
+	GpioBpif3SdcdBit = 16,	/* GPIO 80 mod 32 */
+	ApmuSdh0	= 0x054,	/* shared SDH_AXI + per-SDH0 bits */
+	ApmuSdh2	= 0x0e0,	/* per-SDH2 bits */
+	SdhAxiGate	= 1<<3,
+	SdhAxiRst	= 1<<0,
+	SdhGate		= 1<<11,
+	SdhRst		= 1<<1,
 
 	Cbsz		= 64,	/* X60/C908 D-cache line size */
 };
@@ -363,11 +357,9 @@ sdhabort(Ctlr *c, int write)
 }
 
 /*
- * SDCLK is a PLL tap selected and divided by fields in the same APMU
- * register as the gate/reset bits: source select in bits 7:5,
- * divisor-1 in bits 10:8 (PMU_SDHx_CLK_RES_CTRL in the K1 user
- * manual).  Decode what u-boot programmed rather than trusting a
- * compiled-in rate.
+ * SDCLK is a PLL tap selected and divided by fields in the same APMU register
+ * as the gate/reset bits: source select in bits 7:5, divisor-1 in
+ * bits 10:8 (PMU_SDHx_CLK_RES_CTRL in the K1 manual). Decode from u-boot setting.
  */
 static ulong
 sdhbaseclk(Ctlr *c, u32int v)
@@ -386,7 +378,7 @@ sdhbaseclk(Ctlr *c, u32int v)
 
 	f = parent[(v>>5) & 7];
 	if(((v>>5) & 7) == 3)	/* pll1_d3 on the eMMC slot, pll2_d5 on sd */
-		f = c->apmuoff == APMU_SDH2? 819200000: 600000000;
+		f = c->apmuoff == ApmuSdh2? 819200000: 600000000;
 	return f / (((v>>8) & 7) + 1);
 }
 
@@ -402,19 +394,19 @@ sdhinit(SDio *io)
 	c = io->aux;
 	c->name = io->name;
 
-	apmu = vmap(APMU_PHYS, APMU_SIZE);
-	apmu[APMU_SDH0>>2] |= Sdh_axi_gate | Sdh_axi_rst;
-	apmu[c->apmuoff>>2] |= Sdh_gate | Sdh_rst;
+	apmu = vmap(ApmuPhys, ApmuSize);
+	apmu[ApmuSdh0>>2] |= SdhAxiGate | SdhAxiRst;
+	apmu[c->apmuoff>>2] |= SdhGate | SdhRst;
 	coherence();
 	v = apmu[c->apmuoff>>2];
-	vunmap(apmu, APMU_SIZE);
+	vunmap(apmu, ApmuSize);
 
 	f = sdhbaseclk(c, v);
 	if(f != 0)
 		c->extclk = f;
 	print("%s: base clock %lud Hz (clkctl %ux)\n", io->name, c->extclk, v);
 
-	r = vmap(c->regbase, SDH_SIZE);
+	r = vmap(c->regbase, SdhSize);
 	c->regs = r;
 	r[Control1] = Srsthc;
 	for(i = 0; i < 100; i++){
@@ -436,65 +428,58 @@ sdhinit(SDio *io)
 	r[Sdhctxcfg] |= Txintclksel;
 
 	/*
-	 * u-boot's UHS negotiation with a bootable card leaves the pad
-	 * rail vqmmc at 1.8V, and a freshly inserted card signals at
-	 * 3.3V: reads still work, but host-driven edges sit right at the
-	 * card's input threshold, so writes fail and commands are
-	 * sporadically ignored.  Put the rail, the pad group's power
-	 * domain (touching only the 1.8V-mode bit; the others are live)
-	 * and the pad drive back to what the board expects.
+	 * u-boot's UHS negotiation with a bootable card leaves the pad rail
+	 * vqmmc at 1.8V, and a freshly inserted card signals at 3.3V: reads work,
+	 * but host-driven edges are at the card's input threshold, so writes fail
+	 * and commands are sporadically ignored. Reset the rail, pad group's
+	 * power domain and pad drive back to expectations.
 	 */
 	if(strcmp(io->name, "emmc") != 0){
 		u32int *aib, *apbc;
 		u32int w;
 		int sel, en;
 
-		sel = k1pmicread(PMIC_ALDO1V);
+		sel = k1pmicread(PmicAldo1v);
 		if(sel >= 0 && (sel & Aldoselmask) != Aldosel3v3){
 			print("%s: vqmmc was %d mV\n", io->name,
 				500 + ((sel & Aldoselmask) - 11)*25);
-			k1pmicwrite(PMIC_ALDO1V,
+			k1pmicwrite(PmicAldo1v,
 				(sel & ~Aldoselmask) | Aldosel3v3);
 			delay(5);
 		}
-		en = k1pmicread(PMIC_ALDO1EN);
+		en = k1pmicread(PmicAldo1en);
 		if(en >= 0 && (en & 1) == 0)
-			k1pmicwrite(PMIC_ALDO1EN, en | 1);
+			k1pmicwrite(PmicAldo1en, en | 1);
 
-		aib = vmap(AIB_PHYS, AIB_SIZE);
+		aib = vmap(AibPhys, AibSize);
 		if(aib != nil){
-			for(i = 0; i < NMMC1PADS; i++)
-				aib[(PAD_MMC1>>2) + i] =
-					(aib[(PAD_MMC1>>2) + i] & ~Paddrivemask) |
+			for(i = 0; i < Nmmc1pads; i++)
+				aib[(PadMmc1>>2) + i] =
+					(aib[(PadMmc1>>2) + i] & ~Paddrivemask) |
 					Paddrive19ma;
-			apbc = vmap(APBC_PHYS, APBC_SIZE);
+			apbc = vmap(ApbcPhys, ApbcSize);
 			if(apbc != nil){
-				apbc[APBC_ASFAR>>2] = 0xbaba;
-				apbc[APBC_ASSAR>>2] = 0xeb10;
-				w = aib[IOPD_MMC>>2];
+				/* magic writes to APBC access-security registers */
+				apbc[ApbcAsfar>>2] = 0xbaba;
+				apbc[ApbcAssar>>2] = 0xeb10;
+				w = aib[IopdMmc>>2];
 				if(w & Iopdv18en){
 					print("%s: pad domain was %ux\n",
 						io->name, w);
-					apbc[APBC_ASFAR>>2] = 0xbaba;
-					apbc[APBC_ASSAR>>2] = 0xeb10;
-					aib[IOPD_MMC>>2] = w & ~Iopdv18en;
+					apbc[ApbcAsfar>>2] = 0xbaba;
+					apbc[ApbcAssar>>2] = 0xeb10;
+					aib[IopdMmc>>2] = w & ~Iopdv18en;
 				}
-				vunmap(apbc, APBC_SIZE);
+				vunmap(apbc, ApbcSize);
 			}
 			coherence();
-			vunmap(aib, AIB_SIZE);
+			vunmap(aib, AibSize);
 		}
 	}
 
 	/* Srsthc cleared Power Control; restore 3.3V bus power. */
-	r[Control0] = V3_3 | Buspower | Dwidth1;
-
-	/*
-	 * eMMC is soldered and non-removable; for the removable slots
-	 * presence comes from a board-specific GPIO read in sdhenable.
-	 */
+	r[Control0] = V3v3 | Buspower | Dwidth1;
 	c->cardpresent = 1;
-
 	return 0;
 }
 
@@ -519,8 +504,7 @@ sdhclk(Ctlr *c, uint freq)
 
 	/*
 	 * For 26MHz and up choose the smallest divisor that keeps the
-	 * wire at or below the request.  Identification speeds keep the
-	 * older formula, which lands near half the request: cards must
+	 * wire at or below the request.  Otherwise, cards must
 	 * accept 100-400KHz, so ~200KHz is always legal and reliable.
 	 */
 	if(freq >= 26000000)
@@ -533,7 +517,7 @@ sdhclk(Ctlr *c, uint freq)
 	r = c->regs;
 	r[Control1] &= ~Clken;
 	r[Control1] = clkdiv(d) |
-			DTO << Datatoshift | Clkgendiv | Clkintlen;
+			Dto << Datatoshift | Clkgendiv | Clkintlen;
 	for(i = 0; i < 1000; i++){
 		delay(1);
 		if(r[Control1] & Clkstable)
@@ -549,10 +533,8 @@ sdhclk(Ctlr *c, uint freq)
 
 /*
  * The K1 controller updates the Cardinserted level bit in Present State
- * when the card-detect line changes but doesn't seem to raise the
- * matching Cardinsert/Cardremove edge IRQs — we leave the IRQ-side
- * logic in place in case it ever does, and poll the level bit from a
- * kproc as the actually-reliable detector for removable slots.
+ * when the card-detect line changes, but doesn't seem to raise the
+ * Cardinsert/Cardremove edge IRQs so far; workaround: poll the level bit from a kproc.
  */
 static u32int *gpioregs;	/* shared GPIO controller mapping for cd polling */
 
@@ -563,14 +545,12 @@ sdcardpresentbpif3(void)
 
 	if(gpioregs == nil)
 		return 1;
-	gplr = gpioregs[GPIO_BPIF3_SDCD_OFF>>2];
+	gplr = gpioregs[GpioBpif3SdcdOff>>2];
 	/*
-	 * DT lists the cd-gpio as ACTIVE_HIGH then applies cd-inverted, which
-	 * net-net means active-low: card present when GPIO line is LOW.
-	 * Confirmed by reading gplr2 = 0x1c067c0e (bit 16 = 0) with the
-	 * Linux microSD seated.
+	 * DT lists the cd-gpio as ACTIVE_HIGH then applies cd-inverted,
+	 * i.e. card present when GPIO line is LOW.
 	 */
-	return (gplr & (1<<GPIO_BPIF3_SDCD_BIT)) == 0;
+	return (gplr & (1<<GpioBpif3SdcdBit)) == 0;
 }
 
 static void
@@ -602,15 +582,12 @@ sdhenable(SDio *io)
 	c->regs[Irpten] = Cardinsert|Cardremove;	/* baseline signal mask */
 	intrenable(c->irq, interrupt, c, BUSUNKNOWN, io->name);
 
-	/*
-	 * eMMC is soldered; the microSD's "Cardinserted" status bit lies on
-	 * this board so we read GPIO 80 directly. Map the GPIO controller
-	 * lazily on first removable-slot enable.
-	 */
+	/* eMMC is soldered */
 	if(strcmp(io->name, "emmc") == 0)
 		return;
+	/* map GPIO controller lazily on first removable-slot enable */
 	if(gpioregs == nil)
-		gpioregs = vmap(GPIO_PHYS, GPIO_SIZE);
+		gpioregs = vmap(GpioPhys, GpioSize);
 	c->cardpresent = sdcardpresentbpif3();
 	kproc("cardpoll", cardpollproc, c);
 }
@@ -634,10 +611,10 @@ sdhtrystatus(SDio *io, u32int *st)
 }
 
 /*
- * a card that ignores a transfer command usually isn't deaf but in a
- * state where that command is illegal, and it answers CMD13 from any
- * state: the R1 reply carries the current state in bits 12:9 (4 tran,
- * 5 data, 6 rcv, 7 prg, 3 stby, 8 dis) and, in bit 22, an
+ * a card that ignores a transfer command is usually in a state
+ * where that command is illegal, but answers CMD13 from any state:
+ * R1 reply carries the current state in bits 12:9 (4 tran,
+ * 5 data, 6 rcv, 7 prg, 3 stby, 8 dis) and in bit 22, an
  * illegal-command flag for the command it ignored.
  */
 static void
@@ -663,12 +640,7 @@ sdhcmd(SDio *io, SDiocmd *cmd, u32int arg, u32int *resp)
 	u32int c;
 	int i;
 
-	/*
-	 * Refuse commands when no card is present so that sdmmc.c's existing
-	 * media-change-via-Eio path in mmconline (waserror -> unit->sectors=0)
-	 * resets cached card state. The next I/O after a swap then re-runs
-	 * cardinit on the new card.
-	 */
+	/* mmconline resets cached card state; next I/O after swap re-runs cardinit */
 	if(ct->cardpresent == 0)
 		error(Eio);
 
@@ -804,13 +776,8 @@ sdhiosetup(SDio *io, int, void *buf, int bsize, int bcount)
 	uintptr pa;
 	int len;
 
-	/*
-	 * transfers bigger than the 512K SDMA boundary are fine now that
-	 * the interrupt handler resumes the pause at each crossing; the
-	 * remaining limit is the 16-bit block count field in Blksizecnt.
-	 */
 	len = bsize*bcount;
-	if(bcount > 0xFFFF)
+	if(bcount > 0xFFFF) /* must fit in 16-bit block count */
 		error(Etoobig);
 
 	pa = PADDR(buf);
@@ -894,18 +861,18 @@ void
 sdspacemitlink(void)
 {
 	static Ctlr emmc = {
-		.regbase = EMMC_PHYS,
-		.apmuoff = APMU_SDH2,
-		.irq	 = EMMC_IRQ,
-		.extclk	 = SDH_EXTCLK,
+		.regbase = EmmcPhys,
+		.apmuoff = ApmuSdh2,
+		.irq	 = EmmcIrq,
+		.extclk	 = SdhExtclk,
 	};
 	static Ctlr sd = {
-		.regbase = SD_PHYS,
-		.apmuoff = APMU_SDH0,
-		.irq	 = SD_IRQ,
-		.extclk	 = SDH_EXTCLK,
+		.regbase = SdPhys,
+		.apmuoff = ApmuSdh0,
+		.irq	 = SdIrq,
+		.extclk	 = SdhExtclk,
 	};
-	static SDio io_emmc = {
+	static SDio ioemmc = {
 		.name	 = "emmc",
 		.init	 = sdhinit,
 		.enable	 = sdhenable,
@@ -916,7 +883,7 @@ sdspacemitlink(void)
 		.bus	 = sdhbus,
 		.aux	 = &emmc,
 	};
-	static SDio io_sd = {
+	static SDio iosd = {
 		.name	 = "sd",
 		.init	 = sdhinit,
 		.enable	 = sdhenable,
@@ -934,6 +901,6 @@ sdspacemitlink(void)
 	 */
 	if(!dtbsocmatch("spacemit,k1"))
 		return;
-	addmmcio(&io_emmc);
-	addmmcio(&io_sd);
+	addmmcio(&ioemmc);
+	addmmcio(&iosd);
 }
