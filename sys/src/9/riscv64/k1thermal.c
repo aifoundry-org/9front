@@ -29,13 +29,9 @@
 #include "dat.h"
 #include "fns.h"
 #include "../port/error.h"
+#include "k1.h"
 
 enum {
-	SpacemiT	= 0x710,	/* soc.vendor for the K1 (and K3) */
-
-	/* APBC syscon: thermal sensor clock/reset gate */
-	APBC_BASE	= 0xD4015000ull,
-	APBC_SIZE	= 0x100,
 	APBC_TSEN	= 0x6C,		/* bit0 bus clk, bit1 core clk, bit2 reset */
 
 	/* thermal sensor block */
@@ -74,14 +70,13 @@ enum {
 	PWMPV		= 1023,		/* 1024-count period */
 	PWMFULL		= 1023,		/* cap duty below the full-duty bit */
 	Fanmin		= 51,		/* below this the fan only stalls; treat as off */
+	Fandefault	= 70,		/* percent duty at boot: reliably starts, still quiet */
 
 	/* pin mux: GPIO_79 -> rcpu_pwm2 (mode 2) */
 	AIB_BASE	= 0xD401E000ull,
 	AIB_SIZE	= 0x280,
 	GPIO79		= 80,		/* PINID(79); word index into the block */
 	GPIO79_CONF	= 0xC442,	/* EDGE_NONE|PULL_UP|PAD_3V_DS4|MUX_MODE2 */
-
-	Fandefault	= 70,		/* percent duty at boot: reliably starts, still quiet */
 };
 
 static uchar *tsen;
@@ -188,7 +183,7 @@ thermalinit(void)
 	uchar *apbc;
 	ulong v;
 
-	apbc = vmap(APBC_BASE, APBC_SIZE);
+	apbc = vmap(ApbcPhys, ApbcSize);
 	tsen = vmap(TSEN_BASE, TSEN_SIZE);
 	if(apbc == nil || tsen == nil){
 		tsen = nil;
@@ -198,7 +193,7 @@ thermalinit(void)
 	/* enable both clocks (bits 0,1), release reset (clear bit 2) */
 	v = rd(apbc, APBC_TSEN);
 	wr(apbc, APBC_TSEN, (v & ~0x4) | 0x3);
-	vunmap(apbc, APBC_SIZE);
+	vunmap(apbc, ApbcSize);
 
 	wr(tsen, TS_INTEN, ~0);		/* mask all interrupts */
 	v = rd(tsen, TS_TIME);
