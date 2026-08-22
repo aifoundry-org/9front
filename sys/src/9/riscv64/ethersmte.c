@@ -51,7 +51,22 @@ enum {
 	/* RGMII delays: 1560 ps = 100 steps x 15.6 ps (from vendor DTS) */
 	SmteRxdelaydef	= 100,
 	SmteTxdelaydef	= 100,
+};
 
+/*
+ * K1 pad controller (AIB) and GPIO controller — fixed SoC addresses used
+ * for pin muxing (gmacpins) and PHY reset (phyreset).
+ */
+enum {
+	AibPhys		= 0xd401e000UL,
+	AibSize		= 0x1000,
+
+	GpioPhys	= 0xd4019000UL,
+	GpioSize	= 0x200,
+	GpioBank3off	= 0x100,		/* bank 3 register group offset */
+	GpioGsdr	= 0x54,			/* set direction = output */
+	GpioGpcr	= 0x24,			/* set output low (clear) */
+	GpioGpsr	= 0x18,			/* set output high */
 };
 
 /* DMA registers (byte offset) */
@@ -137,6 +152,9 @@ enum {
 	MacAddr1hi	= 0x0120,
 	MacAddr1me	= 0x0124,
 	MacAddr1lo	= 0x0128,
+
+	MacFcctrl		= 0x0160,	/* flow control */
+	MacFcctrlDecodeena	= (1U << 0),	/* decode received pause frames */
 
 	MacMdioctrl		= 0x01a0,
 	MacMdioctrlStart	= (1U << 15),
@@ -228,10 +246,10 @@ enum {
 };
 
 enum {
-	RXRING	= 512,
-	TXRING	= 512,
+	Rxring	= 512,
+	Txring	= 512,
 	Txirqevery = 64,	/* request a TX-completion IRQ every Nth frame */
-	MAXSMTE	= 2,
+	Maxsmte	= 2,
 };
 
 
@@ -319,7 +337,7 @@ gmacpins(uvlong base)
 		n = nelem(pins1);
 	}
 	if(aib == nil)
-		aib = vmap(0xd401e000, 0x1000);
+		aib = vmap(AibPhys, AibSize);
 	if(aib == nil)
 		return;
 	fixed = 0;
@@ -351,15 +369,15 @@ phyreset(Ctlr *c)
 	if(c->rstpin < 0 || c->rstpin >= 128)
 		return;
 	if(gpio == nil)
-		gpio = vmap(0xd4019000, 0x200);
+		gpio = vmap(GpioPhys, GpioSize);
 	if(gpio == nil)
 		return;
-	bank = c->rstpin >> 5 == 3? 0x100: (c->rstpin >> 5)*4;
+	bank = c->rstpin >> 5 == 3? GpioBank3off: (c->rstpin >> 5)*4;
 	bit = 1 << (c->rstpin & 31);
-	gpio[(bank + 0x54)/4] = bit;	/* direction: output */
-	gpio[(bank + 0x24)/4] = bit;	/* drive low: assert reset */
+	gpio[(bank + GpioGsdr)/4] = bit;	/* direction: output */
+	gpio[(bank + GpioGpcr)/4] = bit;	/* drive low: assert reset */
 	delay(10);
-	gpio[(bank + 0x18)/4] = bit;	/* drive high: release */
+	gpio[(bank + GpioGpsr)/4] = bit;	/* drive high: release */
 	delay(100);
 }
 
@@ -428,7 +446,7 @@ txreset(Ctlr *c)
 	v = csr32r(c->regs, DmaCtrl);
 	csr32w(c->regs, DmaCtrl, v & ~DmaCtrlTxstart);
 	ilock(&c->txlock);
-	for(i = 0; i < TXRING; i++){
+	for(i = 0; i < Txring; i++){
 		if(c->txs[i] != nil){
 			freeb(c->txs[i]);
 			c->txs[i] = nil;
@@ -440,7 +458,7 @@ txreset(Ctlr *c)
 	}
 	c->txi = 0;
 	c->txcons = 0;
-	smtecacheflush(c->txr, 4 * TXRING * sizeof(u32int));
+	smtecacheflush(c->txr, 4 * Txring * sizeof(u32int));
 	iunlock(&c->txlock);
 	csr32w(c->regs, DmaTxbase, PADDR(c->txr));
 }
@@ -596,7 +614,7 @@ replenish(Ctlr *c)
 	 * is rxs[]-based rather than the classic prod/cons gap because the
 	 * gap creates a structural lockstep once the chip catches up to it:
 	 * the chip suspends on the OWN=host gap, the loop refuses to refill
-	 * it, and the poll-demand write just bounces off.  With all RXRING slots
+	 * it, and the poll-demand write just bounces off.  With all Rxring slots
 	 * usable, replenish can always close the loop. */
 	while(c->rxs[c->rxprodi] == nil){
 		i  = c->rxprodi;
@@ -613,7 +631,7 @@ replenish(Ctlr *c)
 		/* don't pre-clear r[0]: leaving it OWN=0 in the dirty cache
 		 * line races chip-side reads — see ethrx skip handling */
 		r[1] = Rbsz & RxDesc1Sizemask;
-		if(i == RXRING - 1)
+		if(i == Rxring - 1)
 			r[1] |= RxDesc1Endring;
 		r[2] = (u32int)pa;
 		r[3] = 0;
@@ -622,7 +640,7 @@ replenish(Ctlr *c)
 		/* push descriptor, drop any stale buffer cache so HW writes win */
 		smtecacheflush(r, 16);
 		smtecacheinval(bp->rp, Rbsz);
-		c->rxprodi = (c->rxprodi + 1) & (RXRING - 1);
+		c->rxprodi = (c->rxprodi + 1) & (Rxring - 1);
 	}
 	/*
 	 * DmaRxpolldemand is only meaningful while DMA RX is in Running or
@@ -664,7 +682,7 @@ ethrx(Ether *edev)
 			u32int *rn;
 			found = -1;
 			for(k = 1; k < 64; k++){
-				rn = &c->rxr[4 * ((c->rxconsi + k) & (RXRING - 1))];
+				rn = &c->rxr[4 * ((c->rxconsi + k) & (Rxring - 1))];
 				smtecacheinval(rn, 16);
 				if((rn[0] & RxDesc0Own) == 0){
 					found = k;
@@ -680,7 +698,7 @@ ethrx(Ether *edev)
 				c->rxs[c->rxconsi] = nil;
 				if(bp != nil)
 					freeb(bp);
-				c->rxconsi = (c->rxconsi + 1) & (RXRING - 1);
+				c->rxconsi = (c->rxconsi + 1) & (Rxring - 1);
 			}
 			replenish(c);
 			continue;
@@ -730,7 +748,7 @@ ethrx(Ether *edev)
 			etheriq(edev, bp);
 			c->rxframes++;
 		}
-		c->rxconsi = (c->rxconsi + 1) & (RXRING - 1);
+		c->rxconsi = (c->rxconsi + 1) & (Rxring - 1);
 		replenish(c);
 	}
 }
@@ -745,11 +763,11 @@ ethifstat(void *arg, char *p, char *e)
 	if(p >= e)
 		return p;
 	ntx = 0;
-	for(i = 0; i < TXRING; i++)
+	for(i = 0; i < Txring; i++)
 		if(c->txs[i] != nil)
 			ntx++;
 	nrx = 0;
-	for(i = 0; i < RXRING; i++)
+	for(i = 0; i < Rxring; i++)
 		if(c->rxs[i] != nil)
 			nrx++;
 	p = seprint(p, e, "tx: prod %d cons %d inflight %d done %ud\n",
@@ -793,7 +811,7 @@ ethtx(Ether *edev)
 		freeb(c->txs[c->txcons]);
 		c->txs[c->txcons] = nil;
 		c->txdone++;
-		c->txcons = (c->txcons + 1) & (TXRING - 1);
+		c->txcons = (c->txcons + 1) & (Txring - 1);
 	}
 	for(;;){
 		r = &c->txr[4 * c->txi];
@@ -818,7 +836,7 @@ ethtx(Ether *edev)
 		/* coalesce: only every Nth frame raises a completion IRQ */
 		if((c->txi & (Txirqevery - 1)) == 0)
 			r[1] |= TxDesc1Irqoncomplete;
-		if(c->txi == TXRING - 1)
+		if(c->txi == Txring - 1)
 			r[1] |= TxDesc1Endring;
 		r[2] = (u32int)pa;
 		r[3] = 0;
@@ -827,7 +845,7 @@ ethtx(Ether *edev)
 		smtecacheflush(r, 16);		/* push descriptor to DRAM for HW */
 		if(c->dmarunning)
 			csr32w(c->regs, DmaTxpolldemand, 0xFF);
-		c->txi = (c->txi + 1) & (TXRING - 1);
+		c->txi = (c->txi + 1) & (Txring - 1);
 	}
 	iunlock(&c->txlock);
 }
@@ -921,8 +939,8 @@ ethirq(Ureg *, void *arg)
 	}
 }
 
-static Ether *smteether[MAXSMTE];
-static Ctlr smtectlr[MAXSMTE];
+static Ether *smteether[Maxsmte];
+static Ctlr smtectlr[Maxsmte];
 static int smteclockregistered;
 
 static void
@@ -943,7 +961,7 @@ etherserve(Ether *edev)
 	/* e.g. echo debug 1 > /net/ether0/0/ctl to get periodic stats */
 	if(debug && ++c->statstick >= 5000){
 		c->statstick = 0;
-		lasttxi = (c->txi - 1) & (TXRING - 1);
+		lasttxi = (c->txi - 1) & (Txring - 1);
 		print("smte: %s stats irq_seen=0x%08ux rxcons=%d rxprod=%d "
 			"rx_frames=%ud txi=%d tx_done=%ud "
 			"rxd0=0x%08ux txd0[%d]=0x%08ux "
@@ -963,7 +981,7 @@ etherclock(void)
 {
 	int i;
 
-	for(i = 0; i < MAXSMTE; i++)
+	for(i = 0; i < Maxsmte; i++)
 		if(smteether[i] != nil)
 			etherserve(smteether[i]);
 }
@@ -1081,7 +1099,7 @@ ethinit(Ether *edev)
 	dprint("smte: DMA reset, DmaConfig=%#ux\n", csr32r(c->regs, DmaConfig));
 
 	/* Enable flow-control decode; harmless even without pause frames. */
-	csr32w(c->regs, 0x0160 /* MacFcctrl */, 1 /* DecodeEnable */);
+	csr32w(c->regs, MacFcctrl, MacFcctrlDecodeena);
 
 	/*
 	 * Post-reset DMA tunables.  These registers are wiped by
@@ -1116,34 +1134,34 @@ ethinit(Ether *edev)
 		csr32r(c->regs, DmaTxautopoll));
 
 	/* K1 EMAC uses 32-bit DMA addresses */
-	c->rxr = xspanalloc(sizeof(u32int) * 4 * RXRING, 16, 0);
+	c->rxr = xspanalloc(sizeof(u32int) * 4 * Rxring, 16, 0);
 	/*
 	 * TX descriptors are 16 bytes, so four share a 64-byte cache line.
 	 * ethtx's smtecacheflush() of a freshly-queued descriptor writes the
 	 * whole line back, and that carries our stale copies of the other
 	 * three descriptors -- clobbering OWN=host completions the chip just
 	 * wrote to them.  The completions are then lost (the ring jams full,
-	 * inflight stuck near TXRING) and the chip sees OWN=cpu, reports
+	 * inflight stuck near Txring) and the chip sees OWN=cpu, reports
 	 * DmaStatusIrqTxdu and suspends, so bulk TX trickles.  Put the ring
 	 * in non-cacheable memory (Svpbmt NC) so there is no line to clobber;
 	 * the cbo calls on it become no-ops.
 	 */
-	c->txr = ucallocalign(sizeof(u32int) * 4 * TXRING, 16, 0);
-	memset(c->rxr, 0, 4 * RXRING * sizeof(u32int));
-	memset(c->txr, 0, 4 * TXRING * sizeof(u32int));
-	smtecacheflush(c->rxr, 4 * RXRING * sizeof(u32int));
-	smtecacheflush(c->txr, 4 * TXRING * sizeof(u32int));
+	c->txr = ucallocalign(sizeof(u32int) * 4 * Txring, 16, 0);
+	memset(c->rxr, 0, 4 * Rxring * sizeof(u32int));
+	memset(c->txr, 0, 4 * Txring * sizeof(u32int));
+	smtecacheflush(c->rxr, 4 * Rxring * sizeof(u32int));
+	smtecacheflush(c->txr, 4 * Txring * sizeof(u32int));
 
-	c->rxs = mallocz(sizeof(Block*) * RXRING, 1);
-	c->txs = mallocz(sizeof(Block*) * TXRING, 1);
+	c->rxs = mallocz(sizeof(Block*) * Rxring, 1);
+	c->txs = mallocz(sizeof(Block*) * Txring, 1);
 	if(c->rxs == nil || c->txs == nil){
 		print("smte: ERROR mallocz failed\n");
 		return -1;
 	}
 	dprint("smte: rings rxr=%p txr=%p (%d/%d slots, %d bytes/buf)\n",
-		c->rxr, c->txr, RXRING, TXRING, Rbsz);
+		c->rxr, c->txr, Rxring, Txring, Rbsz);
 
-	/* fill all RXRING slots (rxs[] starts all nil from mallocz) */
+	/* fill all Rxring slots (rxs[] starts all nil from mallocz) */
 	c->rxprodi = 0;
 	c->rxconsi = 0;
 	replenish(c);
@@ -1241,7 +1259,7 @@ etherpnp(Ether *edev)
 
 	dprint("smte: etherpnp ctlrno=%d\n", edev->ctlrno);
 
-	if(edev->ctlrno < 0 || edev->ctlrno >= MAXSMTE){
+	if(edev->ctlrno < 0 || edev->ctlrno >= Maxsmte){
 		dprint("smte: ctlrno %d out of range\n", edev->ctlrno);
 		return -1;
 	}
