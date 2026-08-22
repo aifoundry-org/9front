@@ -9,8 +9,8 @@
  *
  * If the PMIC can't be reached, fall back to the on-chip watchdog: shortest
  * timeout, let it fire. Each WDT register write must be preceded by the unlock
- * magic (0xbaba to WDT_WFAR, 0xeb10 to WDT_WSAR). Bit 2 of MPMU_WDTPCR holds
- * the WDT in reset when set; bit 4 (WDTR) of MPMU_APRR enables the WDT reset.
+ * magic (0xbaba to WdtWfar, 0xeb10 to WdtWsar). Bit 2 of MpmuWdtpcr holds
+ * the WDT in reset when set; bit 4 (WDTR) of MpmuAprr enables the WDT reset.
  * TODO maybe remove the fallback if we never need it?
  *
  * Installed via rvreset, which exit() calls after SBI SRST returns.
@@ -20,51 +20,7 @@
 #include "mem.h"
 #include "dat.h"
 #include "fns.h"
-
-enum {
-	WDT_BASE	= 0xD4080000ull,
-	WDT_SIZE	= 0x100,
-	WDT_WFAR	= 0xb0,	/* write-access magic 1: 0xbaba */
-	WDT_WSAR	= 0xb4,	/* write-access magic 2: 0xeb10 */
-	WDT_WMER	= 0xb8,	/* match enable */
-	WDT_WMR		= 0xbc,	/* match value */
-	WDT_WSR		= 0xc0,	/* status */
-	WDT_WCR		= 0xc8,	/* counter reset */
-
-	MPMU_BASE	= 0xD4050000ull,
-	MPMU_SIZE	= 0x2000,
-	MPMU_WDTPCR	= 0x200,	/* WDT power/clock/reset gate */
-	MPMU_APRR	= 0x1020,	/* APRR_WDTR (bit 4) enables reset */
-
-	APMU_BASE	= 0xD4282800ull,
-	APMU_SIZE	= 0x400,
-	APMU_SDH0	= 0x54,		/* SDH0 clock/reset control */
-	APMU_SDH2	= 0xe0,		/* SDH2 clock/reset control */
-	SDH_PORVAL	= 0x100,	/* reset value: block in reset, clocks off, div 1 */
-
-	APBC_BASE	= 0xD4015000ull,
-	APBC_SIZE	= 0x100,
-	APBC_TWSI8	= 0x20,		/* write-only: bit 2 reset, 1 fnclk, 0 apbclk */
-
-	TWSI8_BASE	= 0xD401D800ull,
-	TWSI8_SIZE	= 0x40,
-	TWSI_ICR	= 0x00,
-	 Iue		= 1<<14,	/* unit enable */
-	 Scle		= 1<<13,	/* drive SCL (master) */
-	 Tb		= 1<<3,		/* transfer byte */
-	 Acknak		= 1<<2,		/* NAK after received byte */
-	 Stop		= 1<<1,
-	 Start		= 1<<0,
-	TWSI_ISR	= 0x04,
-	 Irf		= 1<<20,	/* IDBR receive full (W1C) */
-	 Ite		= 1<<19,	/* IDBR transmit empty (W1C) */
-	TWSI_IDBR	= 0x0c,
-
-	PMIC_ADDR	= 0x41,		/* P1 power-management chip on TWSI8 */
-	PMIC_PWRCTRL2	= 0x7e,
-	 PMIC_SHUTDOWN	= 1<<2,		/* shutdown request */
-	 PMIC_RSTREQ	= 1<<1,		/* reset request */
-};
+#include "k1.h"
 
 static int
 twsiwait(uchar *t, ulong bit)
@@ -72,8 +28,8 @@ twsiwait(uchar *t, ulong bit)
 	int i;
 
 	for(i = 0; i < 10000; i++){
-		if(*(ulong*)(t + TWSI_ISR) & bit){
-			*(ulong*)(t + TWSI_ISR) = bit;
+		if(*(ulong*)(t + TwsiIsr) & bit){
+			*(ulong*)(t + TwsiIsr) = bit;
 			return 0;
 		}
 		microdelay(10);
@@ -84,8 +40,8 @@ twsiwait(uchar *t, ulong bit)
 static int
 twsiput(uchar *t, int b, ulong flags)
 {
-	*(ulong*)(t + TWSI_IDBR) = b;
-	*(ulong*)(t + TWSI_ICR) = Iue|Scle|flags|Tb;
+	*(ulong*)(t + TwsiIdbr) = b;
+	*(ulong*)(t + TwsiIcr) = Iue|Scle|flags|Tb;
 	coherence();
 	return twsiwait(t, Ite);
 }
@@ -93,11 +49,11 @@ twsiput(uchar *t, int b, ulong flags)
 static int
 twsiget(uchar *t, ulong flags)
 {
-	*(ulong*)(t + TWSI_ICR) = Iue|Scle|flags|Tb;
+	*(ulong*)(t + TwsiIcr) = Iue|Scle|flags|Tb;
 	coherence();
 	if(twsiwait(t, Irf) < 0)
 		return -1;
-	return *(ulong*)(t + TWSI_IDBR) & 0xFF;
+	return *(ulong*)(t + TwsiIdbr) & 0xFF;
 }
 
 static uchar*
@@ -108,23 +64,23 @@ k1twsi(void)
 
 	if(t != nil)
 		return t;
-	apbc = vmap(APBC_BASE, APBC_SIZE);
-	t = vmap(TWSI8_BASE, TWSI8_SIZE);
+	apbc = vmap(ApbcPhys, ApbcSize);
+	t = vmap(Twsi8Phys, Twsi8Size);
 	if(apbc == nil || t == nil){
 		t = nil;
 		return nil;
 	}
 
 	/* the clock register is write-only: pulse reset, leave clocks on */
-	*(ulong*)(apbc + APBC_TWSI8) = 0x7;
+	*(ulong*)(apbc + ApbcTwsi8) = 0x7;
 	coherence();
 	delay(1);
-	*(ulong*)(apbc + APBC_TWSI8) = 0x3;
+	*(ulong*)(apbc + ApbcTwsi8) = 0x3;
 	coherence();
 	delay(1);
-	vunmap(apbc, APBC_SIZE);
+	vunmap(apbc, ApbcSize);
 
-	*(ulong*)(t + TWSI_ICR) = Iue|Scle;
+	*(ulong*)(t + TwsiIcr) = Iue|Scle;
 	coherence();
 	return t;
 }
@@ -137,11 +93,11 @@ k1pmicread(int reg)
 	t = k1twsi();
 	if(t == nil)
 		return -1;
-	if(twsiput(t, PMIC_ADDR<<1, Start) < 0)
+	if(twsiput(t, PmicAddr<<1, Start) < 0)
 		return -1;
 	if(twsiput(t, reg, 0) < 0)
 		return -1;
-	if(twsiput(t, PMIC_ADDR<<1|1, Start) < 0)
+	if(twsiput(t, PmicAddr<<1|1, Start) < 0)
 		return -1;
 	return twsiget(t, Stop|Acknak);
 }
@@ -154,7 +110,7 @@ k1pmicwrite(int reg, int val)
 	t = k1twsi();
 	if(t == nil)
 		return -1;
-	if(twsiput(t, PMIC_ADDR<<1, Start) < 0)
+	if(twsiput(t, PmicAddr<<1, Start) < 0)
 		return -1;
 	if(twsiput(t, reg, 0) < 0)
 		return -1;
@@ -166,10 +122,10 @@ k1pmicreset(void)
 {
 	int v;
 
-	v = k1pmicread(PMIC_PWRCTRL2);
+	v = k1pmicread(PmicPwrctrl2);
 	if(v < 0)
 		return;
-	k1pmicwrite(PMIC_PWRCTRL2, v | PMIC_RSTREQ);
+	k1pmicwrite(PmicPwrctrl2, v | PmicRstreq);
 	delay(1000);
 }
 
@@ -180,18 +136,18 @@ k1poweroff(void)
 
 	if(!dtbsocmatch("spacemit,k1"))
 		return;
-	v = k1pmicread(PMIC_PWRCTRL2);
+	v = k1pmicread(PmicPwrctrl2);
 	if(v < 0)
 		return;
-	k1pmicwrite(PMIC_PWRCTRL2, v | PMIC_SHUTDOWN);
+	k1pmicwrite(PmicPwrctrl2, v | PmicShutdown);
 	delay(1000);
 }
 
 static void
 k1wdtwrite(uchar *wdt, int off, ulong val)
 {
-	*(ulong*)(wdt + WDT_WFAR) = 0xbaba;
-	*(ulong*)(wdt + WDT_WSAR) = 0xeb10;
+	*(ulong*)(wdt + WdtWfar) = 0xbaba;
+	*(ulong*)(wdt + WdtWsar) = 0xeb10;
 	*(ulong*)(wdt + off) = val;
 	coherence();
 }
@@ -211,8 +167,8 @@ k1reset(void)
 	k1pmicreset();
 	print("pmic reset failed; trying wdt\n");
 
-	wdt = vmap(WDT_BASE, WDT_SIZE);
-	mpmu = vmap(MPMU_BASE, MPMU_SIZE);
+	wdt = vmap(WdtPhys, WdtSize);
+	mpmu = vmap(MpmuPhys, MpmuSize);
 	if (wdt == nil || mpmu == nil)
 		return;
 
@@ -221,24 +177,24 @@ k1reset(void)
 	 * controls back to their power-on values so the ROM sees what it expects
 	 * and might be able to load the SPL.
 	 */
-	apmu = vmap(APMU_BASE, APMU_SIZE);
+	apmu = vmap(ApmuPhys, ApmuSize);
 	if (apmu != nil){
-		*(ulong*)(apmu + APMU_SDH0) = SDH_PORVAL;
-		*(ulong*)(apmu + APMU_SDH2) = SDH_PORVAL;
+		*(ulong*)(apmu + ApmuSdh0) = SdhPorval;
+		*(ulong*)(apmu + ApmuSdh2) = SdhPorval;
 		coherence();
 	}
 
 	/* clock-enable + reset-deassert (bits 0-1 set, bit 2 clear) */
-	v = *(ulong*)(mpmu + MPMU_WDTPCR);
-	*(ulong*)(mpmu + MPMU_WDTPCR) = (v | 0x3) & ~0x4;
+	v = *(ulong*)(mpmu + MpmuWdtpcr);
+	*(ulong*)(mpmu + MpmuWdtpcr) = (v | 0x3) & ~0x4;
 	coherence();
 
-	k1wdtwrite(wdt, WDT_WSR,  0x0);
-	k1wdtwrite(wdt, WDT_WMR,  0x1);	/* shortest timeout */
-	k1wdtwrite(wdt, WDT_WMER, 0x3);	/* enable counter + reset */
-	k1wdtwrite(wdt, WDT_WCR,  0x1);	/* clear/restart counter */
+	k1wdtwrite(wdt, WdtWsr,  0x0);
+	k1wdtwrite(wdt, WdtWmr,  0x1);	/* shortest timeout */
+	k1wdtwrite(wdt, WdtWmer, 0x3);	/* enable counter + reset */
+	k1wdtwrite(wdt, WdtWcr,  0x1);	/* clear/restart counter */
 
-	*(ulong*)(mpmu + MPMU_APRR) |= (1u<<4);
+	*(ulong*)(mpmu + MpmuAprr) |= (1u<<4);
 	coherence();
 
 	delay(5000);
