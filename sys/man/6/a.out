@@ -327,3 +327,6 @@ flags on the compilers will produce symbols for
 .IR acid (1).
 .PP
 Dynamically loadable modules exist, and aren't even used anywhere.
+(However, the
+.B -u
+flag is used to make the RISC-V kernel relocatable.)
