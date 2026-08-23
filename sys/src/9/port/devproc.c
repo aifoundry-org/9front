@@ -915,7 +915,7 @@ procread(Chan *c, void *va, long n, vlong off)
 	switch(QID(c->qid)){
 	case Qmem:
 		addr = off2addr(off);
-		if(addr < KZERO)
+		if(!iskern(addr))
 			return procctlmemio(c, p, addr, va, n, 1);
 
 		if(!iseve() || poolisoverlap(secrmem, (uchar*)addr, n))
