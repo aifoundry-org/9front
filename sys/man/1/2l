@@ -1,6 +1,6 @@
 .TH 2L 1 
 .SH NAME
-0l, 1l, 2l, 5l, 6l, 7l, 8l, 9l, kl, ql, tl, vl \- loaders
+0l, 1l, 2l, 5l, 6l, 7l, 8l, 9l, jl, kl, ql, tl, vl \- loaders
 .SH SYNOPSIS
 .B 2l
 [
@@ -157,7 +157,11 @@ type 1 is Plan 9 boot format and type 2 is the
 regular Plan 9 format, the default.  These are reversed on the MIPS.
 The Next boot format is 3.  Type 4 in
 .I vl
-creates a MIPS executable for an SGI Unix system.
+creates a MIPS executable for an SGI Unix system.  In
+.I jl
+for a RISC-V system, type 5 creates ELF output, and type 6 creates a
+headerless image with padded segments, leaving the program to supply
+its own boot header if it needs one.
 .TP
 .BI -T t
 The text segment starts at address
