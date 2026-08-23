@@ -100,7 +100,10 @@ LIB=\
 
 $p$CONF:D:	$OBJ $CONF.$O $LIB
 	$LD -s -l -u -o $target -H6 -R0x1000 -T$loadaddr $prereq
-	$LD -s -l -u -o $target.elf -H5 -T4128 -R4 -T$loadaddr $prereq
+	# ELF for kexec
+	$LD -s -l -u -o $target.elf -H5 -R4 -T$loadaddr $prereq
+	# ELF with symbols, for source-level gdb-on-qemu
+	$LD -l -u -o $target.elf.sym -H5 -R4 -T$loadaddr $prereq
 
 s$p$CONF:D:	$OBJ $CONF.$O $LIB
 	$LD -l -o $target -R0x1000 -T$loadaddr $prereq
@@ -137,4 +140,4 @@ initcode.out:		init9.$O initcode.$O /$objtype/lib/libc.a
 #	$LD -l -H6 -R1 -T0x40020000 -s -o $target $prereq
 
 $CONF.clean:
-	rm -rf $p$CONF $p$CONF.elf s$p$CONF errstr.h $CONF.c boot$CONF.c
+	rm -rf $p$CONF $p$CONF.elf $p$CONF.elf.sym s$p$CONF errstr.h $CONF.c boot$CONF.c
