@@ -1,13 +1,15 @@
 CONF=rv64
 CONFLIST=rv64 bpif3
 
-# loadaddr is only the link address (-T): the kernel runs in place
-# wherever the loader put it, fixing up its data pointers from the
-# jl -u relocation table and binding the memory layout to the runtime
-# address of _start.  One image boots the bpi-f3 (booti/kexec at
-# 0x40200000), qemu virt (0x80200000) and anything else that loads it
-# 2 MB past the start of usable RAM.
-loadaddr=0x102202000
+# loadaddr is the link address (-T), but the kernel runs in place
+# wherever kexec/booti put it, fixing up its data pointers from the
+# jl -u relocation table and binding memory layout to _start runtime address.
+# CPU type		RAM base
+# qemu-virt		0x80000000
+# BPI-F3 2/4GB  0x40000000; some lower RAM reserved for firmware
+# BPI-F3 > 4GB	ditto, plus second block at 0x100000000
+# K3 (all)		0x100000000, all available
+loadaddr=0x102202000 # could probably be 0x100200000: maybe skip reloc on K3
 
 objtype=riscv64
 </$objtype/mkfile
