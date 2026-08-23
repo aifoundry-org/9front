@@ -440,7 +440,7 @@ static int
 commonllp64(int, Fhdr *fp, ExecHdr *hp)
 {
 	long pgsize;
-	uvlong entry;
+	uvlong entry, base;
 
 	hswal(&hp->e, sizeof(Exec)/sizeof(long), beswal);
 	if(!(hp->e.magic & HDR_MAGIC))
@@ -456,9 +456,18 @@ commonllp64(int, Fhdr *fp, ExecHdr *hp)
 		return 0;
 	entry = beswav(hp->e.hdr[0]);
 
-	pgsize = mach->pgsize;
-	settext(fp, entry, pgsize+fp->hdrsz, hp->e.text, fp->hdrsz);
-	setdata(fp, _round(pgsize+fp->txtsz+fp->hdrsz, pgsize),
+	base = pgsize = mach->pgsize;
+	/* The old assumption: all binaries are based at 0.
+	 * The 32-bit-era a.out header can not tell us the base address.
+	 * But in the 64-bit world, base addresses can be very high.
+	 * The Go toolchain, even the Plan 9 version,
+	 * allows binaries to start at a very high address, which we used
+	 * for gvisor. Make the unwarranted (but surprisingly accurate)
+	 * assumption that an entry above 2G means a start above 2G. */
+	if (entry > 0x80000000)
+		base = (entry>>31)<<31;
+	settext(fp, entry, base+fp->hdrsz, hp->e.text, fp->hdrsz);
+	setdata(fp, _round(base+fp->txtsz+fp->hdrsz, pgsize),
 		hp->e.data, fp->txtsz+fp->hdrsz, hp->e.bss);
 	setsym(fp, hp->e.syms, hp->e.spsz, hp->e.pcsz, fp->datoff+fp->datsz);
 
