@@ -2395,8 +2395,9 @@ ufsrio(SDreq *r)
 				cachedwbse(ut, sizeof *ut);
 				iunlock(c);
 				coherence();
-				print("ufs: rio slot %d: resubmitting after stuck "
-					"completion (attempt %d)\n", slot, try+1);
+				if (debug)
+					print("ufs: rio slot %d: resubmitting after stuck "
+						"completion (attempt %d)\n", slot, try+1);
 				HCR(c, Rutrldbr) = 1<<slot;
 				if(ufswaitslot(c, slot) < 0)
 					print("ufs: rio slot %d TIMED OUT waiting "
