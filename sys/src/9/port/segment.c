@@ -1069,7 +1069,7 @@ segio(Segio *sio, Segment *s, void *a, long n, vlong off, int read)
 			n = m - off;
 		}
 
-		if((uintptr)a < KZERO) {
+		if(!iskern(a)){
 			b = smalloc(n);
 			if(waserror()){
 				free(b);
