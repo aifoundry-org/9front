@@ -113,6 +113,15 @@ install:V: /$objtype/$p$CONF
 /$objtype/$p$CONF:D: $p$CONF s$p$CONF
 	cp -x $p$CONF s$p$CONF /$objtype/
 
+# mk install.9fat: copy 9rv64 to 9fat partition for u-boot; backup to 9rv64.o
+install.%:V:	$p$CONF
+	@{
+	rfork n
+	9fs $stem
+	test -e /n/$stem/$p$CONF && cp /n/$stem/$p$CONF /n/$stem/$p$CONF.o
+	cp $p$CONF /n/$stem/$p$CONF
+	}
+
 <../boot/bootmkfile
 <../port/portmkfile
 <|../port/mkbootrules $CONF
