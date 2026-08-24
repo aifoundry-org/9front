@@ -1,49 +1,24 @@
-/* _mainp - APE startup with profiling _main */
-
-#define NPRIVATES	16
-#define FCSR		3
+/*
+ * _mainp - APE startup with profiling.  same hand-off as main9.s, but
+ * _callmain runs _profmain (which enables profiling, then _apemain).
+ */
+#define FCSR	3
 
 GLOBL	_tos(SB), $XLEN
-GLOBL	_privates(SB), $XLEN
-GLOBL	_nprivates(SB), $4
 
-TEXT	_mainp(SB), 1, $(4*XLEN + NPRIVATES*XLEN)
+TEXT	_mainp(SB), 1, $0
 	MOV	$setSB(SB), R3
 	MOV	R0, CSR(FCSR)
 
 	/* _tos = arg */
 	MOV	R8, _tos(SB)
 
-	MOV	$p-(NPRIVATES*XLEN)(SP), R9
-	MOV	R9, _privates(SB)
-	MOV	$NPRIVATES, R9
-	MOVW	R9, _nprivates(SB)
+	SUB	$XLEN, R2		/* + XLEN auto LR-save frame = 2*XLEN; see main9.s */
+	MOV	$_profmain(SB), R8	/* f, first arg in REGARG */
+	JAL	R1, _callmain(SB)	/* does not return */
 
-	/* _profmain(); */
-	JAL	R1, _profmain(SB)
-
-	/* _tos->prof.pp = _tos->prof.next; */
-	MOV	_tos+0(SB), R10
-	MOV	XLEN(R10), R9
-	MOV	R9, (R10)
-
-	JAL	R1, _envsetup(SB)	/* may trash any non-stable register */
-
-	/* main(argc, argv, environ); */
-	MOVW	inargc-XLEN(FP), R8	/* argc */
-	MOV	$inargv+0(FP), R9
-//	AND	$~(XLEN-1), R2		/* vlong alignment */
-	MOV	R9, (2*XLEN)(R2)	/* argv */
-	MOV	environ(SB), R9
-	MOV	R9, (3*XLEN)(R2)	/* environ */
-	JAL	R1, main(SB)
-loop:
-	/* exit(main(argc, argv, environ)) */
 	JAL	R1, exit(SB)
-
-	MOV	$_profin(SB), R0	/* force loading of profile */
-	MOV	R0, R8
-	JMP	loop
+	RET
 
 TEXT	_savearg(SB), 1, $0
 TEXT	_saveret(SB), 1, $0
