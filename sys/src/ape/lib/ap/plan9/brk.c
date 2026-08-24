@@ -3,7 +3,9 @@
 #include <stdint.h>
 #include "sys9.h"
 
-char	end[];
+extern	char	end[];		/* linker's end-of-bss; must be extern, not a
+				 * tentative def, or the pointer init below is
+				 * relocated as 32 bits and truncates the heap base */
 static	char	*bloc = { end };
 extern	int	_BRK_(void*);
 
