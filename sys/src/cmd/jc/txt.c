@@ -658,15 +658,19 @@ gmove(Node *f, Node *t)
 			return;
 		}
 	}
-	if(ft == TFLOAT && f->op == OCONST) {
-		d = f->fconst;
-		if(d == 0) {
-			a = FREGZERO;
-		ffreg:
-			nodreg(&nod, f, NREG+a);
-			gmove(&nod, t);
-			return;
-		}
+	/*
+	 * ffreg: shared exit for the TDOUBLE constant cases above.
+	 * single (TFLOAT) 0.0f must NOT use FREGZERO: on riscv64 the
+	 * shared FREGZERO holds a double 0.0, which is not NaN-boxed and
+	 * so is treated as NaN by single-precision ops (e.g. FEQ.S), so
+	 * every float==0.0f wrongly returns false.  load single
+	 * constants (including 0.0f) normally instead, below.
+	 */
+	if(0) {
+	ffreg:
+		nodreg(&nod, f, NREG+a);
+		gmove(&nod, t);
+		return;
 	}
 
 	/*
