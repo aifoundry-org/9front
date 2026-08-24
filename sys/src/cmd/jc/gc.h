@@ -220,6 +220,8 @@ void	reglcgen(Node*, Node*, Node*);
 void	lcgen(Node*, Node*);
 void	bcgen(Node*, int);
 void	boolgen(Node*, int, Node*);
+void	fboolzero(Node*, Node*);
+void	fboolzerofree(Node*, Node*);
 void	sugen(Node*, Node*, long);
 void	layout(Node*, Node*, int, int, Node*);
 
