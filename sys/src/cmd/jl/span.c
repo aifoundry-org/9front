@@ -119,6 +119,13 @@ span(void)
 						o = oplook(p);
 						m = asmout(p, o, 3);
 						p->mark &= ~COMPR;
+						/*
+						 * Growing this JAL to the long
+						 * form shifts everything after it,
+						 * which can push another call out
+						 * of range; iterate until stable.
+						 */
+						bflag = 1;
 					}
 				}
 			}
