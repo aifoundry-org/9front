@@ -146,6 +146,7 @@ install:V:
 			echo CALL_PAL '$'0x83
 			echo RET
 		case riscv64
+			b=`{echo $i | sed 's/^_//' | tr a-z A-Z}
 			if(~ $i seek)
 				# sed s/SYSCALL/$n/ ../$objtype/$i.s
 				echo TEXT _seek'(SB)', 1, '$0'
@@ -159,15 +160,18 @@ install:V:
 			#
 			# jc doesn't widen longs to vlongs when pushing them.
 			# so we have to be careful here to only push longs for
-			# long first arguments.
+			# long first arguments.  match on $b (name upper-cased,
+			# leading _ stripped) so it works for both libc (lower
+			# case $i) and APE (_UPPER $i); upper-case labels also
+			# survive APE's s/seek/_SEEK/ rewrite.
 			#
-			switch ($i) {
-			case nsec
+			switch ($b) {
+			case NSEC
 				;
-			case bind chdir exec _exits segbrk open  pipe create \
-			    brk_ remove notify segdetach segfree segflush \
-			    rendezvous unmount semacquire semrelease seek \
-			    errstr stat wstat await tsemacquire
+			case BIND CHDIR EXEC EXITS SEGBRK OPEN  PIPE CREATE \
+			    BRK_ REMOVE NOTIFY SEGDETACH SEGFREE SEGFLUSH \
+			    RENDEZVOUS UNMOUNT SEMACQUIRE SEMRELEASE SEEK \
+			    ERRSTR STAT WSTAT AWAIT TSEMACQUIRE
 				echo MOV R8, '0(FP)'	# vlong or ptr
 			case *
 				echo MOVW R8, '0(FP)'	# long
