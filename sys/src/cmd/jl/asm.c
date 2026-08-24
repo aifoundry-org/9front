@@ -916,10 +916,17 @@ asmout(Prog *p, Optab *o, int aflag)
 		if(p->as == AMOVW || p->as == AMOV)
 			r = classreg(&p->from);
 		if(thechar == 'j' && v >= 0x7ffff800){
-			/* awkward edge case */
-			o1 = OP_U(p->to.reg, -v);
+			/*
+			 * awkward edge case: lui+addi can't build this value
+			 * without the addi's sign extension corrupting it, so
+			 * build it with lui+xori instead.  It must still land
+			 * in REGTMP (not p->to.reg): the op below reads the
+			 * original operand from p->to.reg (r == p->to.reg for
+			 * a two-address op), so clobbering it loses the operand.
+			 */
+			o1 = OP_U(REGTMP, -v);
 			v &= 0xFFF;
-			o2 = OP_FI(4, p->to.reg, p->to.reg, v);	/* xori */
+			o2 = OP_FI(4, REGTMP, REGTMP, v);	/* xori */
 		}else{
 			if(v & 0x800)
 				v += 0x1000;
