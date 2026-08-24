@@ -961,17 +961,20 @@ asmout(Prog *p, Optab *o, int aflag)
 
 	case 18:	/* lui/auipc L1, T; jal [r,]L0(T) */
 		/* p->cond->pc == p->pc here; pc is current instruction */
+		/*
+		 * compute in vlong: INITTEXT (text base, 0x1000000000 on
+		 * rv64) does not fit in long, so doing this in long truncates
+		 * and the range check below spuriously fails once a program is
+		 * big enough to need the long (auipc+jalr) call form.
+		 */
 		if(p->cond == P)
-			v = 0;
+			vv = 0;
 		else
-			v = p->cond->pc - (pc + INITTEXT);
-		if(thechar == 'j'){
-			vv = v + INITTEXT;
-			v = (long)vv;
-			if(v != vv || (v&~0x7FF) == 0x7FFFF800)
-				diag("branch out of range\n%P", p);
-		}else
-			v += INITTEXT;
+			vv = (vlong)p->cond->pc - (pc + INITTEXT);
+		vv += INITTEXT;			/* auipc is pc-relative: target - pc */
+		v = (long)vv;
+		if(thechar == 'j' && (v != vv || (vv&~(vlong)0x7FF) == 0x7FFFF800))
+			diag("branch out of range\n%P", p);
 		/* if low immediate offset looks negative, skip to next page */
 		if(v & 0x800)
 			v += 0x1000;
