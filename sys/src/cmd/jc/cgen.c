@@ -641,6 +641,34 @@ bcgen(Node *n, int true)
 }
 
 /*
+ * Set up nod1 as a floating 0 to test n against.  For double we use the
+ * shared FREGZERO (which holds a double 0.0).  For single we must NOT:
+ * FREGZERO's value is a plain double 0.0, not NaN-boxed, so single ops
+ * (FEQ.S) treat it as NaN and every if(floatvar) mistests.  Load a real
+ * 0.0f into a fresh register instead.  fboolzerofree() releases it.
+ */
+void
+fboolzero(Node *nod1, Node *n)
+{
+	Node nodc;
+
+	if(n->type->etype == TFLOAT) {
+		regalloc(nod1, n, Z);
+		nodc = *nodfconst(0.0);
+		nodc.type = n->type;
+		gmove(&nodc, nod1);
+	} else
+		nodreg(nod1, n, NREG+FREGZERO);
+}
+
+void
+fboolzerofree(Node *nod1, Node *n)
+{
+	if(n->type->etype == TFLOAT)
+		regfree(nod1);
+}
+
+/*
  * If nn == Z, conditional branch if bool(n) != true
  * If nn != Z, assign n = (bool(n) == true)
  */
@@ -667,8 +695,9 @@ boolgen(Node *n, int true, Node *nn)
 		if(nn == Z) {
 			o = true? OEQ : ONE;
 			if(typefd[n->type->etype]) {
-				nodreg(&nod1, n, NREG+FREGZERO);
+				fboolzero(&nod1, n);
 				gopcode(o, &nod, &nod1, Z);
+				fboolzerofree(&nod1, n);
 			} else
 				gopcode(o, &nod, Z, Z);
 			regfree(&nod);
@@ -677,8 +706,9 @@ boolgen(Node *n, int true, Node *nn)
 		if(typefd[n->type->etype]) {
 			regalloc(&nod2, nn, nn);
 			o = true? ONE : OEQ;
-			nodreg(&nod1, n, NREG+FREGZERO);
+			fboolzero(&nod1, n);
 			gopcode(o, &nod, &nod1, &nod2);
+			fboolzerofree(&nod1, n);
 			gopcode(OAS, &nod2, Z, nn);
 			regfree(&nod2);
 			regfree(&nod);
