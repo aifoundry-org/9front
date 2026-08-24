@@ -3,6 +3,10 @@ objtype=riscv64
 <$APE/config
 LIB=/$objtype/lib/ape/libap.a
 
+# memset intentionally omitted: use portable gen/memset.c.
+# the hand-written memset.s read the length as 8 bytes, but jc packs
+# int/size_t args in 4-byte slots, so it overran the stack.
+
 OFILES=\
 	argv0.$O\
 	cycles.$O\
@@ -16,7 +20,7 @@ OFILES=\
 #	memchr.$O\
 #	memcmp.$O\
 #	memmove.$O\
-	memset.$O\
+#	memset.$O\
 	notetramp.$O\
 	_seek.$O\
 	setjmp.$O\
