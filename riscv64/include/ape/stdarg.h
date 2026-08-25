@@ -22,5 +22,7 @@ typedef	unsigned long long va_list;
 	(sizeof(mode) == 4)?\
 		((list += 4), (mode*)list)[-1]:\
 		((mode*)(list = (list + sizeof(mode)+7) & ~7))[-1])
+#define va_copy(dst, src)\
+	((dst) = (src))
 
 #endif /* __STDARG */
