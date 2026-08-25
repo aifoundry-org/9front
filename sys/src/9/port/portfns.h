@@ -157,6 +157,7 @@ void		init0(void);
 void		initseg(void);
 int		ioalloc(ulong, ulong, ulong, char*);
 void		iofree(ulong);
+void		iofreetag(ulong, char*);
 void		iomapinit(ulong);
 int		ioreserve(ulong, ulong, ulong, char*);
 int		ioreservewin(ulong, ulong, ulong, ulong, char*);
@@ -377,8 +378,7 @@ void		timerintr(Ureg*, Tval);
 void		timerset(Tval);
 ulong		tk2ms(ulong);
 #define		TK2MS(x) ((x)*(1000/HZ))
-uvlong		tod2fastticks(vlong);
-vlong		todget(vlong*, vlong*);
+void		todget(vlong*, vlong*, vlong*, vlong*);
 void		todsetfreq(vlong);
 void		todinit(void);
 void		todset(vlong, vlong, int);
@@ -433,6 +433,8 @@ void		hnputs(void*, ushort);
 uvlong		nhgetv(void*);
 uint		nhgetl(void*);
 ushort		nhgets(void*);
+vlong		nsec(void);
+vlong		uptime(void);
 ulong		µs(void);
 long		lcycles(void);
 

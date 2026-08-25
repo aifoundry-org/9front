@@ -6,29 +6,6 @@
 #include "dat.h"
 #include "fns.h"
 
-enum {
-	Qmainroot,
-	Qadmroot,
-	Qadmuser,
-	Nreamqid,
-};
-
-static void
-fillxdir(Xdir *d, vlong qid, char *name, int type, int mode)
-{
-	memset(d, 0, sizeof(Xdir));
-	d->flag = 0;
-	d->qid = (Qid){qid, 0, type};
-	d->mode = mode;
-	d->atime = 0;
-	d->mtime = 0;
-	d->length = 0;
-	d->name = name;
-	d->uid = -1;
-	d->gid = -1;
-	d->muid = 0;
-}
-
 static void
 initadm(Blk *r, Blk *u, int nu)
 {
@@ -47,11 +24,20 @@ initadm(Blk *r, Blk *u, int nu)
 	packbp(kv.v, kv.nv, &u->bp);
 	setval(r, &kv);
 
-	fillxdir(&d, Qadmuser, "users", QTFILE, 0664);
-	d.length = nu;
+	/* stupid quirk, we sort by length and then alphabet.. */
+	fillxdir(&d, Qctl, "ctl", QTFILE, 0664, 0);
 	dir2kv(Qadmroot, &d, &kv, vbuf, sizeof(vbuf));
 	setval(r, &kv);
-	fillxdir(&d, Qadmroot, "", QTDIR, DMDIR|0775);
+
+	fillxdir(&d, Qadmuser, "users", QTFILE, 0664, nu);
+	dir2kv(Qadmroot, &d, &kv, vbuf, sizeof(vbuf));
+	setval(r, &kv);
+
+	fillxdir(&d, Qstatus, "status", QTFILE, 0664, 0);
+	dir2kv(Qadmroot, &d, &kv, vbuf, sizeof(vbuf));
+	setval(r, &kv);
+
+	fillxdir(&d, Qadmroot, "", QTDIR, DMDIR|0775, 0);
 	dir2kv(-1, &d, &kv, vbuf, sizeof(vbuf));
 	setval(r, &kv);
 
@@ -72,7 +58,7 @@ initroot(Blk *r)
 	Xdir d;
 
 	/* nb: values must be inserted in key order */
-	fillxdir(&d, Qmainroot, "", QTDIR, DMDIR|0775);
+	fillxdir(&d, Qmainroot, "", QTDIR, DMDIR|0775, 0);
 	dir2kv(-1, &d, &kv, vbuf, sizeof(vbuf));
 	setval(r, &kv);
 
@@ -113,8 +99,9 @@ initsnap(Blk *s, Blk *r, Blk *a)
 	t.nlbl = 1;
 	t.ht = 1;
 	t.gen = fs->nextgen++;
-	t.pred = 0;
-	t.succ = 2;
+	t.base = -1;
+	t.pred = -1;
+	t.succ = -1;
 	t.bp = r->bp;
 	p = packtree(p, e - p, &t);
 	kv.nv = p - kv.v;
@@ -133,7 +120,8 @@ initsnap(Blk *s, Blk *r, Blk *a)
 	t.nlbl = 1;
 	t.ht = 1;
 	t.gen = fs->nextgen++;
-	t.pred = 0;
+	t.base = 0;
+	t.pred = -1;
 	t.succ = -1;
 	t.bp = a->bp;
 	p = packtree(p, e - p, &t);
@@ -153,7 +141,8 @@ initsnap(Blk *s, Blk *r, Blk *a)
 	t.nlbl = 1;
 	t.ht = 1;
 	t.gen = fs->nextgen++;
-	t.pred = 0;
+	t.base = 0;
+	t.pred = -1;
 	t.succ = -1;
 	t.bp = r->bp;
 	p = packtree(p, e - p, &t);
@@ -390,26 +379,12 @@ growfs(char *dev)
 	vlong oldsz, newsz, asz, off, eb;
 	int i, narena;
 	Arena *a;
-	Bptr bp;
 	Dir *d;
 
 	if(waserror())
 		sysfatal("grow %s: %s", dev, errmsg());
-	if((fs->fd = open(dev, ORDWR)) == -1)
-		sysfatal("open %s: %r", dev);
 	if((d = dirfstat(fs->fd)) == nil)
 		sysfatal("ream: %r");
-
-	bp = (Bptr){0, -1, -1};
-	fs->sb0 = getblk(bp, GBnochk);
-	unpacksb(fs, fs->sb0->buf, Blksz);
-	if((fs->arenas = calloc(fs->narena, sizeof(Arena))) == nil)
-		sysfatal("malloc: %r");
-	for(i = 0; i < fs->narena; i++){
-		a = &fs->arenas[i];
-		loadarena(a, fs->arenabp[i]);
-		fs->arenabp[i] = a->h0->bp;
-	}
 	a = &fs->arenas[fs->narena-1];
 	oldsz = a->h0->bp.addr + a->size + 2*Blksz;
 	newsz = d->length - d->length%Blksz - 2*Blksz;

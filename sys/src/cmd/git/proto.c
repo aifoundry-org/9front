@@ -108,7 +108,7 @@ readpkt(Conn *c, char *buf, int nbuf)
 		sysfatal("pktline: bad length '%s'", len);
 	n  -= 4;
 	if(n >= nbuf)
-		abort();//sysfatal("pktline: undersize buffer");
+		sysfatal("pktline: undersize buffer");
 	if(readn(c->rfd, buf, n) != n)
 		return -1;
 	if(n > 4 && strncmp(buf, "ERR ", 4) == 0){
@@ -300,7 +300,7 @@ issmarthttp(Conn *c, char *direction)
 }
 
 static int
-dialhttp(Conn *c, char *host, char *port, char *path, char *direction)
+dialhttp(Conn *c, char *proto, char *host, char *port, char *path, char *direction)
 {
 	char *geturl, *suff, *hsep, *psep, *isep;
 
@@ -315,11 +315,11 @@ dialhttp(Conn *c, char *host, char *port, char *path, char *direction)
 	if(path && path[0] && path[strlen(path)-1] != '/')
 		isep = "/";
 	memset(c, 0, sizeof(*c));
-	geturl = smprint("https://%s%s%s%s%s%s%sinfo/refs?service=git-%s-pack",
-		host, hsep, port, psep, path, suff, isep, direction);
+	geturl = smprint("%s://%s%s%s%s%s%s%sinfo/refs?service=git-%s-pack",
+		proto, host, hsep, port, psep, path, suff, isep, direction);
 	c->type = ConnHttp;
-	c->url = smprint("https://%s%s%s%s%s%s%sgit-%s-pack",
-		host, hsep, port, psep, path, suff, isep, direction);
+	c->url = smprint("%s://%s%s%s%s%s%s%sgit-%s-pack",
+		proto, host, hsep, port, psep, path, suff, isep, direction);
 	c->cfd = webclone(c, geturl);
 	free(geturl);
 	if(c->cfd == -1)
@@ -346,9 +346,10 @@ dialssh(Conn *c, char *host, char *, char *path, char *direction)
 	if(pid == -1)
 		sysfatal("unable to fork");
 	if(pid == 0){
-		close(pfd[1]);
 		dup(pfd[0], 0);
 		dup(pfd[0], 1);
+		close(pfd[0]);
+		close(pfd[1]);
 		snprint(cmd, sizeof(cmd), "git-%s-pack", direction);
 		dprint(1, "exec ssh '%s' '%s' %s\n", host, cmd, path);
 		execl("/bin/ssh", "ssh", host, cmd, path, nil);
@@ -393,9 +394,10 @@ dialhjgit(Conn *c, char *host, char *port, char *path, char *direction, int auth
 	if(pid == -1)
 		sysfatal("unable to fork");
 	if(pid == 0){
-		close(pfd[1]);
 		dup(pfd[0], 0);
 		dup(pfd[0], 1);
+		close(pfd[0]);
+		close(pfd[1]);
 		dprint(1, "exec tlsclient -a %s\n", ds);
 		if(auth)
 			execl("/bin/tlsclient", "tlsclient", "-a", ds, nil);
@@ -447,9 +449,10 @@ servelocal(Conn *c, char *path, char *direction)
 	if(pid == -1)
 		sysfatal("unable to fork");
 	if(pid == 0){
-		close(pfd[1]);
 		dup(pfd[0], 0);
 		dup(pfd[0], 1);
+		close(pfd[0]);
+		close(pfd[1]);
 		execl("/bin/git/serve", "serve", "-w", nil);
 		sysfatal("exec: %r");
 	}
@@ -500,7 +503,7 @@ gitconnect(Conn *c, char *uri, char *direction)
 	else if(strcmp(proto, "gits") == 0)
 		return dialhjgit(c, host, port, path, direction, 0);
 	else if(strcmp(proto, "http") == 0 || strcmp(proto, "https") == 0)
-		return dialhttp(c, host, port, path, direction);
+		return dialhttp(c, proto, host, port, path, direction);
 	werrstr("unknown protocol %s", proto);
 	return -1;
 }

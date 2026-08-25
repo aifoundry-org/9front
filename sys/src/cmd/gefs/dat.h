@@ -4,7 +4,6 @@ typedef struct Arena	Arena;
 typedef struct Bfree	Bfree;
 typedef struct Blk	Blk;
 typedef struct Bptr	Bptr;
-typedef struct Bucket	Bucket;
 typedef struct Chan	Chan;
 typedef struct Conn	Conn;
 typedef struct Cron	Cron;
@@ -94,6 +93,13 @@ enum {
 };
 
 enum {
+	Qmainroot,
+	Qadmroot,
+	Qadmuser,
+	Nreamqid,
+};
+
+enum {
 	/*
 	 * dent: pqid[8] qid[8] -- a directory entry key.
 	 * ptr:  off[8] hash[8] gen[8] -- a key for an Dir block.
@@ -131,8 +137,10 @@ enum {
 };
 
 enum {
-	Qdump	= 1ULL << 63,
-	Qctl	= ~0ULL,
+	Qmagic	= 1ULL << 63,
+	Qdump	= Qmagic,
+	Qctl,
+	Qstatus,
 };
 
 #define Zb (Bptr){-1, -1, -1}
@@ -141,6 +149,7 @@ enum {
 /* internal errors */
 //#define Efs	(abort(), "fs broke")
 extern char Efs[];
+extern char Enoval[];
 extern char Ecorrupt[];
 extern char Efsvers[];
 extern char Eimpl[];
@@ -180,8 +189,15 @@ extern char Enone[];
 extern char Enoauth[];
 extern char Ephase[];
 extern char Ecdir[];
-extern char Ectl[];
+extern char Ebadctl[];
 extern char Enoqid[];
+extern char Echeck[];
+extern char Eopen[];
+extern char Eoffset[];
+
+extern char Esnapu[];
+extern char Esnapx[];
+extern char Esnapr[];
 
 extern char Ewstatt[];
 extern char Ewstatb[];
@@ -291,6 +307,7 @@ enum {
 	Owstat,		/* update kvp dirent */
 	Orelink,	/* rechain forwards */
 	Oreprev,	/* rechain backwards */
+	Oincref,	/* adjust refs on snap */
 	Nmsgtype,	/* maximum message type */
 };
 
@@ -311,6 +328,7 @@ enum{
 	Owuid	= 1<<4,	/* [4]uid: set uid */
 	Owgid	= 1<<5,	/* [4]uid: set gid */
 	Owmuid	= 1<<6,	/* [4]uid: set muid */
+	Owqpath = 1<<7, /* [8]qpath: set qid.path */
 };
 
 /*
@@ -345,6 +363,7 @@ enum {
 	DFbp,
 	DFmnt,
 	DFtree,
+	DFclose,
 	DFdlist,
 };
 
@@ -405,13 +424,8 @@ struct Arange {
 	vlong	len;
 };
 
-struct Bucket {
-	Blk	*b;
-};
-
 struct Amsg {
 	int	op;
-	int	fd;
 	union {
 		/* AOsync, AOhalt: no data */
 		struct {	/* AOsnap */
@@ -453,8 +467,8 @@ struct Tree {
 	int	dirty;
 
 	/* on-disk */
-	int	nref;	/* number snapshots forked/after us */
-	int	nlbl;	/* number of labels referring to us */
+	int	nref;	/* number of forks */
+	int	nlbl;	/* number of labels */
 	int	ht;	/* height of the tree */
 	uint	flag;	/* flag set */
 	Bptr	bp;	/* block pointer of root */
@@ -518,7 +532,19 @@ struct Gefs {
 	int	blksz;
 	int	bufspc;
 	Tree	snap;
-	Dlist	snapdl;
+	/*
+	 * when freeing blocks, there are 3 places that
+	 * the dirty blocks may come from; we can get them
+	 * from freeing blocks when updating the snap tree,
+	 * from freeing dlists, or from dropping dlists.
+	 * 
+	 * we can't reuse the blocks until after the superblock
+	 * points at a new tree that doesn't include them, so
+	 * this is where we stash the blocks until the sync()
+	 * call completes.
+	 */
+	Dlist	snapdl;		/* on disk */
+	Dlist	dropdl;		/* in mem */
 	int	narena;
 	vlong	flag;
 	vlong	nextqid;	/* protected by mutlk */
@@ -549,14 +575,17 @@ struct Gefs {
 
 	Chan	*wrchan;
 	Chan	*admchan;
+	Chan	*swchan;
 	Chan	**rdchan;
 
 	QLock	mutlk;
 	Along	nworker;
+
 	Along	epoch;
 	Along	lepoch[32];
 	Aptr	limbo[3]; /* Limbo* */
 	Along	nlimbo;
+	Lock	epochlk;
 
 	Syncq	syncq[32];
 
@@ -582,7 +611,7 @@ struct Gefs {
 	/* block lru */
 	QLock	lrulk;
 	Rendez	lrurz;
-	Bucket	*bcache;
+	Blk	**bcache;
 	Blk	*chead;
 	Blk	*ctail;
 	usize	ccount;
@@ -640,12 +669,11 @@ struct Dent {
 	Key;
 	Xdir;
 	Dent	*next;
-	QLock	trunclk;
 	Rendez	truncrz;
 	vlong	up;
 	Along	ref;
+	int	trunc;
 	char	gone;
-	char	trunc;
 
 	union {
 		char	buf[Maxent];
@@ -703,11 +731,6 @@ struct Conn {
 struct Fid {
 	RWLock;
 	Fid	*next;
-	/*
-	 * if opened with OEXEC, we want to use a snapshot,
-	 * instead of the most recent root, to prevent
-	 * paging in the wrong executable.
-	 */
 	Mount	*mnt;
 	Scan	*scan;	/* in progres scan */
 	Dent	*dent;	/* (pqid, name) ref, modified on rename */
@@ -728,6 +751,8 @@ struct Fid {
 
 	char	permit;
 	char	fromdump;
+
+	void	*aux;
 };
 
 enum {

@@ -303,44 +303,6 @@ dnsexists(char *d)
 	return r;
 }
 
-/*
- * make callers from class A networks infested by spammers
- * wait longer.
- */
-
-static char netaspam[256] = {
-	[58]	1,
-	[66]	1,
-	[71]	1,
-
-	[76]	1,
-	[77]	1,
-	[78]	1,
-	[79]	1,
-	[80]	1,
-	[81]	1,
-	[82]	1,
-	[83]	1,
-	[84]	1,
-	[85]	1,
-	[86]	1,
-	[87]	1,
-	[88]	1,
-	[89]	1,
-
-	[190]	1,
-	[201]	1,
-	[217]	1,
-};
-
-static int
-delaysecs(void)
-{
-	if (netaspam[rsysip[0]])
-		return 60;
-	return 15;
-}
-
 static char *badtld[] = {
 	"localdomain",
 	"localhost",
@@ -467,7 +429,7 @@ hello(String *himp, int extended)
 		authenticate = 1;
 	}else{
 		if(Dflag)
-			sleep(delaysecs()*1000);
+			sleep(15*1000);
 		if(!qflag)
 			syslog(0, "smtpd", "Hung up on %s; claimed to be %s",
 				nci->rsys, him);
@@ -483,7 +445,7 @@ hello(String *himp, int extended)
 		syslog(0, "smtpd", "%s from %s as %s", extended? "ehlo": "helo",
 			nci->rsys, him);
 	if(Dflag)
-		sleep(delaysecs()*1000);
+		sleep(15*1000);
 	reply("250%c%s you are %s\r\n", extended ? '-' : ' ', dom, him);
 	if (extended) {
 		reply("250-ENHANCEDSTATUSCODES\r\n");	/* RFCs 2034 and 3463 */
@@ -577,10 +539,12 @@ rdsenders(void)
 	if (sf == nil)
 		return 1;
 	while ((line = Brdline(sf, '\n')) != nil) {
-		if (line[0] == '#' || line[0] == '\n')
-			continue;
 		lnlen = Blinelen(sf);
-		line[lnlen-1] = '\0';		/* clobber newline */
+		if (lnlen == 0 || line[0] == '#' || line[0] == '\n')
+			continue;
+		line[lnlen-1] = '\0';		/* clobber nl */
+		if(lnlen > 1 && line[lnlen-2] == '\r')
+			line[lnlen-2] = '\0';		/* clobber cr */
 		nf = tokenize(line, toks, nelem(toks));
 		if (nf != nelem(toks))
 			continue;		/* malformed line */
@@ -1146,7 +1110,7 @@ chkhdr(char *s, int n)
 static void
 fancymsg(int status)
 {
-	static char msg[2*ERRMAX], *p, *e;
+	static char msg[2*ERRMAX], *p;
 
 	if(!status)
 		return;
@@ -1594,6 +1558,7 @@ starttls(void)
 	}
 	chain = readcertchain(tlscert);
 	if (chain == nil) {
+		syslog(0, "smtpd", "TLS reading certificate chain from '%s' failed", tlscert);
 		reply("454 4.7.5 TLS not available\r\n");
 		return;
 	}
@@ -1653,7 +1618,7 @@ passauth(char *u, char *secret)
 void
 auth(String *mech, String *resp)
 {
-	char *user, *pass;
+	char *user, *pass, *p, *e;
 	AuthInfo *ai = nil;
 	Chalstate *chs = nil;
 	String *s_resp1_64 = nil, *s_resp2_64 = nil, *s_resp1 = nil;
@@ -1692,8 +1657,21 @@ auth(String *mech, String *resp)
 			goto bomb_out;
 		}
 		memset(s_to_c(s_resp1_64), 'X', s_len(s_resp1_64));
-		user = s_to_c(s_resp1) + strlen(s_to_c(s_resp1)) + 1;
-		pass = user + strlen(user) + 1;
+		p = s_to_c(s_resp1);
+		e = p + s_len(s_resp1);
+		/* authorization-id\0user-id\0password */
+		if((p = memchr(p, 0, (e - p))) == nil){
+			rejectcount++;
+			reply("501 5.5.4 Cannot decode base64\r\n");
+			goto bomb_out;
+		}
+		user = ++p;
+		if((p = memchr(p, 0, (e - p))) == nil){
+			rejectcount++;
+			reply("501 5.5.4 Cannot decode base64\r\n");
+			goto bomb_out;
+		}
+		pass = ++p;
 		authenticated = passauth(user, pass) != -1;
 		memset(pass, 'X', strlen(pass));
 		goto windup;

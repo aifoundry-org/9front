@@ -194,7 +194,7 @@ initfs(vlong cachesz, int rdonly)
 	fs->cmax = cachesz/Blksz;
 	if(fs->cmax > (1<<30))
 		sysfatal("cache too big");
-	if((fs->bcache = mallocz(fs->cmax*sizeof(Bucket), 1)) == nil)
+	if((fs->bcache = mallocz(fs->cmax*sizeof(Blk*), 1)) == nil)
 		sysfatal("malloc: %r");
 
 	fs->dlcount = 0;
@@ -415,6 +415,7 @@ main(int argc, char **argv)
 	if((*errctx = mallocz(sizeof(Errctx), 1)) == nil)
 		sysfatal("malloc: %r");
 	tmfmtinstall();
+	quotefmtinstall();
 	fmtinstall('H', encodefmt);
 	fmtinstall('B', Bconv);
 	fmtinstall('M', Mconv);
@@ -440,20 +441,21 @@ main(int argc, char **argv)
 		reamfs(dev);
 		exits(nil);
 	}
+	loadfs(dev);
 	if(grow){
 		growfs(dev);
 		exits(nil);
 	}
 	if(checkonly){
-		loadfs(dev);
+		qlock(&fs->mutlk);
 		if(!checkfs(2))
 			sysfatal("broken fs: %r");
+		qunlock(&fs->mutlk);
 		exits(nil);
 	}
-
 	rfork(RFNOTEG);
-	loadfs(dev);
 	fs->wrchan = mkchan(32);
+	fs->swchan = mkchan(32);
 	fs->admchan = mkchan(32);
 	/*
 	 * for spinning disks, parallel sync tanks performance
@@ -475,6 +477,7 @@ main(int argc, char **argv)
 	ctlfd = postfd(srvname, ".cmd", 0600);
 	xlaunch(runcons, (void*)ctlfd, aincl(&fs->nworker, 1), "ctl");
 	xlaunch(runmutate, nil, aincl(&fs->nworker, 1), "mutate");
+	xlaunch(runadm, nil, aincl(&fs->nworker, 1), "adm");
 	xlaunch(runsweep, nil, aincl(&fs->nworker, 1), "sweep");
 	xlaunch(runtasks, nil, -1, "tasks");
 	for(i = 0; i < fs->nreaders; i++)

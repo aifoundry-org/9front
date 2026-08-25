@@ -277,6 +277,7 @@ retag2kv(vlong gen, vlong link, int dlbl, int dref, Kvp *kv, char *buf, int nbuf
 {
 	char *p;
 
+	assert(gen != -1);
 	assert(nbuf >= 8+1+1);
 	kv->k = buf;
 	if((p = packsnap(buf, nbuf, gen)) == nil)
@@ -511,4 +512,20 @@ unpacksb(Gefs *fi, char *p0, int sz)
 		error("corrupt superblock: %llx != %llx", dh, xh);
 	assert(fi->narena < 256);	/* should be more than anyone needs */
 	return p;
+}
+
+void
+fillxdir(Xdir *d, vlong qid, char *name, int type, int mode, vlong len)
+{
+	memset(d, 0, sizeof(Xdir));
+	d->flag = 0;
+	d->qid = (Qid){qid, 0, type};
+	d->mode = mode;
+	d->atime = 0;
+	d->mtime = 0;
+	d->length = len;
+	d->name = name;
+	d->uid = -1;
+	d->gid = -1;
+	d->muid = 0;
 }

@@ -27,7 +27,7 @@ if(! nusb/usbd $usbdebug)
 			nusb/ether -t url $etherargs $id
 		case 18d14ee3 0bb40003 10046344
 			nusb/ether -t rndis $etherargs $id
-		case 0bda8153
+		case 0bda8153 0bda8156
 			# secretly cdc
 			nusb/ether $etherargs $id
 		case 12092301 # keyboardio model 01 (IAD)
@@ -35,6 +35,7 @@ if(! nusb/usbd $usbdebug)
 		# prevent attachment to nusb/kb for:
 		case 048d5702 # ITE RGB LED Controller
 		case 054c0268 # sony dualshock 3 (ps3) controller
+		case 051d* # APC UPS
 		case *
 			switch($4){
 			case *03

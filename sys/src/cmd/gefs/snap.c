@@ -128,6 +128,10 @@ putdl(Dlist *dl)
 {
 	Dlist *dt;
 
+	/*
+	 * gen==-1 indicates snapdl: cant' compare address
+	 * because the dlist struct may live on the stack.
+	 */
 	if(dl->gen == -1)
 		return;
 	dlcachedel(dl, 0);
@@ -149,33 +153,20 @@ putdl(Dlist *dl)
 }
 
 void
-freedl(Dlist *dl, int docontents)
+freedl(Dlist *dl, int dofree)
 {
-	char buf[Kvmax];
 	Arena *a;
 	Qent qe;
 	Bptr bp;
-	Msg m;
 	Blk *b;
 	char *p;
+	int done;
 
 	bp = dl->hd;
-	if(dl->gen != -1){
-		m.op = Odelete;
-		dlist2kv(dl, &m, buf, sizeof(buf));
-		btupsert(&fs->snap, &m, 1);
-	}
-	while(bp.addr != -1){
+	done = 0;
+	while(bp.addr != -1 && !done){
 		b = getblk(bp, 0);
-		/*
-		 * Because these deadlists are dead-dead at this point,
-		 * they'll never be read from again; we can avoid worrying
-		 * about deferred reclamation, and queue them up to be freed
-		 * directly, which means we don't need to worry about watiing
-		 * for a quiescent state, and the associated out-of-block
-		 * deadlocks that come with it.
-		 */
-		if(docontents){
+		if(dofree){
 			for(p = b->data; p != b->data+b->logsz; p += 8){
 				qe.op = Qfree;
 				qe.bp.addr = UNPACK64(p);
@@ -187,6 +178,7 @@ freedl(Dlist *dl, int docontents)
 				traceb("dlclear", qe.bp);
 			}
 		}
+		done = (bp.addr == dl->tl.addr);
 		bp = b->logp;
 		qe.op = Qfree;
 		qe.bp = b->bp;
@@ -199,23 +191,10 @@ freedl(Dlist *dl, int docontents)
 }
 
 static void
-mergedl(vlong merge, vlong gen, vlong bgen)
+splicedl(Dlist *d, Dlist *m)
 {
-	char buf[2][Kvmax];
-	Dlist *d, *m;
-	Msg msg[2];
 	Blk *b;
 
-	d = nil;
-	m = nil;
-	if(waserror()){
-		putdl(m);
-		putdl(d);
-		nexterror();
-	}
-	d = getdl(merge, bgen);
-	m = getdl(gen, bgen);
-	assert(d != m);
 	/*
 	 * If the dest dlist didn't exist,
 	 * just move the merge dlist over
@@ -223,36 +202,90 @@ mergedl(vlong merge, vlong gen, vlong bgen)
 	 * chain onto the existing dlist
 	 * tail.
 	 */
-	if(m->hd.addr != -1){
-		if(d->hd.addr == -1){
-			assert(d->ins == nil);
-			d->hd = m->hd;
-			d->tl = m->tl;
-			d->ins = m->ins;
+	assert(d != m);
+	if(m->hd.addr == -1)
+		return;
+	if(d->hd.addr == -1){
+		assert(d->ins == nil);
+		d->hd = m->hd;
+		d->tl = m->tl;
+		d->ins = m->ins;
+		m->ins = nil;
+	}else{
+		if(m->ins != nil){
+			enqueue(m->ins);
+			dropblk(m->ins);
 			m->ins = nil;
-		}else{
-			if(m->ins != nil){
-				enqueue(m->ins);
-				dropblk(m->ins);
-				m->ins = nil;
-			}
-			b = getblk(d->tl, 0);
-			b->logp = m->hd;
-			d->tl = m->tl;
-			assert(d->hd.addr != m->hd.addr);
+		}
+		b = getblk(d->tl, 0);
+		b->logp = m->hd;
+		d->tl = m->tl;
+		assert(d->hd.addr != m->hd.addr);
+		/* dlflush writes the tail, so we shouldn't */
+		if(b != d->ins){
 			finalize(b);
 			syncblk(b);
-			dropblk(b);
 		}
+		dropblk(b);
 	}
+}
+
+static void
+mergedl(vlong merge, vlong gen, vlong bgen)
+{
+	char buf[2][Kvmax];
+	Dlist *d, *m;
+	Msg msg[2];
+
+	d = getdl(merge, bgen);
+	m = getdl(gen, bgen);
+	splicedl(d, m);
 	msg[0].op = Odelete;
 	dlist2kv(m, &msg[0], buf[0], sizeof(buf[0]));
 	msg[1].op = Oinsert;
 	dlist2kv(d, &msg[1], buf[1], sizeof(buf[1]));
+	if(waserror()){
+		putdl(m);
+		putdl(d);
+		nexterror();
+	}
 	btupsert(&fs->snap, msg, 2);
+	poperror();
 	putdl(m);
 	putdl(d);
-	poperror();
+}
+
+/*
+ * Reclaims a deadlist after the next superblock
+ * commit.
+ */
+static void
+dropdl(vlong gen, vlong bgen, vlong succ)
+{
+	char buf[Kvmax];
+	Dlist *d;
+	Msg m;
+
+	d = getdl(gen, bgen);
+	m.op = Odelete;
+	dlist2kv(d, &m, buf, sizeof(buf));
+	btupsert(&fs->snap, &m, 1);
+	assert(d->ins == nil);
+	dlcachedel(d, 1);
+	fs->dlcount--;
+	/*
+	 * if we have no successor, it's the
+	 * job of sweeptree to free the block
+	 * contents, we just need to free the
+	 * deadlist blocks; these blocks are
+	 * not part of the tree, and observing
+	 * them is protected by mutlk.
+	 */
+	if(succ == -1)
+		splicedl(&fs->dropdl, d);
+	else
+		splicedl(&fs->snapdl, d);
+	free(d);
 }
 
 static void
@@ -276,10 +309,8 @@ reclaimblocks(vlong gen, vlong succ, vlong prev)
 		}
 		if(succ != -1 && dl.bgen <= prev)
 			mergedl(succ, dl.gen, dl.bgen);
-		else if(dl.bgen <= prev)
-			mergedl(prev, dl.gen, dl.bgen);
 		else
-			freedl(&dl, 1);
+			dropdl(dl.gen, dl.bgen, succ);
 		poperror();
 	}
 	btexit(&s);
@@ -298,7 +329,7 @@ reclaimblocks(vlong gen, vlong succ, vlong prev)
 				btexit(&s);
 				nexterror();
 			}
-			freedl(&dl, 1);
+			dropdl(dl.gen, dl.bgen, succ);
 			poperror();
 		}
 		btexit(&s);
@@ -312,25 +343,26 @@ reclaimblocks(vlong gen, vlong succ, vlong prev)
  *
  * If it has one successor and no label, then
  * it will be merged with that successor.
+ * Returns 1 if we need to sweep the tree
  *
  * Must be called with mntlock held for r
  */
-void
+int
 delsnap(Tree *t, vlong succ, char *name)
 {
 	char *p, buf[4][Kvmax];
-	int nm, deltree;
+	int nm, del;
 	Mount *mnt;
 	Tree *r;
 	Msg m[4];
 
 	nm = 0;
-	deltree = 0;
+	del = 0;
 	if(name != nil){
 		if(strcmp(name, "dump") == 0
 		|| strcmp(name, "empty") == 0
 		|| strcmp(name, "adm") == 0)
-			error(Ename);
+			error(Esnapr);
 
 		m[nm].op = Odelete;
 		m[nm].k = buf[nm];
@@ -342,14 +374,21 @@ delsnap(Tree *t, vlong succ, char *name)
 		nm++;
 	}
  
-	if(t->nlbl == 0 && t->nref <= 1){
-		deltree = 1;
-		m[nm].op = Orelink;
-		retag2kv(t->pred, succ, 0, 0, &m[nm], buf[nm], sizeof(buf[nm]));
-		nm++;
+	if(t->nlbl == 0 && t->nref == 0){
+		del = 1;
+		if(t->pred != -1){
+			m[nm].op = Orelink;
+			retag2kv(t->pred, succ, 0, 0, &m[nm], buf[nm], sizeof(buf[nm]));
+			nm++;
+		}
 		if(t->succ != -1){
 			m[nm].op = Oreprev;
 			retag2kv(t->succ, t->pred, 0, 0, &m[nm], buf[nm], sizeof(buf[nm]));
+			nm++;
+		}
+		if(t->pred == -1 && succ == -1){
+			m[nm].op = Oincref;
+			retag2kv(t->base, -1, 0, -1, &m[nm], buf[nm], sizeof(buf[nm]));
 			nm++;
 		}
 		m[nm].op = Odelete;
@@ -360,23 +399,25 @@ delsnap(Tree *t, vlong succ, char *name)
 		m[nm].nv = 0;
 		nm++;
 	}else{
-		m[nm].op = Oinsert;
-		tree2kv(t, &m[nm], buf[nm], sizeof(buf[nm]));
+		assert(name != nil);
+		m[nm].op = Orelink;
+		retag2kv(t->gen, t->succ, -1, 0, &m[nm], buf[nm], sizeof(buf[nm]));
 		nm++;
 	}
 	assert(nm <= nelem(m));
 	dlsync();
 	btupsert(&fs->snap, m, nm);
-	if(deltree){
+	if(del){
 		reclaimblocks(t->gen, succ, t->pred);
 		for(mnt = agetp(&fs->mounts); mnt != nil; mnt = mnt->next){
 			r = agetp(&mnt->root);
 			if(r->gen == t->succ)
 				r->pred = t->pred;
 			if(r->gen == t->pred)
-				r->succ = t->succ;
+				r->succ = succ;
 		}
 	}
+	return del && succ == -1;
 }
 
 /*
@@ -387,9 +428,11 @@ delsnap(Tree *t, vlong succ, char *name)
 void
 tagsnap(Tree *t, char *name, int flg)
 {
-	char buf[3][Kvmax];
+	char *p, buf[3][Kvmax];
+	Tree n, c;
 	Msg m[3];
-	Tree *n;
+	Kvp kv;
+	Key k;
 	int i;
 
 	if(strcmp(name, "dump") == 0
@@ -398,44 +441,36 @@ tagsnap(Tree *t, char *name, int flg)
 		error(Ename);
 
 	i = 0;
-	n = nil;
 	if(flg & Lmut){
-		n = emalloc(sizeof(Tree), 1);
-		if(waserror()){
-			free(n);
-			nexterror();
-		}
-		aswapl(&n->memref, 1);
-		n->dirty = 0;
-		n->nlbl = 1;
-		n->nref = 0;
-		n->ht = t->ht;
-		n->bp = t->bp;
-		n->succ = -1;
-		/*
-		 * Because we can have blocks in-flight with gen==memgen,
-		 * which both sides of the fork can free, we need to make
-		 * sure that we don't deadlist them in the new snapshot.
-		 *
-		 * As a result, we need to use memgen, and not gen, in
-		 * order to prevent the potential for a double free.
-		 */
-		n->pred = t->gen;
-		n->base = t->memgen;
-		n->gen = fs->nextgen++;
-		n->memgen = fs->nextgen++;
+		p = packsnap(buf[0], sizeof(buf[0]), t->gen);
+		k.k = buf[0];
+		k.nk = p - buf[0];
+		if(!btlookup(&fs->snap, &k, &kv, buf[0], sizeof(buf[0])))
+			broke(Efs);
+		unpacktree(&c, kv.v, kv.nv);
+
+		memset(&n, 0, sizeof(Tree));
+		n.dirty = 0;
+		n.nlbl = 1;
+		n.nref = 0;
+		n.ht = c.ht;
+		n.bp = c.bp;
+		n.succ = -1;
+		n.pred = -1;
+		n.base = t->gen;
+		n.gen = fs->nextgen++;
+		n.memgen = fs->nextgen++;
 
 		t->nref++;
-		m[i].op = Orelink;
-		retag2kv(t->gen, t->succ, 0, 1, &m[i], buf[i], sizeof(buf[i]));
+		m[i].op = Oincref;
+		retag2kv(t->gen, -1, 0, 1, &m[i], buf[i], sizeof(buf[i]));
 		i++;
 		m[i].op = Oinsert;
-		lbl2kv(name, n->gen, flg, &m[i], buf[i], sizeof(buf[i]));
+		lbl2kv(name, n.gen, flg, &m[i], buf[i], sizeof(buf[i]));
 		i++;
 		m[i].op = Oinsert;
-		tree2kv(n, &m[i], buf[i], sizeof(buf[i]));
+		tree2kv(&n, &m[i], buf[i], sizeof(buf[i]));
 		i++;
-		poperror();
 	}else{
 		t->nlbl++;
 
@@ -443,13 +478,11 @@ tagsnap(Tree *t, char *name, int flg)
 		retag2kv(t->gen, t->succ, 1, 0, &m[i], buf[i], sizeof(buf[i]));
 		i++;
 
-		t->pred = t->gen;
 		m[i].op = Oinsert;
 		lbl2kv(name, t->gen, flg, &m[i], buf[i], sizeof(buf[i]));
 		i++;
 	}
 	btupsert(&fs->snap, m, i);
-	free(n);
 }
 
 /*
@@ -467,16 +500,11 @@ updatesnap(Tree *o, char *lbl, int flg)
 	Tree *t;
 	int i;
 
+	assert(flg & Lmut);
 	if(!o->dirty)
 		return o;
 
 	tracex("updatesnap", o->bp, o->memgen, getcallerpc(&o));
-	/* update the old kvp */
-	o->nlbl--;
-	o->nref++;
-
-	/* create the new one */
-
 	t = emalloc(sizeof(Tree), 1);
 	if(waserror()){
 		free(t);
@@ -495,15 +523,20 @@ updatesnap(Tree *o, char *lbl, int flg)
 	t->memgen = fs->nextgen++;
 
 	i = 0;
-	m[i].op = Orelink;
-	if(o->nlbl == 0 && o->nref == 1){
+	o->nlbl--;
+	if(o->nlbl == 0 && o->nref == 0){
 		t->pred = o->pred;
-		retag2kv(t->pred, t->gen, 0, 0, &m[i], buf[i], sizeof(buf[i]));
+		if(t->pred != -1){
+			m[i].op = Orelink;
+			retag2kv(t->pred, t->gen, 0, 0, &m[i], buf[i], sizeof(buf[i]));
+			i++;
+		}
 	}else{
 		t->pred = o->gen;
-		retag2kv(t->pred, t->gen, -1, 1, &m[i], buf[i], sizeof(buf[i]));
+		m[i].op = Orelink;
+		retag2kv(t->pred, t->gen, -1, 0, &m[i], buf[i], sizeof(buf[i]));
+		i++;
 	}
-	i++;
 
 	m[i].op = Oinsert;
 	tree2kv(t, &m[i], buf[i], sizeof(buf[i]));
@@ -517,36 +550,29 @@ updatesnap(Tree *o, char *lbl, int flg)
 	o->dirty = 0;
 
 	/* this was the last ref to the snap */
-	if(o->nlbl == 0 && o->nref == 1)
+	if(o->nlbl == 0 && o->nref == 0)
 		delsnap(o, t->gen, nil);
-	closesnap(o);
+	limbo(DFclose, o);
 	poperror();
 	return t;
 }
 
-/*
- * open snapshot by label, returning a tree.
- */
 Tree*
-opensnap(char *label, int *flg)
+opentree(vlong gen)
 {
 	char *p, buf[Kvmax];
+	Mount *mnt;
 	Tree *t;
-	vlong gen;
 	Kvp kv;
 	Key k;
 
-	/* Klabel{"name"} => Ksnap{id} */
-	if((p = packlbl(buf, sizeof(buf), label)) == nil)
-		return nil;
-	k.k = buf;
-	k.nk = p - buf;
-	if(!btlookup(&fs->snap, &k, &kv, buf, sizeof(buf)))
-		return nil;
-	assert(kv.nv == 1+8+4);
-	gen = UNPACK64(kv.v + 1);
-	if(flg != nil)
-		*flg = UNPACK32(kv.v + 1+8);
+	for(mnt = agetp(&fs->mounts); mnt != nil; mnt = mnt->next){
+		t = agetp(&mnt->root);
+		if(t->gen == gen){
+			aincl(&t->memref, 1);
+			return t;
+		}
+	}
 
 	t = mallocz(sizeof(Tree), 1);
 	if(waserror()){
@@ -563,6 +589,32 @@ opensnap(char *label, int *flg)
 	t->memgen = fs->nextgen++;
 	poperror();
 	return t;
+}
+
+/*
+ * open snapshot by label, returning a tree.
+ */
+Tree*
+opensnap(char *label, int *flg)
+{
+	char *p, buf[Kvmax];
+	vlong gen;
+	Kvp kv;
+	Key k;
+
+	/* Klabel{"name"} => Ksnap{id} */
+	if((p = packlbl(buf, sizeof(buf), label)) == nil)
+		return nil;
+	k.k = buf;
+	k.nk = p - buf;
+	if(!btlookup(&fs->snap, &k, &kv, buf, sizeof(buf)))
+		return nil;
+	assert(kv.nv == 1+8+4);
+	gen = UNPACK64(kv.v + 1);
+	if(flg != nil)
+		*flg = UNPACK32(kv.v + 1+8);
+
+	return opentree(gen);
 }
 
 /*

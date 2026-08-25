@@ -8,6 +8,113 @@
 
 #include "mp.h"
 
+/*
+ * MultiProcessor Specification Version 1.[14].
+ */
+typedef struct {			/* floating pointer */
+	uchar	signature[4];		/* "_MP_" */
+	long	physaddr;		/* physical address of MP configuration table */
+	uchar	length;			/* 1 */
+	uchar	specrev;		/* [14] */
+	uchar	checksum;		/* all bytes must add up to 0 */
+	uchar	type;			/* MP system configuration type */
+	uchar	imcrp;
+	uchar	reserved[3];
+} _MP_;
+
+#define _MP_sz			(4+4+1+1+1+1+1+3)
+
+typedef struct {			/* configuration table header */
+	uchar	signature[4];		/* "PCMP" */
+	ushort	length;			/* total table length */
+	uchar	version;		/* [14] */
+	uchar	checksum;		/* all bytes must add up to 0 */
+	uchar	product[20];		/* product id */
+	ulong	oemtable;		/* OEM table pointer */
+	ushort	oemlength;		/* OEM table length */
+	ushort	entry;			/* entry count */
+	ulong	lapicbase;		/* address of local APIC */
+	ushort	xlength;		/* extended table length */
+	uchar	xchecksum;		/* extended table checksum */
+	uchar	reserved;
+} PCMP;
+
+#define PCMPsz			(4+2+1+1+20+4+2+2+4+2+1+1)
+
+typedef struct {			/* processor table entry */
+	uchar	type;			/* entry type (0) */
+	uchar	apicno;			/* local APIC id */
+	uchar	version;		/* local APIC verison */
+	uchar	flags;			/* CPU flags */
+	uchar	signature[4];		/* CPU signature */
+	ulong	feature;		/* feature flags from CPUID instruction */
+	uchar	reserved[8];
+} PCMPprocessor;
+
+#define PCMPprocessorsz		(1+1+1+1+4+4+8)
+
+typedef struct {			/* bus table entry */
+	uchar	type;			/* entry type (1) */
+	uchar	busno;			/* bus id */
+	char	string[6];		/* bus type string */
+} PCMPbus;
+
+#define PCMPbussz		(1+1+6)
+
+typedef struct {			/* I/O APIC table entry */
+	uchar	type;			/* entry type (2) */
+	uchar	apicno;			/* I/O APIC id */
+	uchar	version;		/* I/O APIC version */
+	uchar	flags;			/* I/O APIC flags */
+	ulong	addr;			/* I/O APIC address */
+} PCMPioapic;
+
+#define PCMPioapicsz		(1+1+1+1+4)
+
+typedef struct {			/* interrupt table entry */
+	uchar	type;			/* entry type ([34]) */
+	uchar	intr;			/* interrupt type */
+	ushort	flags;			/* interrupt flag */
+	uchar	busno;			/* source bus id */
+	uchar	irq;			/* source bus irq */
+	uchar	apicno;			/* destination APIC id */
+	uchar	intin;			/* destination APIC [L]INTIN# */
+} PCMPintr;
+
+#define PCMPintrsz		(1+1+2+1+1+1+1)
+
+typedef struct {			/* system address space mapping entry */
+	uchar	type;			/* entry type (128) */
+	uchar	length;			/* of this entry (20) */
+	uchar	busno;			/* bus id */
+	uchar	addrtype;
+	ulong	addrbase[2];
+	ulong	addrlength[2];
+} PCMPsasm;
+
+#define PCMPsasmsz		(1+1+1+1+8+8)
+
+typedef struct {			/* bus hierarchy descriptor entry */
+	uchar	type;			/* entry type (129) */
+	uchar	length;			/* of this entry (8) */
+	uchar	busno;			/* bus id */
+	uchar	info;			/* bus info */
+	uchar	parent;			/* parent bus */
+	uchar	reserved[3];
+} PCMPhierarchy;
+
+#define PCMPhirarchysz		(1+1+1+1+1+3)
+
+typedef struct {			/* compatibility bus address space modifier entry */
+	uchar	type;			/* entry type (130) */
+	uchar	length;			/* of this entry (8) */
+	uchar	busno;			/* bus id */
+	uchar	modifier;		/* address modifier */
+	ulong	range;			/* predefined range list */
+} PCMPcbasm;
+
+#define PCMPcbasmsz		(1+1+1+1+4)
+
 static PCMP *pcmp;
 
 static char* buses[] = {
@@ -32,42 +139,24 @@ static char* buses[] = {
 	0,
 };
 
-static Bus*
-mpgetbus(int busno)
-{
-	Bus *bus;
-
-	for(bus = mpbus; bus; bus = bus->next)
-		if(bus->busno == busno)
-			return bus;
-
-	print("mpgetbus: can't find bus %d\n", busno);
-	return 0;
-}
-
 static Apic*
 mkprocessor(PCMPprocessor* p)
 {
-	static int machno = 1;
 	int apicno;
 	Apic *apic;
 
 	apicno = p->apicno;
-	if(!(p->flags & PcmpEN) || apicno > MaxAPICNO || mpapic[apicno] != nil)
-		return 0;
+	if(!(p->flags & PcmpEN) || apicno > MaxAPICNO || mpgetapic(mplapic, apicno) != nil)
+		return nil;
 
 	if((apic = xalloc(sizeof(Apic))) == nil)
 		panic("mkprocessor: no memory for Apic");
 	apic->type = PcmpPROCESSOR;
 	apic->apicno = apicno;
+	apic->x2apic = -1;
 	apic->flags = p->flags;
-	apic->lintr[0] = ApicIMASK;
-	apic->lintr[1] = ApicIMASK;
-	if(p->flags & PcmpBP)
-		apic->machno = 0;
-	else
-		apic->machno = machno++;
-	mpapic[apicno] = apic;
+
+	*mplapicp = apic, mplapicp = &apic->next;
 
 	return apic;
 }
@@ -75,74 +164,34 @@ mkprocessor(PCMPprocessor* p)
 static Bus*
 mkbus(PCMPbus* p)
 {
-	Bus *bus;
 	int i;
 
-	for(i = 0; buses[i]; i++)
+	for(i = 0; buses[i] != nil; i++){
 		if(strncmp(buses[i], p->string, sizeof(p->string)) == 0)
-			break;
-	if(buses[i] == 0)
-		return 0;
-
-	if((bus = xalloc(sizeof(Bus))) == nil)
-		panic("mkbus: no memory for Bus");
-	if(mpbus)
-		mpbuslast->next = bus;
-	else
-		mpbus = bus;
-	mpbuslast = bus;
-
-	bus->type = i;
-	bus->busno = p->busno;
-	if(bus->type == BusEISA){
-		bus->po = PcmpLOW;
-		bus->el = PcmpLEVEL;
-		if(mpeisabus != -1)
-			print("mkbus: more than one EISA bus\n");
-		mpeisabus = bus->busno;
+			return mpgetbus(i, p->busno);
 	}
-	else if(bus->type == BusPCI){
-		bus->po = PcmpLOW;
-		bus->el = PcmpLEVEL;
-	}
-	else if(bus->type == BusISA){
-		bus->po = PcmpHIGH;
-		bus->el = PcmpEDGE;
-		if(mpisabus != -1)
-			print("mkbus: more than one ISA bus\n");
-		mpisabus = bus->busno;
-	}
-	else{
-		bus->po = PcmpHIGH;
-		bus->el = PcmpEDGE;
-	}
-
-	return bus;
+	return nil;
 }
 
 static Apic*
 mkioapic(PCMPioapic* p)
 {
-	void *va;
 	int apicno;
 	Apic *apic;
 
 	apicno = p->apicno;
-	if(!(p->flags & PcmpEN) || apicno > MaxAPICNO || mpioapic[apicno] != nil)
-		return 0;
+	if(!(p->flags & PcmpEN) || apicno > MaxAPICNO || mpgetapic(mpioapic, apicno) != nil)
+		return nil;
 	/*
 	 * Map the I/O APIC.
 	 */
-	if((va = vmap(p->addr, 1024)) == nil)
-		return 0;
 	if((apic = xalloc(sizeof(Apic))) == nil)
 		panic("mkioapic: no memory for Apic");
 	apic->type = PcmpIOAPIC;
 	apic->apicno = apicno;
-	apic->addr = va;
 	apic->paddr = p->addr;
 	apic->flags = p->flags;
-	mpioapic[apicno] = apic;
+	*mpioapicp = apic, mpioapicp = &apic->next;
 
 	return apic;
 }
@@ -151,8 +200,8 @@ static Aintr*
 mkiointr(PCMPintr* p)
 {
 	Bus *bus;
+	Apic *apic;
 	Aintr *aintr;
-	PCMPintr* pcmpintr;
 
 	/*
 	 * According to the MultiProcessor Specification, a destination
@@ -160,39 +209,43 @@ mkiointr(PCMPintr* p)
 	 * It's unclear how that can possibly be correct so treat it as
 	 * an error for now.
 	 */
-	if(p->apicno > MaxAPICNO || mpioapic[p->apicno] == nil)
-		return 0;
-	
-	if((bus = mpgetbus(p->busno)) == 0)
-		return 0;
+	if(p->apicno > MaxAPICNO)
+		return nil;
+	if((apic = mpgetapic(mpioapic, p->apicno)) == nil)
+		return nil;
+	if((bus = mpgetbus(-1, p->busno)) == nil)
+		return nil;
 
 	if((aintr = xalloc(sizeof(Aintr))) == nil)
 		panic("mkiointr: no memory for Aintr");
-	aintr->intr = p;
+
+	aintr->type = p->intr;
+	aintr->flags = p->flags;
+	aintr->irq = p->irq;
+	aintr->intin = p->intin;
 
 	if(0)
-		print("mkiointr: type %d intr type %d flags %#o "
+		print("mkiointr: type %d flags %#o "
 			"bus %d irq %d apicno %d intin %d\n",
-			p->type, p->intr, p->flags,
-			p->busno, p->irq, p->apicno, p->intin);
+			aintr->type, aintr->flags,
+			bus->busno, aintr->irq, apic->apicno, aintr->intin);
 	/*
 	 * Hack for Intel SR1520ML motherboard, which BIOS describes
 	 * the i82575 dual ethernet controllers incorrectly.
 	 */
 	if(memcmp(pcmp->product, "INTEL   X38MLST     ", 20) == 0){
 		if(p->busno == 1 && p->intin == 16 && p->irq == 1){
-			if((pcmpintr = xalloc(sizeof(PCMPintr))) == nil)
-				panic("iointr: no memory for PCMPintr");
-			memmove(pcmpintr, p, sizeof(PCMPintr));
 			print("mkiointr: %20.20s bus %d intin %d irq %d\n",
 				(char*)pcmp->product,
-				pcmpintr->busno, pcmpintr->intin,
-				pcmpintr->irq);
-			pcmpintr->intin = 17;
-			aintr->intr = pcmpintr;
+				bus->busno, aintr->intin,
+				aintr->irq);
+			aintr->intin = 17;
 		}
 	}
-	aintr->apic = mpioapic[p->apicno];
+	aintr->apic = apic;
+	aintr->anext = apic->aintr;
+	apic->aintr = aintr;
+
 	aintr->next = bus->aintr;
 	aintr->bus = bus;
 	bus->aintr = aintr;
@@ -200,45 +253,49 @@ mkiointr(PCMPintr* p)
 	return aintr;
 }
 
-static int
+static void
 mklintr(PCMPintr* p)
 {
-	Apic *apic;
 	Bus *bus;
-	int i, intin, v;
+	Apic *apic;
+	Aintr *aintr;
+
+	if(p->intin > 1)
+		return;
 
 	/*
 	 * The offsets of vectors for LINT[01] are known to be
 	 * 0 and 1 from the local APIC vector space at VectorLAPIC.
 	 */
-	if((bus = mpgetbus(p->busno)) == 0)
-		return 0;
-	intin = p->intin;
+	if((bus = mpgetbus(-1, p->busno)) == nil)
+		return;
 
-	/*
-	 * Pentium Pros have problems if LINT[01] are set to ExtINT
-	 * so just bag it, SMP mode shouldn't need ExtINT anyway.
-	 */
-	if(p->intr == PcmpExtINT || p->intr == PcmpNMI)
-		v = ApicIMASK;
-	else
-		v = mpintrinit(bus, p, VectorLAPIC+intin, p->irq);
+	for(apic = mplapic; apic != nil; apic = apic->next) {
+		if((apic->flags & PcmpEN) == 0)
+			continue;
+		if(p->apicno != 0xFF && p->apicno != apic->apicno)
+			continue;
 
-	if(p->apicno == 0xFF){
-		for(i=0; i<=MaxAPICNO; i++){
-			if((apic = mpapic[i]) == nil)
-				continue;
-			if(apic->flags & PcmpEN)
-				apic->lintr[intin] = v;
+		if(apic->lint[p->intin] != nil)
+			continue;
+
+		if((aintr = xalloc(sizeof(Aintr))) == nil)
+			panic("mkiointr: no memory for Aintr");
+
+		aintr->type = p->intr;
+		aintr->flags = p->flags;
+		aintr->irq = p->irq;
+		aintr->bus = bus;
+		if(aintr->type == PcmpINT) {
+			aintr->next = bus->aintr;
+			bus->aintr = aintr;
 		}
+		aintr->intin = p->intin;
+		aintr->apic = apic;
+		aintr->anext = apic->aintr;
+		apic->aintr = aintr;
+		apic->lint[aintr->intin] = aintr;
 	}
-	else{
-		if(apic = mpapic[p->apicno])
-			if(apic->flags & PcmpEN)
-				apic->lintr[intin] = v;
-	}
-
-	return v;
 }
 
 static void
@@ -253,7 +310,6 @@ dumpmp(uchar *p, uchar *e)
 	}
 	if((i % 16) != 0) print("\n");
 }
-
 
 static void
 mpoverride(uchar** newp, uchar** e)
@@ -287,16 +343,6 @@ pcmpinit(void)
 {
 	uchar *p, *e;
 	Apic *apic;
-	void *va;
-
-	/*
-	 * Map the local APIC.
-	 */
-	va = vmap(pcmp->lapicbase, 1024);
-
-	print("LAPIC: %.8lux %#p\n", pcmp->lapicbase, va);
-	if(va == nil)
-		panic("pcmpinit: cannot map lapic %.8lux", pcmp->lapicbase);
 
 	p = ((uchar*)pcmp)+PCMPsz;
 	e = ((uchar*)pcmp)+pcmp->length;
@@ -321,10 +367,8 @@ pcmpinit(void)
 		break;
 
 	case PcmpPROCESSOR:
-		if(apic = mkprocessor((PCMPprocessor*)p)){
-			apic->addr = va;
+		if(apic = mkprocessor((PCMPprocessor*)p))
 			apic->paddr = pcmp->lapicbase;
-		}
 		p += PCMPprocessorsz;
 		continue;
 
@@ -335,7 +379,7 @@ pcmpinit(void)
 
 	case PcmpIOAPIC:
 		if(apic = mkioapic((PCMPioapic*)p))
-			ioapicinit(apic, apic->apicno);
+			ioapicinit(apic);
 		p += PCMPioapicsz;
 		continue;
 
@@ -375,6 +419,7 @@ PCArch archmp = {
 .reset=		mpreset,
 .intrinit=	pcmpinit,
 .intrassign=	mpintrassign,
+.intrspurious=	mpintrspurious,
 .intrirqno=	i8259irqno,
 .intron=	lapicintron,
 .introff=	lapicintroff,

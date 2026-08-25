@@ -4,6 +4,7 @@ DIRS=\
 	lib\
 	kb\
 	audio\
+	battery\
 	ether\
 	usbd\
 	disk\
@@ -11,6 +12,7 @@ DIRS=\
 	ptp\
 	joy\
 	cam\
+	dump\
 
 default:V: all
 

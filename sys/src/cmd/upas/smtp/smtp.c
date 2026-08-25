@@ -888,7 +888,7 @@ bangtoat(char *addr)
 
 	/* parse the '!' format address */
 	buf = s_new();
-	for(i = 0; addr; i++){
+	for(i = 0; addr && i < nelem(field); i++){
 		field[i] = addr;
 		addr = strchr(addr, '!');
 		if(addr)
@@ -1070,7 +1070,7 @@ putcrnl(char *cp, int n)
 
 	for(; n; n--, cp++){
 		c = *cp;
-		if(c == '\n')
+		if(c == '\n' && last != '\r')
 			dBputc('\r');
 		else if(c == '.' && last=='\n')
 			dBputc('.');

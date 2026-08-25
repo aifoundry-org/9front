@@ -12,6 +12,7 @@ struct Path {
 	/* Flowing down for flush */
 	Msg	*ins;	/* inserted values, bounded by lo..hi */
 	Blk	*b;	/* to shadow */
+	Blk	*s;	/* sibling of shadow, for merge/rotate */
 	int	idx;	/* insert at */
 	int	lo;	/* key range */
 	int	hi;	/* key range */
@@ -171,6 +172,7 @@ setmsg(Blk *b, Msg *m)
 
 	bassert(b, b->type == Tpivot);
 	b->bufsz += msgsz(m)-2;
+	bassert(b, 2*(b->nbuf+1) + b->bufsz <= Bufspc);
 
 	p = b->data + Pivspc + 2*b->nbuf;
 	o = Bufspc - b->bufsz;
@@ -406,7 +408,6 @@ statupdate(Kvp *kv, Msg *m)
 static int
 apply(Kvp *kv, Msg *m, char *buf, int nbuf)
 {
-	vlong *pv;
 	char *p;
 	Tree t;
 
@@ -426,10 +427,14 @@ apply(Kvp *kv, Msg *m, char *buf, int nbuf)
 		return 1;
 	case Orelink:
 	case Oreprev:
+	case Oincref:
 		unpacktree(&t, kv->v, kv->nv);
 		p = m->v;
-		pv = (m->op == Orelink) ? &t.succ : &t.pred;
-		*pv = UNPACK64(p);	p += 8;
+		if(m->op == Orelink)
+			t.succ = UNPACK64(p);
+		else if(m->op == Oreprev)
+			t.pred = UNPACK64(p);
+		p += 8;
 		t.nlbl += *p;		p++;
 		t.nref += *p;		p++;
 		assert(t.nlbl >= 0 && t.nref >= 0);
@@ -697,15 +702,13 @@ splitleaf(Tree *t, Path *up, Path *p)
 	 * so we want to make a new block.
 	 */
 	b = p->b;
-	l = nil;
-	r = nil;
+	l = newblk(t, b->type);
+	r = newblk(t, b->type);
 	if(waserror()){
 		efreeblk(t, l);
 		efreeblk(t, r);
 		nexterror();
 	}
-	l = newblk(t, b->type);
-	r = newblk(t, b->type);
 
 	d = l;
 	i = 0;
@@ -812,15 +815,13 @@ splitpiv(Tree *t, Path *, Path *p, Path *pp)
 	 * so we want to make a new bp->lock.
 	 */
 	b = p->b;
-	l = nil;
-	r = nil;
+	l = newblk(t, b->type);
+	r = newblk(t, b->type);
 	if(waserror()){
 		efreeblk(t, l);
 		efreeblk(t, r);
 		nexterror();
 	}
-	l = newblk(t, b->type);
-	r = newblk(t, b->type);
 	d = l;
 	copied = 0;
 	halfsz = (2*b->nval + b->valsz)/2;
@@ -890,86 +891,65 @@ merge(Tree *t, Path *p, Path *pp, int idx, Blk *a, Blk *b)
 }
 
 /*
- * Scan a single block for the split offset;
- * returns 1 if we'd spill out of the buffer,
- * updates *idx and returns 0 otherwise.
+ * Find the first message in buffers of l and r with key >= m.
+ * Trybalance already guarantees we have space for any split
+ * that we pick here.
  */
 static int
-spillscan(Blk *d, Blk *b, Msg *m, int *idx, int o)
+splitidx(Blk *l, Blk *r, Msg *m, int idx)
 {
-	int i, used;
+	int i;
 	Msg n;
 
-	used = 2*d->nbuf + d->bufsz;
-	for(i = *idx-o; i < b->nbuf; i++){
-		getmsg(b, i, &n);
-		if(keycmp(m, &n) <= 0){
-			*idx = i + o;
-			return 0;
-		}
-		used += msgsz(&n);
-		if(used > Bufspc)
-			return 1;
-	}
-	*idx = b->nbuf;
-	return 0;
-}
-
-/*
- * Returns whether the keys in b between
- * idx and m would spill out of the buffer
- * of d.
- */
-static int
-spillsbuf(Blk *d, Blk *l, Blk *r, Msg *m, int *idx)
-{
 	if(l->type == Tleaf)
-		return 0;
-
-	if(*idx < l->nbuf && spillscan(d, l, m, idx, 0))
-		return 1;
-	if(*idx >= l->nbuf && spillscan(d, r, m, idx, l->nbuf))
-		return 1;
-	return 0;
+		return idx;
+	for(i = idx; i < l->nbuf + r->nbuf; i++){
+		if(i < l->nbuf)
+			getmsg(l, i, &n);
+		else
+			getmsg(r, i - l->nbuf, &n);
+		if(keycmp(m, &n) <= 0)
+			break;
+	}
+	return i;
 }
 
 static void
 rotate(Tree *t, Path *p, Path *pp, int midx, Blk *a, Blk *b, int halfpiv)
 {
-	int i, o, cp, sp, idx;
+	int i, o, sz, sp;
 	Blk *d, *l, *r;
 	Msg m;
 
-	l = nil;
-	r = nil;
+	l = newblk(t, a->type);
+	r = newblk(t, a->type);
 	if(waserror()){
 		efreeblk(t, l);
 		efreeblk(t, r);
 		nexterror();
 	}
-	l = newblk(t, a->type);
-	r = newblk(t, a->type);
 	d = l;
-	cp = 0;
-	sp = -1;
-	idx = 0;
+	sz = 0;
+	sp = 0;
 	for(i = 0; i < a->nval; i++){
 		getval(a, i, &m);
-		if(d == l && (cp >= halfpiv || spillsbuf(d, a, b, &m, &idx))){
-			sp = idx;
-			d = r;
+		if(d == l){
+			sp = splitidx(a, b, &m, sp);
+			if(sz >= halfpiv)
+				d = r;
 		}
 		setval(d, &m);
-		cp += valsz(&m);
+		sz += valsz(&m);
 	}
 	for(i = 0; i < b->nval; i++){
 		getval(b, i, &m);
-		if(d == l && (cp >= halfpiv || spillsbuf(d, a, b, &m, &idx))){
-			sp = idx;
-			d = r;
+		if(d == l){
+			sp = splitidx(a, b, &m, sp);
+			if(sz >= halfpiv)
+				d = r;
 		}
 		setval(d, &m);
-		cp += valsz(&m);
+		sz += valsz(&m);
 	}
 	if(a->type == Tpivot){
 		d = l;
@@ -1000,7 +980,7 @@ rotate(Tree *t, Path *p, Path *pp, int midx, Blk *a, Blk *b, int halfpiv)
 	poperror();
 }
 
-static void
+static int
 rotmerge(Tree *t, Path *p, Path *pp, int idx, Blk *a, Blk *b)
 {
 	int na, nb, ma, mb, imbalance;
@@ -1020,10 +1000,14 @@ rotmerge(Tree *t, Path *p, Path *pp, int idx, Blk *a, Blk *b)
 	if(imbalance < 0)
 		imbalance *= -1;
 	/* works for leaf, because 0 always < Bufspc */
-	if(na + nb < (Pivspc - 4*Msgmax) && ma + mb < Bufspc)
+	if(na + nb < (Pivspc - 4*Msgmax) && ma + mb < Bufspc){
 		merge(t, p, pp, idx, a, b);
-	else if(imbalance > 4*Msgmax)
+		return 1;
+	}else if(imbalance > 4*Msgmax){
 		rotate(t, p, pp, idx, a, b, (na + nb)/2);
+		return 1;
+	}
+	return 0;
 }
 
 static void
@@ -1044,8 +1028,6 @@ trybalance(Tree *t, Path *p, Path *pp, int idx)
 	m = holdblk(pp->nl);
 	if(waserror()){
 		dropblk(m);
-		dropblk(l);
-		dropblk(r);
 		nexterror();
 	}
 	spc = (m->type == Tleaf) ? Leafspc : Pivspc;
@@ -1054,7 +1036,13 @@ trybalance(Tree *t, Path *p, Path *pp, int idx)
 		bp = getptr(&kl, &fill);
 		if(fill + blkfill(m) < spc){
 			l = getblk(bp, 0);
-			rotmerge(t, p, pp, idx-1, l, m);
+			if(waserror()){
+				dropblk(l);
+				nexterror();
+			}
+			if(rotmerge(t, p, pp, idx-1, l, m))
+				p->s = holdblk(l);
+			poperror();
 			goto Done;
 		}
 	}
@@ -1063,7 +1051,13 @@ trybalance(Tree *t, Path *p, Path *pp, int idx)
 		bp = getptr(&kr, &fill);
 		if(fill + blkfill(m) < spc){
 			r = getblk(bp, 0);
-			rotmerge(t, p, pp, idx, m, r);
+			if(waserror()){
+				dropblk(r);
+				nexterror();
+			}
+			if(rotmerge(t, p, pp, idx, m, r))
+				p->s = holdblk(r);
+			poperror();
 			goto Done;
 		}
 	}
@@ -1114,11 +1108,28 @@ flush(Tree *t, Path *path, int npath)
 		 */
 		if(!filledpiv(p->b, 2)){
 			trybalance(t, p, pp, p->idx);
-			/* If we merged the root node, break out. */
-			if(up == path && pp != nil && pp->op == POmerge && p->b->nval == 2){
-				pp->npull = p->npull;
-				rp = pp;
-				goto Out;
+			/*
+			 * if we merged the root node, and the
+			 * buffer was empty, break out; if we
+			 * still have data in the buffer, pull
+			 * it down and allow for a degenerate
+			 * root node that we retry in upsert.
+			 *
+			 * if we cleared a degenerate root,
+			 * then we want to drop it from the
+			 * tree.
+			 */
+			if(up == path			/* at root */
+			&& pp != nil			/* has child */
+			&& pp->nl != nil		/* didn't drop this node */
+			&& pp->nr == nil		/* no siblings */
+			&& pp->npull == p->b->nbuf){	/* got the whole buffer */
+				if(pp->op == POmerge && p->b->nval == 2
+				|| pp->op == POmod && p->b->nval == 1){
+					pp->npull = p->npull;
+					rp = pp;
+					goto Out;
+				}
 			}
 			updatepiv(t, up, p, pp);
 			rp = p;
@@ -1147,9 +1158,12 @@ freepath(Tree *t, Path *path, int npath, int ok)
 	Path *p;
 
 	for(p = path; p != path + npath; p++){
-		if(ok && p->b != nil)
-			freeblk(t, p->b);
+		if(ok){
+			if(p->b) freeblk(t, p->b);
+			if(p->s) freeblk(t, p->s);
+		}
 		dropblk(p->b);
+		dropblk(p->s);
 		dropblk(p->nl);
 		dropblk(p->nr);
 	}
@@ -1261,7 +1275,7 @@ fastupsert(Tree *t, Blk *b, Msg *msg, int nmsg)
 void
 btupsert(Tree *t, Msg *msg, int nmsg)
 {
-	int i, npath, npull, dh, sz, height;
+	int i, npath, npull, dh, sz, height, degen;
 	Path *path, *rp;
 	Blk *b, *rb;
 	Kvp sep;
@@ -1279,11 +1293,10 @@ btupsert(Tree *t, Msg *msg, int nmsg)
 Again:
 	b = getroot(t, &height);
 	if(waserror()){
-		aincl(&fs->rdonly, 1);
 		dropblk(b);
 		nexterror();
 	}
-	if(npull == 0 && b->type == Tpivot && !filledbuf(b, nmsg, sz)){
+	if(npull == 0 && b->type == Tpivot && b->nval > 1 && !filledbuf(b, nmsg, sz)){
 		fastupsert(t, b, msg, nmsg);
 		poperror();
 		return;
@@ -1300,6 +1313,7 @@ Again:
 		freepath(t, path, height+2, 0);	/* npath not volatile */
 		nexterror();
 	}
+	degen = 0;
 	npath = 0;
 	path[npath].b = nil;
 	path[npath].idx = -1;
@@ -1311,7 +1325,7 @@ Again:
 	path[0].lo = npull;
 	path[0].hi = nmsg;
 	while(b->type == Tpivot){
-		if(!filledbuf(b, nmsg, path[npath - 1].sz))
+		if(b->nval > 1 && !filledbuf(b, nmsg, path[npath - 1].sz))
 			break;
 		victim(b, &path[npath]);
 		getval(b, path[npath].idx, &sep);
@@ -1341,7 +1355,15 @@ Again:
 	else
 		fatal("broken path change");
 
-	bassert(rb, rb->bp.addr != 0);
+	/*
+	 * if we merged the root block, but there
+	 * was still data stuck in the buffer, we
+	 * should try again to clear out the data
+	 * in the degenerate root.
+	 */
+	if(rb->type == Tpivot && rb->nval == 1)
+		degen = 1;
+
 	bassert(rb, rb->bp.addr != 0);
 
 	lock(&t->lk);
@@ -1355,7 +1377,7 @@ Again:
 	freepath(t, path, npath, 1);
 	poperror();
 
-	if(npull != nmsg){
+	if(npull != nmsg || degen){
 		tracem("short pull");
 		goto Again;
 	}
@@ -1543,13 +1565,16 @@ Again:
 			bp = unpackbp(kv.v, kv.nv);
 			p[i].b = getblk(bp, 0);
 		}
-	
-		/* find the minimum key along the path up */
+		ok = 1;
 		m.op = Oinsert;
 		getval(p[h-1].b, p[h-1].vi, &m);
 	}else{
 		getmsg(p[start-1].b, p[start-1].bi, &m);
-		if(m.op != Oinsert)
+		if(m.op == Oinsert)
+			ok = 1;
+		else if(m.op == Oclobber || m.op == Oclearb)
+			ok = 0;
+		else
 			broke("%s: broken entry: %M\n", Efs, &m);
 		bufsrc = start-1;
 	}
@@ -1559,6 +1584,12 @@ Again:
 			continue;
 		getmsg(p[i].b, p[i].bi, &n);
 		if(keycmp(&n, &m) < 0){
+			if(n.op == Oinsert)
+				ok = 1;
+			else if(n.op == Oclobber || n.op == Oclearb)
+				ok = 0;
+			else
+				broke("%s: broken entry: %M\n", Efs, &n);
 			bufsrc = i;
 			m = n;
 		}
@@ -1570,7 +1601,6 @@ Again:
 	}
 
 	/* scan all messages applying to the message */
-	ok = 1;
 	cpkvp(r, &m, s->kvbuf, sizeof(s->kvbuf));
 	if(bufsrc == -1)
 		p[h-1].vi++;

@@ -363,9 +363,10 @@ To list all branches, pass the
 .B -a
 option.
 To switch between branches, pass a branch name.
-When passed the
+To create a new branch, pass the
 .B -n
-option, the branch will be created, overwriting existing branch.
+option.
+Note that this will clobber an existing branch of the same name.
 When passed the
 .B -b
 .I base
@@ -464,15 +465,23 @@ takes two branches and merges them filewise using
 The next commit made will be a merge commit.
 .PP
 .I Git/rebase
-prints the commands to move commits from one
-branch onto another, using
+prints the commands to move divergent commits from
+.I src
+(default is the current branch)
+onto the commit specified by
+.I onto
+using
 .I git/export
 and
 .I git/import.
 The
+.I src
+branch is updated to point to the result.
+The
 .B -n
 option is passed directly to
 .I git/import.
+The printed commands do not clean up after an error.
 .PP
 .I Git/conf
 is a tool for querying the git configuration.
@@ -651,6 +660,19 @@ To set a user and email for commits, run:
         name = Ori Bernstein
         email = ori@eigenstate.org
 \&'
+.EE
+.PP
+To move a branch to a different commit, combine
+.IR git/commit 's
+.B -n
+and
+.B -b
+flags. For example, to roll back the
+.I front
+branch 2 commits, run:
+.IP
+.EX
+git/branch -nb front~~ front
 .EE
 .SH FILES
 .TP

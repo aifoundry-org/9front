@@ -67,8 +67,8 @@ showval(Fmt *fmt, Kvp *v, int op, int flg)
 		n = fmtprint(fmt, "(%B,%d)", unpackbp(v->v, v->nv), UNPACK16(v->v+Ptrsz));
 		return n;
 	}
-	if(op == Odelete || op == Oclearb){
-		n = fmtprint(fmt, "delete");
+	if(op == Odelete || op == Oclearb || op == Oclobber){
+		n = fmtprint(fmt, "delete[%d]", v->nv);
 		return n;
 	}
 	switch(v->k[0]){
@@ -142,6 +142,7 @@ showval(Fmt *fmt, Kvp *v, int op, int flg)
 		switch(op){
 		case Orelink:
 		case Oreprev:
+		case Oincref:
 			n = fmtprint(fmt, "gen: %lld, dlbl: %d, dref: %d",
 				UNPACK64(v->v), v->v[8], v->v[9]);
 			break;
@@ -150,8 +151,8 @@ showval(Fmt *fmt, Kvp *v, int op, int flg)
 			if(unpacktree(&t, v->v, v->nv) == nil)
 				n = fmtprint(fmt, "corrupt tree");
 			else
-				n = fmtprint(fmt, "<tree %B [pred=%lld, succ=%lld, nref=%d, nlbl=%d]>",
-					t.bp, t.pred, t.succ, t.nref, t.nlbl);
+				n = fmtprint(fmt, "<tree %B [pred=%lld, succ=%lld, base=%lld, nref=%d, nlbl=%d]>",
+					t.bp, t.pred, t.succ, t.base, t.nref, t.nlbl);
 			break;
 		default:
 			n = fmtprint(fmt, "?? unknown op %d", op);
@@ -200,6 +201,7 @@ Mconv(Fmt *fmt)
 	[Owstat]	"Owstat",
 	[Orelink]	"Orelink",
 	[Oreprev]	"Oreprev",
+	[Oincref]	"Oincref",
 	};
 	Msg *m;
 	int f, n;

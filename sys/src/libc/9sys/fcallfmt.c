@@ -15,7 +15,7 @@ fcallfmt(Fmt *fmt)
 	int fid, type, tag, i;
 	char buf[512], tmp[200];
 	char *p, *e;
-	Dir *d;
+	Dir d;
 	Qid *q;
 
 	e = buf+sizeof(buf);
@@ -117,24 +117,20 @@ fcallfmt(Fmt *fmt)
 		break;
 	case Rstat:
 		p = seprint(buf, e, "Rstat tag %ud ", tag);
-		if(f->nstat > sizeof tmp)
+		if(f->nstat > sizeof tmp || convM2D(f->stat, f->nstat, &d, tmp) == 0)
 			seprint(p, e, " stat(%d bytes)", f->nstat);
 		else{
-			d = (Dir*)tmp;
-			convM2D(f->stat, f->nstat, d, (char*)(d+1));
 			seprint(p, e, " stat ");
-			fdirconv(p+6, e, d);
+			fdirconv(p+6, e, &d);
 		}
 		break;
 	case Twstat:	/* 126 */
 		p = seprint(buf, e, "Twstat tag %ud fid %ud", tag, fid);
-		if(f->nstat > sizeof tmp)
+		if(f->nstat > sizeof tmp || convM2D(f->stat, f->nstat, &d, tmp) == 0)
 			seprint(p, e, " stat(%d bytes)", f->nstat);
 		else{
-			d = (Dir*)tmp;
-			convM2D(f->stat, f->nstat, d, (char*)(d+1));
 			seprint(p, e, " stat ");
-			fdirconv(p+6, e, d);
+			fdirconv(p+6, e, &d);
 		}
 		break;
 	case Rwstat:
@@ -212,7 +208,7 @@ dumpsome(char *ans, char *e, char *buf, long count)
 		if((buf[i]<32 && buf[i] !='\n' && buf[i] !='\t') || (uchar)buf[i]>127)
 			printable = 0;
 	p = ans;
-	*p++ = '\'';
+	p = seprint(p, e, "\'");
 	if(printable){
 		if(count > e-p-2)
 			count = e-p-2;
@@ -224,11 +220,9 @@ dumpsome(char *ans, char *e, char *buf, long count)
 		for(i=0; i<count; i++){
 			if(i>0 && i%4==0)
 				*p++ = ' ';
-			sprint(p, "%2.2ux", (uchar)buf[i]);
-			p += 2;
+			p = seprint(p, e, "%2.2ux", (uchar)buf[i]);
 		}
 	}
-	*p++ = '\'';
-	*p = 0;
+	p = seprint(p, e, "\'");
 	return p - ans;
 }

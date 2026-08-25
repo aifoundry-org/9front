@@ -152,7 +152,7 @@ enum {
 	Oif, Oelse, Owhile, Obreak, Oret, Ocall, 
 	Ostore, Oderef, Ootype, Osize, Oref, Ocref, Ocat, Ocatr, Omid,
 	Oacq, Osignal, Orel, Ostall, Osleep, Otimer, Oload, Ounload,
-	Otodec, Otohex, Otoint, Otostr, Onotify,
+	Otobuf, Otodec, Otohex, Otoint, Otostr, Onotify,
 };
 
 static Op optab[];
@@ -227,7 +227,7 @@ static int
 gc(void)
 {
 	int i;
-	Heap *h, **hh;
+	Heap *h, *hn, **hh;
 	Frame *f;
 
 	for(h = hp; h; h = h->link)
@@ -248,6 +248,7 @@ gc(void)
 	gcmark(amlroot);
 
 	i = 0;
+	hn = nil;
 	hh = &hp;
 	while(h = *hh){
 		if(h->mark){
@@ -255,6 +256,14 @@ gc(void)
 			continue;
 		}
 		*hh = h->link;
+		if(h->tag == 'N'){
+			((Name*)H2D(h))->v = nil;
+
+			/* defer deletion until everything unmapped */
+			h->link = hn;
+			hn = h;
+			continue;
+		}
 		if(h->tag == 'r'){
 			Region *r = (void*)H2D(h);
 			if(r->mapped > 0){
@@ -270,6 +279,13 @@ gc(void)
 			r->aux = nil;
 			r->va = nil;
 		}
+		memset(h, ~0, sizeof(Heap)+h->size);
+		amlfree(h);
+		i++;
+	}
+
+	while(h = hn){
+		hn = h->link;
 		memset(h, ~0, sizeof(Heap)+h->size);
 		amlfree(h);
 		i++;
@@ -878,6 +894,15 @@ Nfmt(Fmt *f)
 	n = va_arg(f->args, Name*);
 	if(n == nil)
 		return fmtprint(f, "?NIL");
+	switch(TAG(n)){
+	case 'N':
+		break;
+	case 'n':	/* unresolved name */
+	case 's':
+		return fmtprint(f, "%s", (char*)n);
+	default:
+		return fmtprint(f, "???");
+	}
 	if(n == n->up)
 		return fmtprint(f, "\\");
 	strncpy(buf, n->seg, 4);
@@ -2073,6 +2098,9 @@ evalconv(void)
 	r = nil;
 	a = FP->arg[0];
 	switch(FP->op - optab){
+	case Otobuf:
+		r = copy('b', a);
+		break;
 	case Otodec:
 		if(a == nil)
 			break;
@@ -2228,6 +2256,7 @@ static Op optab[] = {
 	[Oload] 	"Load", 		"*@}", 		evalload,
 	[Ounload]	"Unload",		"@",		evalnop,
 
+	[Otobuf]	"ToBuffer",		"*@",		evalconv,
 	[Otodec]	"ToDecimalString",	"*@",		evalconv,
 	[Otohex]	"ToHexString",		"*@",		evalconv,
 	[Otoint]	"ToInteger",		"*@",		evalconv,
@@ -2255,7 +2284,7 @@ static uchar octab1[] = {
 /* 78 */	Odiv,	Oshl,	Oshr,	Oand,	Onand,	Oor,	Onor,	Oxor,
 /* 80 */	Onot,	Olbit,	Orbit,	Oderef,	Ocatr,	Omod,	Onotify,Osize,
 /* 88 */	Oindex,	Omatch,	Ocfld4,	Ocfld2,	Ocfld1,	Ocfld0,	Ootype,	Ocfld8,
-/* 90 */	Oland,	Olor,	Olnot,	Oleq,	Olgt,	Ollt,	Obad,	Otodec,
+/* 90 */	Oland,	Olor,	Olnot,	Oleq,	Olgt,	Ollt,	Otobuf,	Otodec,
 /* 98 */	Otohex,	Otoint,	Obad,	Obad,	Otostr,	Obad,	Omid,	Obad,
 /* A0 */	Oif,	Oelse,	Owhile,	Onop,	Oret,	Obreak,	Obad,	Obad,
 /* A8 */	Obad,	Obad,	Obad,	Obad,	Obad,	Obad,	Obad,	Obad,

@@ -7,7 +7,6 @@
 #include "dat.h"
 #include "fns.h"
 
-static void	respond(Fmsg*, Fcall*);
 static void	rerror(Fmsg*, char*, ...);
 static void	clunkfid(Conn*, Fid*, Amsg**);
 static void	snapmsg(char*, char*);
@@ -79,19 +78,18 @@ wrwait(void)
 	tracev("flushed", agetv(&fs->qgen));
 }
 
-static void
-sync(int id)
+static int
+sync(void)
 {
 	Mount *mnt;
 	Arena *a;
-	Dlist *dl;
+	Dlist *sdl, ddl;
 	Tree *r;
-	int i;
+	int i, ok;
 
 	qlock(&fs->synclk);
 	if(waserror()){
 		fprint(2, "failed to sync: %s\n", errmsg());
-		aincl(&fs->rdonly, 1);
 		qunlock(&fs->synclk);
 		nexterror();
 	}
@@ -109,22 +107,21 @@ sync(int id)
 	 *  have hit disk; once they're on disk, we
 	 *  can take a consistent snapshot.
          */
-	dl = emalloc(sizeof(Dlist), 1);
+	sdl = emalloc(sizeof(Dlist), 1);
 	qlock(&fs->mutlk);
-	epochstart(id);
 	if(waserror()){
-		free(dl);
-		epochend(id);
-		aincl(&fs->rdonly, 1);
+		free(sdl);
 		qunlock(&fs->mutlk);
 		nexterror();
 	}
 	tracem("packb");
 
 	for(mnt = agetp(&fs->mounts); mnt != nil; mnt = mnt->next){
-		r = agetp(&mnt->root);
-		r = updatesnap(r, mnt->name, mnt->flag);
-		aswapp(&mnt->root, r);
+		if(mnt->flag & Lmut){
+			r = agetp(&mnt->root);
+			r = updatesnap(r, mnt->name, mnt->flag);
+			aswapp(&mnt->root, r);
+		}
 	}
 
 	/*
@@ -132,11 +129,16 @@ sync(int id)
 	 * dlist; the snap tree will not change from here.
 	 */
 	dlsync();
-	*dl = fs->snapdl;
+	*sdl = fs->snapdl;
+	ddl = fs->dropdl;
+	ok = sdl->hd.addr== -1 && ddl.hd.addr == -1;
 	fs->snapdl.hd = Zb;
 	fs->snapdl.tl = Zb;
 	fs->snapdl.ins = nil;
-	traceb("syncdl.dl", dl->hd);
+	fs->dropdl.hd = Zb;
+	fs->dropdl.tl = Zb;
+	fs->dropdl.ins = nil;
+	traceb("syncdl.dl", sdl->hd);
 	traceb("syncdl.rb", fs->snap.bp);
 	for(i = 0; i < fs->narena; i++){
 		a = &fs->arenas[i];
@@ -164,7 +166,6 @@ sync(int id)
 	finalize(fs->sb0);
 	finalize(fs->sb1);
 	fs->snap.dirty = 0;
-	epochend(id);
 	qunlock(&fs->mutlk);
 	poperror();
 
@@ -177,6 +178,7 @@ sync(int id)
 	for(i = 0; i < fs->narena; i++)
 		enqueue(fs->arenas[i].h0);
 	wrbarrier();
+	wrwait();
 
 	/*
 	 * pass 2: sync superblock; we have a consistent
@@ -189,6 +191,7 @@ sync(int id)
 	enqueue(fs->sb0);
 	enqueue(fs->sb1);
 	wrbarrier();
+	wrwait();
 
 	/*
 	 * pass 3: sync block footers; if we crash here,
@@ -200,72 +203,74 @@ sync(int id)
 		enqueue(fs->arenas[i].h1);
 
 	/*
+	 * Wait for commit: all of the previous changes
+	 * must hit disk before we start cleaing up the
+	 * state.
+	 */
+	wrwait();
+
+	/*
 	 * Pass 4: clean up the old snap tree's deadlist.
 	 * we need to wait for all the new data to hit disk
 	 * before we can free anything, otherwise it gets
 	 * clobbered.
 	 */
 	tracem("snapdl");
-	wrwait();
-	limbo(DFdlist, dl);
+	freedl(&ddl, 0);
+	limbo(DFdlist, sdl);
 	qunlock(&fs->synclk);
 	tracem("synced");
 	poperror();
+	return ok;
 }
 
-static void
-snapfs(Amsg *a, Tree **tp)
+/*
+ * Adds or removes a labelled snapshot; if the tree
+ * needs to be cleaned up outside of the epoch, it
+ * is returned, otherwise snapfs returns nil.
+ */
+static Tree*
+snapfs(Amsg *a)
 {
 	Tree *t, *s, *r;
 	Mount *mnt;
 
 	t = nil;
 	r = nil;
-	*tp = nil;
 	for(mnt = agetp(&fs->mounts); mnt != nil; mnt = mnt->next){
-		if(strcmp(a->old, mnt->name) == 0){
-			t = agetp(&mnt->root);
+		if(strcmp(a->old, mnt->name) != 0)
+			continue;
+		t = agetp(&mnt->root);
+		if(mnt->flag & Lmut){
 			t = updatesnap(t, mnt->name, mnt->flag);
-			aincl(&t->memref, 1);
 			aswapp(&mnt->root, t);
-			break;
 		}
+		aincl(&t->memref, 1);
+		break;
 	}
-	if(t == nil && (t = opensnap(a->old, nil)) == nil){
-		if(a->fd != -1)
-			fprint(a->fd, "snap: open '%s': does not exist\n", a->old);
-		return;
+	if(t == nil && (t = opensnap(a->old, nil)) == nil)
+		error(Eexist);
+	if(waserror()){
+		closesnap(t);
+		nexterror();
 	}
 	if(a->delete){
-		if(mnt != nil) {
-			if(a->fd != -1)
-				fprint(a->fd, "snap: snap is mounted: '%s'\n", a->old);
-			return;
-		}
-		if(t->nlbl == 1 && t->nref <= 1 && t->succ == -1){
-			aincl(&t->memref, 1);
+		if(mnt != nil)
+			error(Esnapu);
+		if(delsnap(t, t->succ, a->old))
 			r = t;
-		}
-		delsnap(t, t->succ, a->old);
+		else
+			closesnap(t);
 	}else{
 		if((s = opensnap(a->new, nil)) != nil){
-			if(a->fd != -1)
-				fprint(a->fd, "snap: already exists '%s'\n", a->new);
 			closesnap(s);
-			return;
+			error(Esnapx);
 		}
 		tagsnap(t, a->new, a->flag);
+		closesnap(t);
 	}
-	closesnap(t);
-	*tp = r;
-	if(a->fd != -1){
-		if(a->delete)
-			fprint(a->fd, "deleted: %s\n", a->old);
-		else if(a->flag & Lmut)
-			fprint(a->fd, "forked: %s from %s\n", a->new, a->old);
-		else
-			fprint(a->fd, "labeled: %s from %s\n", a->new, a->old);
-	}
+	poperror();
+	return r;
 }
 
 static void
@@ -371,7 +376,7 @@ fshangup(Conn *c, char *fmt, ...)
 		hangup(c->cfd);
 }
 
-static void
+void
 respond(Fmsg *m, Fcall *r)
 {
 	Conn *c;
@@ -422,7 +427,7 @@ upsert(Mount *mnt, Msg *m, int nm)
 {
 	Tree *r;
 
-	if(!(mnt->flag & Lmut))
+	if(!(mnt->flag & Lmut) || agetl(&fs->rdonly))
 		error(Erdonly);
 	r = agetp(&mnt->root);
 	if(r->nlbl != 1 || r->nref != 0) {
@@ -430,28 +435,6 @@ upsert(Mount *mnt, Msg *m, int nm)
 		aswapp(&mnt->root, r);
 	}
 	btupsert(r, m, nm);
-}
-
-/*
- * When truncating a file, mutations need
- * to wait for the sweeper to finish; this
- * means the mutator needs to release the
- * mutation lock, exit the epoch, and
- * allow the sweeper to finish its job
- * before resuming.
- */
-static void
-truncwait(Dent *de, int id)
-{
-	epochend(id);
-	qunlock(&fs->mutlk);
-	qlock(&de->trunclk);
-	/* should we also return when the fs becomes read-only? */
-	while(de->trunc)
-		rsleep(&de->truncrz);
-	qunlock(&de->trunclk);
-	qlock(&fs->mutlk);
-	epochstart(id);
 }
 
 static int
@@ -573,7 +556,7 @@ getdent(Mount *mnt, vlong pqid, Xdir *d)
 	de->up = pqid;
 	de->qid = d->qid;
 	de->length = d->length;
-	de->truncrz.l = &de->trunclk;
+	de->truncrz.l = &fs->mutlk;
 	e = packdkey(de->buf, sizeof(de->buf), pqid, d->name);
 	de->k = de->buf;
 	de->nk = e - de->buf;
@@ -636,7 +619,7 @@ loadhist(Mount *mnt, Cron *c)
 static void
 loadautos(Mount *mnt)
 {
-	char *p, pfx[32], rbuf[Kvmax+1];
+	char *s, *p, pfx[32], rbuf[Kvmax+1];
 	int i, n, c, div, cnt, op;
 	Kvp kv, r;
 
@@ -646,16 +629,17 @@ loadautos(Mount *mnt)
 	kv.nk = n+1;
 	if(btlookup(agetp(&mnt->root), &kv, &r, rbuf, sizeof(rbuf)-1)
 	|| btlookup(&fs->snap, &kv, &r, rbuf, sizeof(rbuf)-1)){
-		p = r.v;
-		p[r.nv] = 0;
+		s = r.v;
+		s[r.nv] = 0;
 	}else
-		p = "60@m 24@h @d";
+		s = "60@m 24@h @d";
 
 	Cron crons[nelem(mnt->cron)] = {
 		{.cnt=0, .div=60, .tag="minute"},
 		{.cnt=0, .div=3600, .tag="hour"},
 		{.cnt=0, .div=24*3600, .tag="day"},
 	};
+	p = s;
 	memcpy(mnt->cron, crons, sizeof crons);
 	while(*p){
 		cnt = -1;
@@ -675,7 +659,7 @@ loadautos(Mount *mnt)
 			p++;
 		if(div <= 0){
 Bad:			memset(mnt->cron, 0, sizeof(mnt->cron));
-			fprint(2, "invalid time spec\n");
+			fprint(2, "ignoring invalid snap schedule %q\n", s);
 			return;
 		}
 
@@ -694,10 +678,25 @@ Bad:			memset(mnt->cron, 0, sizeof(mnt->cron));
 		loadhist(mnt, &mnt->cron[i]);
 }
 
+/* caller must hold mountlk */
+static Mount*
+mountlookup(char *name)
+{
+	Mount *mnt;
+
+	for(mnt = agetp(&fs->mounts); mnt != nil; mnt = mnt->next){
+		if(strcmp(name, mnt->name) == 0){
+			aincl(&mnt->ref, 1);
+			return mnt;
+		}
+	}
+	return nil;
+}
+
 Mount*
 getmount(char *name)
 {
-	Mount *mnt, *hd;
+	Mount *mnt, *p;
 	Tree *t;
 	int flg;
 
@@ -707,32 +706,42 @@ getmount(char *name)
 	}
 
 	qlock(&fs->mountlk);
-	hd = agetp(&fs->mounts);
-	for(mnt = hd; mnt != nil; mnt = mnt->next){
-		if(strcmp(name, mnt->name) == 0){
-			aincl(&mnt->ref, 1);
-			qunlock(&fs->mountlk);
-			return mnt;
-		}
-	}
+	mnt = mountlookup(name);
+	qunlock(&fs->mountlk);
+	if(mnt != nil)
+		return mnt;
+
+	/*
+	 * tricky -- we can't hold the mountlk
+	 * across opensnap, since we may end up
+	 * blocking on new blocks while in an
+	 * epoch, so we need to load the snap,
+	 * and see if we lost the race.
+	 */
+	if((t = opensnap(name, &flg)) == nil)
+		error(Enosnap);
 	if(waserror()){
-		qunlock(&fs->mountlk);
-		free(mnt);
+		closesnap(t);
 		nexterror();
 	}
 	mnt = emalloc(sizeof(*mnt), 1);
 	aswapl(&mnt->ref, 1);
 	snprint(mnt->name, sizeof(mnt->name), "%s", name);
-	if((t = opensnap(name, &flg)) == nil)
-		error(Enosnap);
 	mnt->flag = flg;
 	aswapp(&mnt->root, t);
-	mnt->next = hd;
 	loadautos(mnt);
+	poperror();
 
+	qlock(&fs->mountlk);
+	if((p = mountlookup(name)) != nil){
+		qunlock(&fs->mountlk);
+		closesnap(t);
+		free(mnt);
+		return p;
+	}
+	mnt->next = agetp(&fs->mounts);
 	aswapp(&fs->mounts, mnt);
 	qunlock(&fs->mountlk);
-	poperror();
 	return mnt;
 }
 
@@ -898,11 +907,6 @@ clunkfid(Conn *c, Fid *fid, Amsg **ao)
 	if((*ao = f->rclose) != nil && !f->dent->gone){
 		f->dent->gone = 1;
 		f->rclose = nil;
-
-		qlock(&f->dent->trunclk);
-		f->dent->trunc = 1;
-		qunlock(&f->dent->trunclk);
-
 		aincl(&f->dent->ref, 1);
 		aincl(&f->mnt->ref, 1);
 		(*ao)->op = AOrclose;
@@ -920,12 +924,9 @@ freeamsg(Amsg *a)
 {
 	if(a == nil)
 		return;
-	switch(a->op){
-	case AOrclose:
-	case AOclear:
+	if(a->op == AOrclose || a->op == AOclear){
 		clunkdent(a->mnt, a->dent);
 		clunkmount(a->mnt);
-		break;
 	}
 	free(a);
 }
@@ -1063,17 +1064,18 @@ authread(Fid *f, Fcall *r, void *data, vlong count)
 }
 
 static void
-authwrite(Fid *f, Fcall *r, void *data, vlong count)
+authwrite(Fid *f, Fmsg *m)
 {
 	AuthRpc *rpc;
+	Fcall r;
 
 	if((f->dir->qid.type & QTAUTH) == 0 || (rpc = f->dir->auth) == nil)
 		error(Etype);
-	if(auth_rpc(rpc, "write", data, count) != ARok)
+	if(auth_rpc(rpc, "write", m->data, m->count) != ARok)
 		error(Ebotch);
-	r->type = Rwrite;
-	r->count = count;
-
+	r.type = Rwrite;
+	r.count = m->count;
+	respond(m, &r);
 }
 
 /* fsauth: must not raise error() */
@@ -1134,6 +1136,7 @@ fsauth(Fmsg *m)
 		rerror(m, Efid);
 		return;
 	}
+	nf->mode = 0777;
 	putfid(nf);
 	r.type = Rauth;
 	r.aqid = de->qid;
@@ -1281,7 +1284,7 @@ fsattach(Fmsg *m)
 		poperror();
 		if(af->uid != uid)
 			error(Ebadu);
-		m->conn->authok = 1;	/* none attach allowed now */
+		m->conn->authok = 1;
 	}else if(!fs->noauth){
 		if(uid != noneid || !m->conn->authok)
 			error(Ebadu);
@@ -1376,7 +1379,7 @@ fswalk(Fmsg *m)
 	vlong up, upup, prev;
 	Dent *dent, *dir;
 	Fid *o, *f;
-	Mount *mnt;
+	Mount *mnt, *wmnt;
 	Amsg *ao;
 	Tree *t;
 	Fcall r;
@@ -1388,7 +1391,9 @@ fswalk(Fmsg *m)
 	if((o = getfid(m->conn, m->fid)) == nil)
 		error(Enofid);
 	rlock(o);
+	wmnt = nil;
 	if(waserror()){
+		clunkmount(wmnt);
 		runlock(o);
 		putfid(o);
 		nexterror();
@@ -1423,9 +1428,11 @@ fswalk(Fmsg *m)
 			}
 			findparent(t, up, &prev, &name, kbuf, sizeof(kbuf));
 		}else if(d.qid.path == Qdump){
-			mnt = getmount(name);	/* mnt leaked on error() */
+			mnt = getmount(name);
+			clunkmount(wmnt);
 			name = "";
 			prev = -1ULL;
+			wmnt = mnt;
 			t = agetp(&mnt->root);
 		}
 		up = prev;
@@ -1453,6 +1460,7 @@ fswalk(Fmsg *m)
 	}
 	poperror();
 	if(waserror()){
+		clunkmount(wmnt);
 		putfid(f);
 		nexterror();
 	}
@@ -1500,6 +1508,7 @@ fswalk(Fmsg *m)
 		wunlock(f);
 		poperror();
 	}
+	clunkmount(wmnt);
 	putfid(f);
 	poperror();
 	respond(m, &r);
@@ -1536,7 +1545,7 @@ fsstat(Fmsg *m)
 }
 
 static void
-fswstat(Fmsg *m, int id, Amsg **ao)
+fswstat(Fmsg *m, Amsg **ao)
 {
 	char rnbuf[Kvmax], opbuf[Kvmax], upbuf[Upksz];
 	char *p, *e, strs[65535];
@@ -1562,7 +1571,6 @@ fswstat(Fmsg *m, int id, Amsg **ao)
 		nexterror();
 	}
 	de = f->dent;
-	truncwait(de, id);
 	wlock(de);
 	if(waserror()){
 		wunlock(de);
@@ -1570,8 +1578,10 @@ fswstat(Fmsg *m, int id, Amsg **ao)
 	}
 	if(de->gone)
 		error(Ephase);
-	if((de->qid.type & QTAUTH) || (de->qid.path & Qdump))
+	if((de->qid.type & QTAUTH) || (de->qid.path & Qmagic))
 		error(Emode);
+	if(!f->permit && (de->qid.path & Qmagic))
+		error(Eperm);
 	if(convM2D(m->stat, m->nstat, &d, strs) <= BIT16SZ)
 		error(Edir);
 
@@ -1602,16 +1612,17 @@ fswstat(Fmsg *m, int id, Amsg **ao)
 		if(d.length < 0 || (de->mode & DMDIR) != 0)
 			error(Ewstatl);
 		if(d.length != de->length){
-			if(d.length < de->length){
+			if(d.length > de->length){
+				while(de->trunc)
+					rsleep(&de->truncrz);
+			}else if(d.length < de->length){
 				*ao = emalloc(sizeof(Amsg), 1);
 				if(waserror()){
 					freeamsg(*ao);
 					*ao = nil;
 					nexterror();
 				}
-				qlock(&de->trunclk);
-				de->trunc = 1;
-				qunlock(&de->trunclk);
+				de->trunc++;
 				aincl(&de->ref, 1);
 				aincl(&f->mnt->ref, 1);
 				(*ao)->op = AOclear;
@@ -1877,8 +1888,7 @@ fscreate(Fmsg *m)
 
 	if(m->perm & DMDIR){
 		mb[nm].op = Oinsert;
-		if((p = packsuper(upkbuf, sizeof(upkbuf), d.qid.path)) == nil)
-			sysfatal("ream: pack super");
+		p = packsuper(upkbuf, sizeof(upkbuf), d.qid.path);
 		mb[nm].k = upkbuf;
 		mb[nm].nk = p - upkbuf;
 		p = packdkey(upvbuf, sizeof(upvbuf), f->qpath, d.name);
@@ -1945,7 +1955,7 @@ candelete(Fid *f)
 }
 
 static void
-fsremove(Fmsg *m, int id, Amsg **ao)
+fsremove(Fmsg *m, Amsg **ao)
 {
 	char *e, buf[Kvmax];
 	Fcall r;
@@ -1961,7 +1971,10 @@ fsremove(Fmsg *m, int id, Amsg **ao)
 	nm = 0;
 	wlock(f);
 	clunkfid(m->conn, f, ao);
-	truncwait(f->dent, id);
+	if(agetl(&fs->rdonly))
+		error(Erdonly);
+	while(f->dent->trunc)
+		rsleep(&f->dent->truncrz);
 	wlock(f->dent);
 	if(waserror()){
 		wunlock(f->dent);
@@ -1971,10 +1984,10 @@ fsremove(Fmsg *m, int id, Amsg **ao)
 		*ao = nil;
 		nexterror();
 	}
+	if(!f->permit && f->dent->qid.path & Qmagic)
+		error(Eperm);
 	if(f->dent->gone)
 		error(Ephase);
-	if((f->dent->qid.type & QTEXCL) && agetl(&f->dent->ref) != 1)
-		error(Elocked);
 	/*
 	 * we need a double check that the file is in the tree
 	 * here, because the walk to the fid is done in a reader
@@ -2031,15 +2044,13 @@ fsremove(Fmsg *m, int id, Amsg **ao)
 }
 
 static void
-fsopen(Fmsg *m, int id, Amsg **ao)
+fsopen(Fmsg *m, Amsg **ao)
 {
 	char *p, *e, buf[Kvmax];
 	int mbits;
-	Tree *t;
+	Qid qid;
 	Fcall r;
-	Xdir d;
 	Fid *f;
-	Kvp kv;
 	Msg mb;
 
 	mbits = mode2bits(m->mode);
@@ -2050,15 +2061,8 @@ fsopen(Fmsg *m, int id, Amsg **ao)
 		nexterror();
 	}
 	if(m->mode & OTRUNC)
-		truncwait(f->dent, id);
-	t = agetp(&f->mnt->root);
-	if((f->qpath & Qdump) != 0){
-		filldumpdir(&d);
-	}else{
-		if(!btlookup(t, f->dent, &kv, buf, sizeof(buf)))
-			error(Esrch);
-		kv2dir(&kv, &d);
-	}
+		while(f->dent->trunc)
+			rsleep(&f->dent->truncrz);
 	wlock(f->dent);
 	if(waserror()){
 		wunlock(f->dent);
@@ -2076,9 +2080,9 @@ fsopen(Fmsg *m, int id, Amsg **ao)
 		if((e = candelete(f)) != nil)
 			error(e);
 	}
-	if(fsaccess(f, d.mode, d.uid, d.gid, mbits) == -1)
+	if(fsaccess(f, f->dent->mode, f->dent->uid, f->dent->gid, mbits) == -1)
 		error(Eperm);
-	f->dent->length = d.length;
+	qid = f->dent->qid;
 	wunlock(f->dent);
 	poperror();
 
@@ -2106,9 +2110,7 @@ fsopen(Fmsg *m, int id, Amsg **ao)
 			nexterror();
 		}
 		*ao = emalloc(sizeof(Amsg), 1);
-		qlock(&f->dent->trunclk);
-		f->dent->trunc = 1;
-		qunlock(&f->dent->trunclk);
+		f->dent->trunc++;
 		aincl(&f->dent->ref, 1);
 		aincl(&f->mnt->ref, 1);
 		(*ao)->op = AOclear;
@@ -2141,7 +2143,7 @@ fsopen(Fmsg *m, int id, Amsg **ao)
 		poperror();	/* free(f->rclose) */
 
 	r.type = Ropen;
-	r.qid = d.qid;
+	r.qid = qid;
 	r.iounit = f->iounit;
 
 	wunlock(f);
@@ -2155,7 +2157,7 @@ fsopen(Fmsg *m, int id, Amsg **ao)
 static void
 readsnap(Fmsg *m, Fid *f, Fcall *r)
 {
-	char pfx[1], *p;
+	char pfx[1], name[Maxname+1], *p;
 	int n, ns;
 	Scan *s;
 	Xdir d;
@@ -2184,6 +2186,7 @@ readsnap(Fmsg *m, Fid *f, Fcall *r)
 	p = r->data;
 	n = m->count;
 	filldumpdir(&d);
+	d.name = name;
 	if(s->overflow){
 		memcpy(d.name, s->kv.k+1, s->kv.nk-1);
 		d.name[s->kv.nk-1] = 0;
@@ -2340,6 +2343,10 @@ fsread(Fmsg *m)
 		error(Enofid);
 	if(f->dent->gone)
 		error(Ephase);
+	if(f->mode == -1)
+		error(Eopen);
+	if(m->offset < 0)
+		error(Eoffset);
 	r.type = Rread;
 	r.count = 0;
 	r.data = nil;
@@ -2355,6 +2362,8 @@ fsread(Fmsg *m)
 		readsnap(m, f, &r);
 	else if(f->dent->qid.type & QTDIR)
 		readdir(m, f, &r);
+	else if(f->dent->qid.path == Qstatus)
+		readstatus(m, f, &r);
 	else
 		readfile(m, f, &r);
 	putfid(f);
@@ -2364,7 +2373,7 @@ fsread(Fmsg *m)
 }
 
 static void
-fswrite(Fmsg *m, int id)
+fswrite(Fmsg *m)
 {
 	char sbuf[Wstatmax], kbuf[Max9p/Blksz+2][Offksz], vbuf[Max9p/Blksz+2][Ptrsz];
 	Bptr bp[Max9p/Blksz + 2];
@@ -2378,19 +2387,36 @@ fswrite(Fmsg *m, int id)
 
 	if((f = getfid(m->conn, m->fid)) == nil)
 		error(Enofid);
-	if(f->dent->qid.type & QTAUTH){
+	if(f->mode == -1)
+		error(Eopen);
+	if(m->offset < 0)
+		error(Eoffset);
+	if((f->dent->qid.type & QTAUTH)
+	|| (f->dent->qid.path & Qmagic)){
+		/*
+		 * Magic FDs handle their own responses,
+		 * since in some cases they end up wanting
+		 * to queue a message after a sweeper op
+		 */
 		if(waserror()){
 			putfid(f);
 			nexterror();
 		}
-		authwrite(f, &r, m->data, m->count);
+		if(f->dent->qid.type & QTAUTH)
+			authwrite(f, m);
+		else if(f->dent->qid.path == Qctl)
+			writectl(m, f);
+		else
+			error(Eperm);
 		putfid(f);
 		poperror();
-		respond(m, &r);
 		return;
-	}	
+	}
+	if(agetl(&fs->rdonly))
+		error(Erdonly);
 	wlock(f);
-	truncwait(f->dent, id);
+	while(f->dent->trunc)
+		rsleep(&f->dent->truncrz);
 	wlock(f->dent);
 	if(waserror()){
 		wunlock(f->dent);
@@ -2544,7 +2570,7 @@ putconn(Conn *c)
 			putfid(f);
 
 			if(a != nil)
-				chsend(fs->admchan, a);
+				chsend(fs->swchan, a);
 		}
 	}
 	free(c);
@@ -2626,65 +2652,99 @@ runfs(int, void *pc)
 		}
 		assert(estacksz() == 0);
 		if(a != nil)
-			chsend(fs->admchan, a);
+			chsend(fs->swchan, a);
 	}
 	putconn(c);
 }
 
 void
-runmutate(int id, void *)
+migrateusers(Mount *mnt)
 {
+	char buf[2][Kvmax];
+	Msg m[2];
+	Tree *r;
+	Xdir d;
+	vlong n;
+	Qid q;
+	int nm;
+
+	nm = 0;
+	r = agetp(&mnt->root);
+	if(walk1(r, Qadmroot, "ctl", &q, &n) == -1){
+		m[nm].op = Oinsert;
+		fillxdir(&d, Qctl, "ctl", QTFILE, 0664, 0);
+		dir2kv(Qadmroot, &d, &m[0], buf[0], sizeof(buf[nm]));
+		nm++;
+	}
+	if(walk1(r, Qadmroot, "status", &q, &n) == -1){
+		m[nm].op = Oinsert;
+		fillxdir(&d, Qstatus, "status", QTFILE, 0664, 0);
+		dir2kv(Qadmroot, &d, &m[nm], buf[nm], sizeof(buf[nm]));
+		nm++;
+	}
+	if(nm == 0)
+		return;
+	qlock(&fs->mutlk);
+	upsert(mnt, m, nm);
+	qunlock(&fs->mutlk);
+	sync();
+}
+
+void
+runmutate(int, void *)
+{
+	Mount *mnt;
 	Fmsg *m;
 	Amsg *a;
-	Fid *f;
+
+	if(!agetl(&fs->rdonly)){
+		mnt = getmount("adm");
+		migrateusers(mnt);
+		clunkmount(mnt);
+	}
 
 	while(1){
 		a = nil;
-		m = chrecv(fs->wrchan);
-		if(agetl(&fs->rdonly)){
-			/*
-			 * special case: even if Tremove fails, we need
-			 * to clunk the fid.
-			 */
-			if(m->type == Tremove){
-				if((f = getfid(m->conn, m->fid)) == nil){
-					rerror(m, Enofid);
-					continue;
-				}
-				wlock(f);
-				clunkfid(m->conn, f, &a);
-				wunlock(f);
-				putfid(f);
-				freeamsg(a);
-			}
-			rerror(m, Erdonly);
-			continue;
- 		}
-
+		if((m = chrecv(fs->wrchan)) == nil)
+			break;
 		qlock(&fs->mutlk);
-		epochstart(id);
 		fs->snap.dirty = 1;
 		if(waserror())
 			rerror(m, "%s", errmsg());
 		else {
+			/*
+			 * even if we're readonly, we want to allow
+			 * mutation operations through, since we need
+			 * things like writes to go through to ctl
+			 * files, auth fids, etc. the check in upsert()
+			 * should prevent actual on-disk mutation.
+			 */
 			switch(m->type){
 			case Tcreate:	fscreate(m);		break;
-			case Twrite:	fswrite(m, id);		break;
-			case Twstat:	fswstat(m, id, &a);	break;
-			case Tremove:	fsremove(m, id, &a);	break;
-			case Topen:	fsopen(m, id, &a);	break;
+			case Twrite:	fswrite(m);		break;
+			case Twstat:	fswstat(m, &a);	break;
+			case Tremove:	fsremove(m, &a);	break;
+			case Topen:	fsopen(m, &a);	break;
 			default:	abort();		break;
 			}
 			poperror();
 		}
 		assert(estacksz() == 0);
-		epochend(id);
 		qunlock(&fs->mutlk);
 		epochclean();
 
-		if(a != nil)
-			chsend(fs->admchan, a);
+		/*
+		 * can't block on a channel while holding the mutlk,
+		 * so we defer amsg to after we release it
+		 */
+		if(a != nil){
+			if(a->op == AOclear || a->op == AOrclose)
+				chsend(fs->swchan, a);
+			else
+				chsend(fs->admchan, a);
+		}
 	}
+	chsend(fs->admchan, nil);
 }
 
 void
@@ -2699,12 +2759,12 @@ runread(int id, void *ch)
 			rerror(m, "%s", errmsg());
 		else {
 			switch(m->type){
-			case Tattach:	fsattach(m);		break;
-			case Twalk:	fswalk(m);		break;
-			case Tread:	fsread(m);		break;
-			case Tstat:	fsstat(m);		break;
-			case Topen:	fsopen(m, id, nil);	break;
-			default:	abort();		break;
+			case Tattach:	fsattach(m);	break;
+			case Twalk:	fswalk(m);	break;
+			case Tread:	fsread(m);	break;
+			case Tstat:	fsstat(m);	break;
+			case Topen:	fsopen(m, nil);	break;
+			default:	abort();	break;
 			}
 			poperror();
 		}
@@ -2727,8 +2787,6 @@ freetree(Bptr rb, vlong pred)
 			getval(b, i, &kv);
 			bp = unpackbp(kv.v, kv.nv);
 			freetree(bp, pred);	/* leak b on error() */
-			qlock(&fs->mutlk);
-			qunlock(&fs->mutlk);
 			epochclean();
 		}
 	}
@@ -2748,31 +2806,39 @@ freetree(Bptr rb, vlong pred)
  * need to hold the mutlk, other than when we free or kill
  * blocks via epochclean.
  */
-static void
+static Tree*
 sweeptree(Tree *t)
 {
 	char pfx[1];
+	vlong gen;
 	Scan s;
 	Bptr bp;
+
 	pfx[0] = Kdat;
 	btnewscan(&s, pfx, 1);
+	gen = (t->pred != -1) ? t->pred : t->base;
 	btenter(t, &s);
 	while(1){
 		if(!btnext(&s, &s.kv))
 			break;
 		bp = unpackbp(s.kv.v, s.kv.nv);
-		if(bp.gen > t->pred)
+		if(bp.gen > gen)
 			freebp(nil, bp);
-		qlock(&fs->mutlk);
-		qunlock(&fs->mutlk);
 		epochclean();
 	}
 	btexit(&s);
-	freetree(t->bp, t->pred);
+	freetree(t->bp, gen);
+
+	if(gen != -1 && (t = opentree(gen)) != nil){
+		if(t->nlbl == 0 && t->nref == 0)
+			return t;
+		closesnap(t);
+	}
+	return nil;
 }
 
 void
-setconf(int fd, int op, char *snap, char *key, char *val)
+setconf(int op, char *snap, char *key, char *val)
 {
 	char kbuf[128], xbuf[Kvmax];
 	Mount *mnt;
@@ -2783,12 +2849,14 @@ setconf(int fd, int op, char *snap, char *key, char *val)
 	mnt = nil;
 	t = &fs->snap;
 	if(waserror()){
-		fprint(fd, "error setting config: %s\n", errmsg());
+		fprint(2, "error setting config: %s\n", errmsg());
 		return;
 	}
 	if(snap[0] != 0){
 		mnt = getmount(snap);
 		t = agetp(&mnt->root);
+		if((mnt->flag & Lmut) == 0)
+			error(Eperm);
 	}
 	kbuf[0] = Kconf;
 	strecpy(kbuf+1, kbuf+sizeof(kbuf), key);
@@ -2799,70 +2867,110 @@ setconf(int fd, int op, char *snap, char *key, char *val)
 	m.nv = strlen(val);
 	qlock(&fs->mutlk);
 	if(!waserror()){
-		if(op == Oinsert || btlookup(t, &m, &x, xbuf, sizeof(xbuf))){
-			fprint(fd, "set %s → %s\n", key, op == Oinsert ? val : "delete");
+		if(op == Oinsert || btlookup(t, &m, &x, xbuf, sizeof(xbuf)))
 			btupsert(t, &m, 1);
-		}else
-			fprint(fd, "set %s: no such key\n", key);
+		else
+			fprint(2, "%s: no key %s\n", (op == Oinsert) ? "set" : "clr", key);
 		poperror();
 	}else
-		fprint(fd, "error setting config: %s\n", errmsg());
+		fprint(2, "error setting config: %s\n", errmsg());
 	qunlock(&fs->mutlk);
+	sync();
 	if(mnt != nil)
 		clunkmount(mnt);
 	poperror();
 }
 
-void
-runsweep(int id, void*)
+/*	
+ * we can have stragglers in the defererd list, so 
+ * keep syncing until we cleared it out fully.
+ */
+static void
+drainsyncq(void)
 {
-	char buf[Kvmax];
-	Msg mb[Kvmax/Offksz];
+	int n;
+
+	if(waserror())
+		sysfatal("halt failed: %s\n", errmsg());
+	while(1){
+		/*
+		 * we need to cycle through the limbo lists to
+		 * enqueue the blocks, then wait for them all
+		 * pass through the write queues, so that when
+		 * sync() finally gets called, the deadlists
+		 * it processes have all the in-flight blocks.
+		 */
+		for(n = 0; n != nelem(fs->limbo); n++){
+			while(!epochclean())
+				sleep(10);
+		}
+		/*
+		 * make sure that blocks released by epochclean
+		 * make it through the syncer into the deadlists
+		 */
+		qlock(&fs->synclk);
+		wrwait();
+		qunlock(&fs->synclk);
+		if(sync())
+			break;
+	}
+	poperror();
+}
+
+void
+runadm(int id, void *)
+{
 	Bptr bp, nb, *oldhd;
+	Tree *t, *n;
 	Fcall r;
-	int i, nm;
-	vlong off;
-	Tree *t;
+	int i, ok, halting;
 	Arena *a;
 	Amsg *am;
 	Blk *b;
 
+	halting = 0;
 	if((oldhd = calloc(fs->narena, sizeof(Bptr))) == nil)
 		sysfatal("malloc log heads");
 	while(1){
-		am = chrecv(fs->admchan);
+		if((am = chrecv(fs->admchan)) == nil){
+			if(halting++ == 1){
+				chsend(fs->swchan, nil);
+				continue;
+			}
+			drainsyncq();
+			postnote(PNGROUP, getpid(), "halting");
+			exits(nil);
+		}
+		if(waserror()){
+			if(am->m != nil)
+				rerror(am->m, errmsg());
+			continue;
+		}
 		switch(am->op){
 		case AOsetcfg:
-			setconf(am->fd, Oinsert, am->snap, am->key, am->val);
+			setconf(Oinsert, am->snap, am->key, am->val);
 			break;
 		case AOclrcfg:
-			setconf(am->fd, Odelete, am->snap, am->key, "");
+			setconf(Odelete, am->snap, am->key, "");
 			break;
 		case AOhalt:
+			fprint(2, "gefs: ending\n");
+			if(halting)
+				goto Next;
 			if(!agetl(&fs->rdonly)){
-				aincl(&fs->rdonly, 1);
-				/* cycle through all epochs to clear them.  */
-				for(i = 0; i < 4; i++){
-					epochwait();
-					epochclean();
-				}
-				if(waserror()){
-					fprint(2, "halt failed: %s\n", errmsg());
-					break;
-				}
-				sync(id);
+				chsend(fs->wrchan, nil);
+				halting++;
+				goto Next;
+			}else{
+				postnote(PNGROUP, getpid(), "halting");
+				exits(nil);
 			}
-			postnote(PNGROUP, getpid(), "halted");
-			exits(nil);
 			break;
 		case AOsync:
 			tracem("syncreq");
 			if(waserror()){
 				fprint(2, "sync error: %s\n", errmsg());
-				if(am->m != nil)
-					rerror(am->m, Eio);
-				aincl(&fs->rdonly, 1);
-				break;
+				nexterror();
 			}
 			if(!fs->snap.dirty || agetl(&fs->rdonly))
 				goto Syncout;
@@ -2892,14 +3000,12 @@ runsweep(int id, void*)
 				epochclean();
 			}
 
-			sync(id);	/* oldhd blocks leaked on error() */
+			sync();	/* oldhd blocks leaked on error() */
 
 			for(i = 0; i < fs->narena; i++){
 				for(bp = oldhd[i]; bp.addr != -1; bp = nb){
 					qlock(&fs->mutlk);
-					epochstart(id);
 					if(waserror()){
-						epochend(id);
 						qunlock(&fs->mutlk);
 						nexterror();
 					}
@@ -2907,18 +3013,12 @@ runsweep(int id, void*)
 					nb = b->logp;
 					freeblk(nil, b);
 					dropblk(b);
-					epochend(id);
 					qunlock(&fs->mutlk);
 					poperror();
 					epochclean();
 				}
 			}
 Syncout:
-			if(am->m != nil){
-				assert(am->m->type == Twstat);
-				r.type = Rwstat;
-				respond(am->m, &r);
-			}
 			poperror();
 			break;
 
@@ -2928,34 +3028,77 @@ Syncout:
 				fprint(2, "snap on read only fs");
 				goto Next;
 			}
-			if(waserror()){
-				fprint(2, "taking snap: %s\n", errmsg());
-				aincl(&fs->rdonly, 1);
-				break;
-			}
-
 			qlock(&fs->mutlk);
-			epochstart(id);
 			if(waserror()){
-				epochend(id);
 				qunlock(&fs->mutlk);
 				nexterror();
 			}
-			snapfs(am, &t);
-			epochend(id);
+			t = snapfs(am);
 			qunlock(&fs->mutlk);
 			poperror();
 
-			sync(id);	/* t leaked on error() */
-
-			if(t != nil){
-				epochwait();
-				sweeptree(t);	/* t leaked on error() */
+			while(t != nil){
+				sync();	/* t leaked on error() */
+				n = sweeptree(t);
 				closesnap(t);
+				if(n == nil)
+					break;
+				t = n;
+				ok = 0;
+				if(n->nref == 0 && n->nlbl == 0){
+					qlock(&fs->mutlk);
+					ok = delsnap(n, n->succ, nil);
+					qunlock(&fs->mutlk);
+				}
+				if(!ok){
+					closesnap(n);
+					break;
+				}
 			}
-			poperror();
 			break;
 
+		}
+Next:
+		poperror();
+		if(am->m != nil){
+			switch(am->m->type){
+			case Twstat:
+				r.type = Rwstat;
+				break;
+			case Twrite:
+				r.type = Rwrite;
+				r.count = am->m->count;
+				break;
+			default:
+				abort();
+			}
+			respond(am->m, &r);
+		}
+		assert(estacksz() == 0);
+		freeamsg(am);
+	}
+
+}
+
+void
+runsweep(int, void*)
+{
+	char buf[Kvmax];
+	Msg mb[Kvmax/Offksz];
+	int nm;
+	vlong off;
+	Amsg *am;
+
+	while(1){
+		if((am = chrecv(fs->swchan)) == nil)
+			break;
+		if(waserror()){
+			if(am->m != nil)
+				rerror(am->m, errmsg());
+			continue;
+		}
+		assert(am->m == nil);
+		switch(am->op){
 		case AOrclose:
 			if(agetl(&fs->rdonly)){
 				fprint(2, "rclose on read only fs");
@@ -2976,15 +3119,12 @@ Syncout:
 				nm++;
 			}
 			qlock(&fs->mutlk);
-			epochstart(id);
 			if(waserror()){
-				epochend(id);
 				qunlock(&fs->mutlk);
 				fprint(2, "%s", errmsg());
 				goto Next;
 			}
 			upsert(am->mnt, mb, nm);
-			epochend(id);
 			qunlock(&fs->mutlk);
 			poperror();
 			/* fallthrough */
@@ -2996,17 +3136,7 @@ Syncout:
 			tracem("bgclear");
 			if(waserror()){
 				fprint(2, "clear file %llx: %s\n", am->qpath, errmsg());
-				aincl(&fs->rdonly, 1);
 				break;
-			}
-			if(am->dent != nil){
-				qlock(&am->dent->trunclk);
-				if(waserror()){
-					/* what should truncwait() do now? */
-					rwakeup(&am->dent->truncrz);
-					qunlock(&am->dent->trunclk);
-					nexterror();
-				}
 			}
 			fs->snap.dirty = 1;
 			nm = 0;
@@ -3020,15 +3150,17 @@ Syncout:
 				mb[nm].v = nil;
 				mb[nm].nv = 0;
 				if(++nm >= nelem(mb) || off + Blksz >= am->end){
+Again:
 					qlock(&fs->mutlk);
-					epochstart(id);
 					if(waserror()){
-						epochend(id);
 						qunlock(&fs->mutlk);
-						nexterror();
+						if(strcmp(errmsg(), Efull) != 0)
+							nexterror();
+						fprint(2, "waiting for sweep...\n");
+						sleep(5000);
+						goto Again;
 					}
 					upsert(am->mnt, mb, nm);
-					epochend(id);
 					qunlock(&fs->mutlk);
 					poperror();
 					epochclean();
@@ -3036,18 +3168,22 @@ Syncout:
 				}
 			}
 			if(am->dent != nil){
-				am->dent->trunc = 0;
+				qlock(&fs->mutlk);
+				am->dent->trunc--;
 				rwakeup(&am->dent->truncrz);
-				qunlock(&am->dent->trunclk);
-				poperror();
+				qunlock(&fs->mutlk);
 			}
 			poperror();
 			break;
+		default:
+			abort();
 		}
 Next:
+		poperror();
 		assert(estacksz() == 0);
 		freeamsg(am);
 	}
+	chsend(fs->admchan, nil);
 }
 
 static void
@@ -3057,7 +3193,6 @@ snapmsg(char *old, char *new)
 
 	a = emalloc(sizeof(Amsg), 1);
 	a->op = AOsnap;
-	a->fd = -1;
 	strecpy(a->old, a->old+sizeof(a->old), old);
 	if(new == nil)
 		a->delete = 1;
@@ -3108,7 +3243,6 @@ runtasks(int, void *)
 		}
 		a = emalloc(sizeof(Amsg), 1);
 		a->op = AOsync;
-		a->fd = -1;
 		chsend(fs->admchan, a);
 
 		tmnow(&tm, nil);

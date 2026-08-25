@@ -11,7 +11,7 @@ static vlong	blkalloc_lk(Arena*, int);
 static vlong	blkalloc(int, uint, int);
 static void	blkdealloc_lk(Arena*, vlong);
 static Blk*	initblk(Blk*, vlong, vlong, int);
-static void	readblk(Blk*, Bptr, int);
+static void	readblk(Blk*, Bptr, int, uintptr);
 
 int
 checkflag(Blk *b, int set, int clr)
@@ -47,7 +47,7 @@ syncblk(Blk *b)
 }
 
 static void
-readblk(Blk *b, Bptr bp, int flg)
+readblk(Blk *b, Bptr bp, int flg, uintptr)
 {
 	vlong off, xh, ck, rem, n;
 	char *p;
@@ -345,7 +345,7 @@ loadlog(Arena *a, Bptr bp)
 	while(1){
 		bassert(b, checkflag(b, Bstatic, Bcached));
 		holdblk(b);
-		readblk(b, bp, 0);
+		readblk(b, bp, 0, getcallerpc(&a));
 		dprint("\tload %B chain %B\n", bp, b->logp);
 		a->nlog++;
 		for(i = 0; i < b->logsz; i += n){
@@ -748,7 +748,7 @@ getblk(Bptr bp, int flg)
 	} else {
 		b = cachepluck();
 		b->alloced = getcallerpc(&bp);
-		readblk(b, bp, flg);
+		readblk(b, bp, flg, getcallerpc(&bp));
 		b->bp.gen = bp.gen;
 		cacheins(b);
 	}
@@ -877,55 +877,48 @@ epochend(int tid)
 	aswapl(&fs->lepoch[tid], le &~ Eactive);
 }
 
-void
-epochwait(void)
-{
-	int i, delay;
-	ulong e, ge;
-
-	delay = 0;
-Again:
-	ge = agetl(&fs->epoch);
-	for(i = 0; i < agetl(&fs->nworker); i++){
-		e = agetl(&fs->lepoch[i]);
-		if((e & Eactive) && e != (ge | Eactive)){
-			if(delay == 300)
-				fprint(2, "stalled epoch %lx [worker %d]\n", e, i);
-			sleep(delay++);
-			goto Again;
-		}
-	}
-}
-
-void
+/* clears limbo lists; returns if the epoch advanced */
+int
 epochclean(void)
 {
 	ulong c, e, ge;
+	int i, delay;
 	Limbo *p, *n;
 	Dlist *dl;
 	Blk *b;
 	Bfree *f;
 	Arena *a;
 	Qent qe;
-	int i;
 
+	if(!canlock(&fs->epochlk))
+		return 0;
+	delay = 0;
+Again:
 	c = agetl(&fs->nlimbo);
 	ge = agetl(&fs->epoch);
 	for(i = 0; i < agetl(&fs->nworker); i++){
 		e = agetl(&fs->lepoch[i]);
 		if((e & Eactive) && e != (ge | Eactive)){
-			if(c < fs->cmax/4)
-				return;
-			epochwait();
+			if(c < fs->cmax/4){
+				unlock(&fs->epochlk);
+				return 0;
+			}
+			if(delay == 300)
+				fprint(2, "stalled epoch %lx [worker %d]\n", e, i);
+			sleep(delay++);
+			goto Again;
 		}
 	}
-	epochwait();
 	p = aswapp(&fs->limbo[(ge+1)%3], nil);
 	aswapl(&fs->epoch, (ge+1)%3);
+	unlock(&fs->epochlk);
 
 	for(; p != nil; p = n){
 		n = p->next;
 		switch(p->op){
+		case DFclose:
+			closesnap((Tree*)p);
+			break;
 		case DFtree:
 			free(p);
 			break;
@@ -969,6 +962,7 @@ epochclean(void)
 		}
 		aincl(&fs->nlimbo, -1);
 	}
+	return 1;
 }
 
 void
