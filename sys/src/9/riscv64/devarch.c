@@ -257,6 +257,7 @@ archinit(void)
 	addarchfile("pmctl", 0220, nil, pmctlwrite);
 	sbiinit();
 	k1thermalinit();
+	k3thermalinit();
 }
 
 static void
