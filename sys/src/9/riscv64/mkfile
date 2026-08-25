@@ -74,6 +74,7 @@ OBJ=\
 	etherdwqe.$O\
 	k1reset.$O\
 	k1thermal.$O\
+	k3thermal.$O\
 	usbxhcibpif3.$O\
 	usbxhcipicoitx.$O\
 	usbxhcicom260.$O\

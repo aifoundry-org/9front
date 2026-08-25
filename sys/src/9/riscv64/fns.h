@@ -205,6 +205,9 @@ extern int k1pmicwrite(int reg, int val);
 /* k1thermal */
 extern void k1thermalinit(void);
 
+/* k3thermal */
+extern void k3thermalinit(void);
+
 /* devarch */
 extern Dirtab* addarchfile(char *name, int perm,
 	long(*rdfn)(Chan*,void*,long,vlong), long(*wrfn)(Chan*,void*,long,vlong));
