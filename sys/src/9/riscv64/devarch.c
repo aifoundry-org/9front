@@ -258,6 +258,7 @@ archinit(void)
 	sbiinit();
 	k1thermalinit();
 	k3thermalinit();
+	k3ecfaninit();
 }
 
 static void
