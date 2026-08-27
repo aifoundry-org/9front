@@ -208,6 +208,15 @@ extern void k1thermalinit(void);
 /* k3thermal */
 extern void k3thermalinit(void);
 
+/* espik3 -- eSPI controller + cros_ec host-command transport, board-gated and
+   lazily brought up on first call. Any future EC consumer uses these three */
+extern int k3espiready(void);
+extern int k3eccmd(int cmd, int ver, void *tx, int txlen, void *rx, int rxlen);
+extern int k3ecmemmapread(int off, void *buf, int n);
+
+/* espik3fan */
+extern void k3ecfaninit(void);
+
 /* devarch */
 extern Dirtab* addarchfile(char *name, int perm,
 	long(*rdfn)(Chan*,void*,long,vlong), long(*wrfn)(Chan*,void*,long,vlong));
