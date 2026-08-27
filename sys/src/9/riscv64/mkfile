@@ -76,6 +76,8 @@ OBJ=\
 	k1thermal.$O\
 	i2ck3.$O\
 	k3thermal.$O\
+	espik3.$O\
+	espik3fan.$O\
 	usbxhcibpif3.$O\
 	usbxhcipicoitx.$O\
 	usbxhcicom260.$O\
