@@ -1,73 +1,13 @@
 /*
- * Spacemit K3 on-die temperature sensor (TSEN_LITE block).
+ * Spacemit K3 on-die temperature sensor (TSEN_LITE block)
  *
- * Exports #P/cputemp as "name value±resolution" lines, one per enabled
- * sensor, in the same shape as the K1 driver's #P/cputemp.
+ * Exports #P/cputemp as "name value±resolution" lines, one per enabled sensor
  *
- * PROVENANCE / CONFIDENCE NOTES:
+ * Based on:
+ *   9front k1thermal.c (k1 temperature sensor) - overall 9front driver architecture
+ *   Linux K3 BSP driver - k3-thermal.c/.h register + descriptor layout reference
+ *   k3.dtsi - Device tree source include / Common k3 pico itx & k3 com260
  *
- *   - Register offsets/bitfields/algorithm (TsCfg, TsCfg2, TsTempData,
- *     the code/8 formula, the vref-calibration and auto-zero pulse
- *     sequence) come from a K3 vendor BSP Linux driver (k3-thermal.c/.h,
- *     SPDX GPL-2.0-only); only the hardware *facts* were carried over,
- *     the Plan9 code below is freshly written, not copied.
- *
- *   - Everything below is now cross-checked against the k3-pico-itx
- *     board's actual compiled device tree (k3-pico-itx.dtb), which is
- *     about as strong a source as this gets short of the silicon
- *     itself:
- *
- *       thermal@d4018000 {
- *         compatible = "spacemit,k3-tsensor";
- *         reg = <0x0 0xd4018000 0x0 0x100>;
- *         clocks = <&apbc CLK_APBC_TSEN &apbc CLK_APBC_TSEN_BUS>;
- *         clock-names = "func", "bus";
- *         resets = <&apbc 0x3d>;
- *         sensor_range = <0 7>;
- *         tsensor_map = <1 0 1 1 1 1 1 1>;
- *         temperature_offset = <0x112>;   // 274
- *       };
- *
- *     and, in the same dtb:
- *
- *       system-controller@d4015000 {
- *         compatible = "spacemit,k3-syscon-apbc";
- *         reg = <0x0 0xd4015000 0x0 0x1000>;
- *       };
- *
- *     This settles several things that were previously guessed:
- *       * TsenSize is 0x100, not the 0x800 the UM's address-map table
- *         reserves for it (the reg is just smaller than the reservation).
- *       * ApbcPhys/ApbcSize are now known: 0xD4015000 / 0x1000. ApbcTsen
- *         staying at offset 0x6C inside it (already confirmed from
- *         SpacemiT's k3-syscon.h) lines up with this base exactly.
- *       * Tempoff is 274 here, NOT the 278 the BSP header's
- *         TEMPERATURE_OFFSET falls back to -- this board's device tree
- *         overrides it per-unit via "temperature_offset", presumably
- *         a per-die or per-SKU trim value. Trust the DT value.
- *       * There are 8 physical mux positions (sensor_range = 0..7), not
- *         7 -- the K3 UM's "7 sensors" is this board's count of enabled
- *         ones. tsensor_map disables index 1 here.
- *       * The sensor-to-index mapping was WRONG in the previous version
- *         of this file. The board's thermal-zones nodes tie names to
- *         indices unambiguously: index 0 = top, 1 = (unused/disabled on
- *         this board -- likely a "package" sensor per K1's convention,
- *         where index 1 is also "package"), 2 = vpu, 3 = gpu, 4 =
- *         cluster0, 5 = cluster1, 6 = cluster2, 7 = cluster3. This is
- *         board data, not an SoC-level register default, so a
- *         different K3 board could in principle wire tsensor_map
- *         differently -- but absent a way to read the DT at this layer,
- *         this board's mapping is what's hardcoded below.
- *
- *   - Still not independently confirmed: that bit2 of ApbcTsen is the
- *     reset bit (carried over from K1's convention; the dtb's "resets"
- *     property confirms a reset line exists on this same apbc
- *     controller, cell "0x3d", but doesn't say which bit it maps to).
- *
- *   - Board matching: gated on dtbsocmatch("spacemit,k3") alone, same
- *     as the K3 dwqe Ethernet driver's etherpnp() does -- no soc.vendor
- *     check, no extra header needed. This file is now fully
- *     self-contained: no k3.h, no external Soc/vendor declarations.
  */
 #include "u.h"
 #include "../port/lib.h"
