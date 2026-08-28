@@ -50,7 +50,7 @@ enum {
 	TsEcoIntvl	= 0x24,
 	TsLpFixBypass	= 0x28,
 
-	VrefCalibDefault = 0x9A,	/* fallback vref trim; real value lives in efuse */
+	VrefCalibDefault = 0xD8,	/* fallback vref trim; real value lives in efuse */
 	TempRawDiv	= 8,		/* raw code is in 1/8 degC units */
 	Tempoff		= 274,		/* confirmed: k3-pico-itx.dtb temperature_offset=0x112 */
 
