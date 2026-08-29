@@ -1,87 +1,15 @@
 /*
- * espik3.c -- SpacemiT K3 eSPI controller driver, carrying a ChromeOS-EC
- * ("cros_ec") host-command tunnel to the CSCE2010 embedded controller,
- * for 9front.
+ * SpacemiT K3 eSPI controller driver, carrying a ChromeOS-EC ("cros_ec")
+ *  host-command tunnel to the CSCE2010 embedded controller, for 9front
  *
- * REVISION NOTE 3: every constant/struct field this file previously
- * had to guess at (marked "RECALLED, NOT CONFIRMED") has now been
- * checked against the real cros_ec_commands.h (Chromium OS Authors,
- * BSD-style license -- not GPL, its numeric ABI facts are used
- * directly rather than re-derived-and-flagged). Two were wrong:
- * MemmapId was 0x2C, should be 0x20; CmdProtocol3 was 0x88, should be
- * 0xDA. One was a real bug, not just unconfirmed: struct
- * ec_host_response is 8 bytes (struct_version, checksum, result,
- * data_len, AND a trailing 2-byte reserved field), not the 6 bytes
- * this file assumed -- every response payload read would have been
- * offset by 2 bytes and the checksum would never have validated.
- * StatusBusyMask (0x06) and EcCmdPwmSetFanTargetRpm (0x0021) turned
- * out to already be right. See each constant/struct below for where
- * it's now marked CONFIRMED instead of RECALLED.
+ * Only works in "spacemit,k3-pico-itx"
  *
- * REVISION NOTE 2: the previous revision programmed SLAVE0_CONFIG with
- * a fixed, hand-picked value and skipped straight to using the PR
- * channel window. That was INCOMPLETE in a way that would likely have
- * silently hung or NO_RESPONSE'd on real hardware: per the eSPI Base
- * Spec, a master does not get to unilaterally decide the link is
- * configured just by writing its own CSRs -- it has to actually
- * perform the GET_CONFIGURATION / SET_CONFIGURATION handshake *on the
- * wire* (common eSPI opcodes, K3 UM �14.9.3.2 "Bus Protocol") so the
- * EC's own eSPI slave logic turns its channels on. Writing only the
- * K3 controller's local SLAVE0_CONFIG mirror does not do that -- the
- * slave (EC) side has to be told too, and that only happens via
- * DNCMD_TYPE=SET_CONFIGURATION transactions actually issued to it.
- *
- * This revision replaces espiinit() with a real negotiation: read the
- * EC's General Capabilities (GET_CONFIGURATION @0x08), intersect that
- * with what this board wants, SET_CONFIGURATION each of the four
- * per-channel config registers (@0x10/0x20/0x30/0x40) to turn them on
- * on the EC side, SET_CONFIGURATION the general capabilities register
- * to finalize, and only then mirror the negotiated result into the
- * local SLAVE0_CONFIG/GLOBAL_CONTROL_0/PR_BASE_ADDR_MEM_* CSRs. If any
- * step fails, fall back to a "master-only" config (program our own
- * CSRs to what we want and hope for the best) rather than getting
- * stuck -- same philosophy as before, just with a real handshake
- * attempted first instead of skipped.
- *
- * PROVENANCE: this revision's *facts* -- the per-channel config
- * register addresses and their magic "enable" values, the General
- * Capabilities bit layout used inside GET/SET_CONFIGURATION's 32-bit
- * payload (which is a *different* bit layout than SLAVE0_CONFIG's own
- * CSR, see the translation table below), the exact DN_TXHDR byte-index
- * packing formula, and this board's own negotiated parameters (freq,
- * io-mode, watchdog timeout, which channels, both PR_BASE_ADDR_MEM
- * values) -- were extracted from SpacemiT's real, GPL-2.0-only
- * `spacemit-k3-espi.c` platform driver for this exact SoC/board (the
- * one that owns the eSPI controller and exports
- * spacemit_k3_espi_recover() for cros_ec_espi.c to call). As before,
- * per this tree's copyright policy, none of that GPL code's
- * expression -- its control-flow shape, its struct layout, its
- * error-handling idiom, its variable/function names -- is reproduced
- * below; every function here is freshly written in this tree's own
- * style against the extracted facts (register addresses, bit
- * positions, magic constants, and the *sequence* of standard eSPI-
- * spec operations that sequence performs, which is dictated by the
- * eSPI Base Specification itself, not by this vendor's creativity).
- *
- * This board's specific negotiated parameters (HIGH CONFIDENCE, read
- * directly from k3-pico-itx.dtb's espi@cac8c000 node, cross-checked
- * against what the extracted parsing logic does with each property):
- *	operating-frequency = 20 (MHz)		-> freq select 0
- *	io-mode = "single"			-> io-mode select 0
- *	alert-mode = "io1", NOT "pin"		-> pin-mode alerting is OFF
- *	  (this one matters: the previous revision wrongly forced the
- *	  ALERT_MODE_SEL bit on unconditionally -- this board's own dtb
- *	  says it should stay off, since alert-mode is "io1" not "pin")
- *	watchdog-timeout = 0xffff
- *	crc-enable, peripheral/vwire/oob/flash-channel-enable, and
- *	  auto-gating-enable are all present (booleans default true when
- *	  the property is present at all)
- *	pr-mem-base0 = 0x84000000, pr-mem-base1 = 0xcac8c000
- *
- * Everything else (window layout inside the PR-mapped shared memory,
- * cros_ec host-command v3 framing) is unchanged from the previous
- * revision -- see that revision's notes, still accurate, reproduced
- * in condensed form below.
+ * Based on:
+ *   Spacemit K3 UM 14.9 eSPI
+ *   cros_ec_commands.h - ABI constants
+ *   k3-pico-itx.dtb - Device tree blob
+ *   cros_ec_espi.c/spacemit-k3-espi.c protocol specification, layout references,
+ *     and constants
  */
 #include "u.h"
 #include "../port/lib.h"
@@ -220,8 +148,7 @@ enum {
 	EspiTimeoutUs	= 50000,
 
 	/* CONFIRMED against SpacemiT's real cros_ec_commands.h
-	 * (BSD-style, Chromium OS Authors -- not GPL, safe to use its
-	 * numeric ABI constants directly): */
+	 * safe to use its numeric ABI constants directly: */
 	StatusBusyMask	= 0x06,		/* EC_LPC_STATUS_FROM_HOST|_PROCESSING */
 	MemmapId	= 0x20,		/* EC_MEMMAP_ID: 'E','C' */
 	MemmapSize	= 0xFF,		/* EC_MEMMAP_SIZE-1, for k3ecmemmapread bounds */
@@ -579,12 +506,7 @@ espiinit(void)
 /* ============================================================
  * cros_ec host-command protocol v3, over the PR-channel shared-memory
  * window -- struct layouts now CONFIRMED against the real
- * cros_ec_commands.h (BSD-style, Chromium OS Authors -- not GPL, safe
- * to use its numeric ABI facts directly). struct ec_host_response
- * turned out to have a trailing 2-byte `reserved` field after
- * data_len that the previous revision was missing (it assumed 6
- * bytes, real size is 8) -- that would have desynced every response
- * payload read by 2 bytes and made the checksum check always fail.
+ * cros_ec_commands.h (safe to use its numeric ABI facts directly)
  * ============================================================ */
 typedef struct EcReq EcReq;
 struct EcReq {
@@ -728,20 +650,6 @@ ecidok(void)
  * consumer of this EC -- fan, or whatever gets added later -- so the
  * board-matching/bring-up logic lives in exactly one place instead of
  * being duplicated per consumer.
- *
- * Board-specific gating, deliberately: dtbsocmatch() does a PREFIX
- * match against the root node's compatible list (bootargs.c), so
- * gating on the SoC-family string "spacemit,k3" would ALSO match
- * other K3 boards this tree knows about -- e.g.
- * "spacemit,k3-com260-ifx" (see i2ck3.c's own header) -- since that
- * string starts with "spacemit,k3" too. Every register/window value
- * in this file (the PR_BASE_ADDR_MEM_0 value, the physical windows,
- * this board's own negotiated eSPI parameters) was pulled from
- * k3-pico-itx.dtb specifically and is NOT known to hold on any other
- * board -- Com260 IFX in particular has no evidence in this tree of
- * wiring its EC the same way (or having a CSCE2010/eSPI EC at all).
- * Match the full board string, not just the SoC family, so this
- * driver only ever activates on k3-pico-itx.
  */
 int
 k3espiready(void)
