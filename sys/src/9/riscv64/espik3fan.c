@@ -1,13 +1,5 @@
 /*
- * espik3fan.c -- fan control for k3-pico-itx, over the CSCE2010 EC.
- *
- * This is the one thing in this tree today that needs the EC (see
- * espik3.c for the eSPI controller + cros_ec host-command transport
- * itself, which knows nothing about fans specifically). If something
- * else on this board ever needs the EC -- battery status, a switch
- * state, whatever else lives in EC_MEMMAP_*, another host command --
- * it's a new file like this one, calling k3espiready()/k3eccmd()/
- * k3ecmemmapread() from espik3.c, not a reason to touch that file.
+ * Fan control for k3-pico-itx, over the CSCE2010 EC
  *
  * DESIGN: one ctl/status pair per fan, Plan 9 style, instead of one
  * file per concept. This board has exactly one fan, but the naming
@@ -15,31 +7,18 @@
  * a rename later -- cheap to reserve, awkward to retrofit. Today N is
  * always 0 (FanIdx0 below); a second fan would mean looping
  * k3ecfaninit() over however many the EC reports and publishing
- * fan1ctl/fan1status alongside these, not restructuring anything.
+ * fan1ctl/fan1status alongside these, not restructuring anything
  *
  *   #P/fan0status  r   measured RPM (EC_MEMMAP_FAN, plain memmap
  *                      read, no command/busy-wait), or the literal
  *                      string "absent"/"stalled" for the EC's own
- *                      sentinel values.
+ *                      sentinel values
  *   #P/fan0ctl     rw  read: "auto", or the last target RPM this
  *                      driver commanded (see FIELD NOTE below for why
  *                      it's not a live readback). write: the literal
  *                      string "auto" hands the fan back to the EC's
  *                      own thermal curve; a decimal number takes
- *                      manual control and sets that target RPM.
- *
- * By construction, fan0status always reads back exactly one bare
- * token in the grammar fan0ctl's write side accepts (a decimal
- * number, or one of the sentinel words, which parse as 0 -- harmless
- * either way: "no fan" or "not spinning" both make 0 a reasonable
- * target). So `cat fan0status > fan0ctl` is well-defined: it pins the
- * fan at whatever RPM it happens to be doing right now. Deliberately
- * did NOT make fan0status multi-field (e.g. a "mode" line plus an
- * "rpm" line): parsecmd()/Cmdbuf tokenize across ALL whitespace
- * including newlines, not line by line, so a multi-field status would
- * still "work" when piped into ctl (extra tokens are silently
- * ignored, since ctl only looks at cb->f[0]) but would gain nothing
- * and give up the single-token round-trip property for no benefit.
+ *                      manual control and sets that target RPM
  *
  * FIELD NOTE (real hardware, k3-pico-itx): the underlying transport
  * (espik3.c) and SET_FAN_TARGET_RPM/THERMAL_AUTO_FAN_CTRL(SET) are
@@ -53,7 +32,11 @@
  * command -- it reports isauto/lasttarget, this driver's own record
  * of the last SET it successfully issued, which is the trustworthy
  * source of truth on this hardware. See ecsetfanauto() and
- * fan0ctlwrite() below.
+ * fan0ctlwrite() below
+ *
+ * Based on:
+ *   espik3.c - K3 eSPI controller driver
+ *   cros_ec_commands.h - ABI constants
  */
 #include "u.h"
 #include "../port/lib.h"
@@ -67,7 +50,7 @@ enum {
 	EcCmdPwmSetFanTargetRpm	= 0x0021,	/* CONFIRMED, cros_ec_commands.h */
 	EcCmdThermalAutoFanCtrl	= 0x0052,	/* CONFIRMED, cros_ec_commands.h */
 	EcAutoFanCtrlCmdSet	= 0,
-	FanIdx0			= 0,		/* this board: one fan; see DESIGN above */
+	FanIdx0			= 0,		/* this board: one fan */
 };
 
 static long
@@ -93,13 +76,7 @@ fan0statusread(Chan*, void *a, long n, vlong off)
  * struct ec_params_auto_fan_ctrl_v2 { uint8_t fan_idx; uint8_t cmd;
  * uint8_t set_auto; }, CONFIRMED against the real cros_ec_commands.h.
  * autoval: 1 = automatic (EC thermal curve owns the fan), 0 = manual
- * (the last SET_FAN_TARGET_RPM value sticks). Best-effort: not every
- * EC firmware necessarily implements this command at this version,
- * and if it's missing we'd still rather go ahead and try
- * SET_FAN_TARGET_RPM than refuse outright -- so failure here is not
- * fatal to the caller. Updates isauto on success, which is what
- * fan0ctlread() trusts instead of the (confirmed broken on this EC)
- * GET direction of this same command.
+ * (the last SET_FAN_TARGET_RPM value sticks)
  */
 static int isauto;
 static ulong lasttarget;
@@ -157,15 +134,13 @@ fan0ctlwrite(Chan*, void *a, long n, vlong)
 	/*
 	 * Take manual control first -- on real hardware, a target
 	 * written while the EC's thermal engine still owned the fan got
-	 * silently overwritten back to 0 within one control tick.
-	 * Best-effort: proceed to SET_FAN_TARGET_RPM regardless of
-	 * whether this particular EC firmware implements the switch.
+	 * silently overwritten back to 0 within one control tick
 	 */
 	ecsetfanauto(FanIdx0, 0);
 
 	rpm = strtoul(cb->f[0], nil, 10);
 	/* struct ec_params_pwm_set_fan_target_rpm_v0 { uint32_t rpm; },
-	 * CONFIRMED against the real cros_ec_commands.h -- 4 bytes. */
+	 * CONFIRMED against the real cros_ec_commands.h -- 4 bytes */
 	req[0] = rpm & 0xFF;
 	req[1] = (rpm>>8) & 0xFF;
 	req[2] = (rpm>>16) & 0xFF;
@@ -186,8 +161,7 @@ k3ecfaninit(void)
 	/*
 	 * Boot state: explicitly put the fan under automatic control
 	 * rather than trusting whatever the EC happened to power up
-	 * already at. Best-effort, same as every other ecsetfanauto()
-	 * call.
+	 * already at
 	 */
 	ecsetfanauto(FanIdx0, 1);
 	addarchfile("fan0status", 0444, fan0statusread, nil);
