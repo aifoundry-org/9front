@@ -198,6 +198,9 @@ extern int gpioin(uint pin);
 void gpiointrenable(uint pin, int mode, void (*f)(uint pin, void *a), void *a);
 void gpiointrdisable(uint pin);
 
+/* gpiok3 */
+extern void gpiok3init(void);
+
 /* k1reset */
 extern int k1pmicread(int reg);
 extern int k1pmicwrite(int reg, int val);

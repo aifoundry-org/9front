@@ -256,6 +256,7 @@ archinit(void)
 	addarchfile("cpuid", 0444, cpuidread, nil);
 	addarchfile("pmctl", 0220, nil, pmctlwrite);
 	sbiinit();
+	gpiok3init();
 	k1thermalinit();
 	k3thermalinit();
 	k3ecfaninit();
