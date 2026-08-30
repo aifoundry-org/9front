@@ -20,6 +20,7 @@ dev
 	uart
 	usb
 	i2c
+	gpiok3
 #	rtc
 	pci	pci
 	sd
