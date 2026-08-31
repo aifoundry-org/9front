@@ -30,36 +30,36 @@
  * as "confirmed against the cited software sources", not "confirmed
  * on this board's hardware".
  *
- * DESIGN: same #P/fanNstatus + #P/fanNctl pair as espik3fan.c, same
- * reasoning for why (room for more fans without a rename, single-
- * token round-trip so `cat fan0status > fan0ctl` is well-defined).
- * One difference from espik3fan.c, driven by what the two chips
- * actually offer:
+ * DESIGN: same #P/fanNstatus + #P/fanNctl pair as espik3fan.c, and the
+ * same shared fanparse()/fanfmt() grammar (fan.c). The one difference
+ * from espik3fan.c is the ctl unit, driven by what the two chips offer:
  *
  *   - The EC's manual mode takes a target RPM (SET_FAN_TARGET_RPM)
  *     and runs its own closed loop to get there; fan0ctl on that
- *     driver reads/writes RPM.
+ *     driver is in "rpm".
  *   - The CTF2301's manual mode takes a raw 0-255 PWM duty
  *     (LM63_REG_PWM_VALUE) with no closed loop of its own attached
  *     to that mode -- it either free-runs the duty you give it, or
  *     (auto mode) walks its own 12-point temperature/PWM lookup
  *     table with no host involvement at all. There's no "target RPM"
- *     concept for manual mode on this chip. So fan0ctl here reads/
- *     writes a 0-255 duty, not RPM; fan0status is still RPM (that
- *     part the chip does report directly, via the tachometer, in
- *     both modes).
+ *     concept for manual mode on this chip. So fan0ctl here is in "%"
+ *     (scaled to/from the chip's raw 0-255 duty), not rpm; fan0status
+ *     is still rpm (that part the chip does report directly, via the
+ *     tachometer, in both modes). The raw range differs from the K1's
+ *     pwm block, so percent -- not a raw count -- is what makes the
+ *     two pwm boards mean the same thing.
  *
- *   #P/fan0status  r   measured RPM, read straight from the
+ *   #P/fan0status  r   measured "<rpm> rpm", read straight from the
  *                      tachometer count registers (FAN_FROM_REG());
- *                      0 for "not spinning or not connected" -- the
- *                      chip doesn't distinguish those two the way the
- *                      EC's MEMMAP sentinels did, so neither do we.
+ *                      "0 rpm" for "not spinning or not connected" --
+ *                      the chip doesn't distinguish those two the way
+ *                      the EC's MEMMAP sentinels did, so neither do we.
  *   #P/fan0ctl     rw  read: "auto" if REG_CONFIG_FAN's manual bit is
- *                      clear (LUT owns the fan), else the current
- *                      REG_PWM_VALUE as a decimal 0-255. write: the
- *                      literal string "auto" hands the fan back to
- *                      the onboard lookup table; a decimal 0-255
- *                      takes manual control and sets that duty.
+ *                      clear (LUT owns the fan), else "<pct> %" from the
+ *                      current REG_PWM_VALUE. write: "auto" hands the
+ *                      fan back to the onboard lookup table; a number
+ *                      (bare, or "<pct> %") takes manual control and
+ *                      sets that duty.
  *
  * Unlike fan0ctlread() in espik3fan.c, this one does NOT keep its own
  * isauto/lasttarget shadow state -- there's no known GET-side quirk
@@ -262,7 +262,7 @@ fan0statusread(Chan*, void *a, long n, vlong off)
 	if(lsb < 0 || msb < 0)
 		error(Eio);
 	reg = msb<<8 | lsb;
-	snprint(str, sizeof str, "%d\n", tachtorpm(reg));
+	fanfmt(str, sizeof str, "rpm", tachtorpm(reg), 0);
 	return readstr(off, a, n, str);
 }
 
@@ -280,12 +280,13 @@ fan0ctlread(Chan*, void *a, long n, vlong off)
 	if(cfg < 0)
 		error(Eio);
 	if((cfg & ConfigFanManual) == 0)
-		snprint(str, sizeof str, "auto\n");
+		fanfmt(str, sizeof str, "%", 0, 1);
 	else{
 		pwm = i2creadbyte(dev, RegPwmValue);
 		if(pwm < 0)
 			error(Eio);
-		snprint(str, sizeof str, "%d\n", pwm);
+		/* raw 0-PwmMax duty back to a rounded percent */
+		fanfmt(str, sizeof str, "%", (pwm*100 + PwmMax/2)/PwmMax, 0);
 	}
 	return readstr(off, a, n, str);
 }
@@ -295,7 +296,8 @@ fan0ctlwrite(Chan*, void *a, long n, vlong)
 {
 	Cmdbuf *cb;
 	I2Cdev *dev;
-	int cfg, pwm;
+	int cfg, pwm, au;
+	long pct;
 
 	dev = getfandev();
 	if(dev == nil)
@@ -306,8 +308,8 @@ fan0ctlwrite(Chan*, void *a, long n, vlong)
 		free(cb);
 		nexterror();
 	}
-	if(cb->nf < 1)
-		error(Ebadctl);
+	/* "auto" is the chip's own 12-point LUT; a number is a percent */
+	pct = fanparse(cb, "%", 1, &au);
 
 	qlock(&fanlock);
 	if(waserror()){
@@ -319,16 +321,17 @@ fan0ctlwrite(Chan*, void *a, long n, vlong)
 	if(cfg < 0)
 		error(Eio);
 
-	if(strcmp(cb->f[0], "auto") == 0){
+	if(au){
 		cfg &= ~ConfigFanManual;
 		if(i2cwritebyte(dev, RegConfigFan, cfg) < 0)
 			error(Eio);
 	}else{
-		pwm = strtol(cb->f[0], nil, 10);
-		if(pwm < 0)
-			pwm = 0;
-		if(pwm > PwmMax)
-			pwm = PwmMax;
+		if(pct < 0)
+			pct = 0;
+		if(pct > 100)
+			pct = 100;
+		/* percent to the chip's raw 0-PwmMax duty, rounded */
+		pwm = (pct*PwmMax + 50)/100;
 		cfg |= ConfigFanManual;
 		if(i2cwritebyte(dev, RegConfigFan, cfg) < 0)
 			error(Eio);
