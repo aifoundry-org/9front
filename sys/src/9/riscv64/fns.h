@@ -224,6 +224,10 @@ extern void k3ecfaninit(void);
 extern Dirtab* addarchfile(char *name, int perm,
 	long(*rdfn)(Chan*,void*,long,vlong), long(*wrfn)(Chan*,void*,long,vlong));
 
+/* fan */
+extern int fanfmt(char *buf, int nbuf, char *unit, long val, int isauto);
+extern long fanparse(Cmdbuf *cb, char *unit, int hasauto, int *isauto);
+
 /* main */
 extern void poweroff(void);
 
