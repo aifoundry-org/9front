@@ -73,6 +73,7 @@ OBJ=\
 	ethersmte.$O\
 	etherdwqe.$O\
 	k1reset.$O\
+	fan.$O\
 	k1thermal.$O\
 	i2ck3.$O\
 	k3thermal.$O\
