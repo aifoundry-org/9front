@@ -9,16 +9,19 @@
  * k3ecfaninit() over however many the EC reports and publishing
  * fan1ctl/fan1status alongside these, not restructuring anything
  *
- *   #P/fan0status  r   measured RPM (EC_MEMMAP_FAN, plain memmap
- *                      read, no command/busy-wait), or the literal
- *                      string "absent"/"stalled" for the EC's own
- *                      sentinel values
- *   #P/fan0ctl     rw  read: "auto", or the last target RPM this
- *                      driver commanded (see FIELD NOTE below for why
- *                      it's not a live readback). write: the literal
- *                      string "auto" hands the fan back to the EC's
- *                      own thermal curve; a decimal number takes
- *                      manual control and sets that target RPM
+ * Both use the shared fanparse()/fanfmt() grammar (fan.c); the unit
+ * here is "rpm" because the EC closes the loop on rpm.
+ *
+ *   #P/fan0status  r   measured "<rpm> rpm" (EC_MEMMAP_FAN, plain
+ *                      memmap read, no command/busy-wait), or the
+ *                      literal string "absent"/"stalled" for the EC's
+ *                      own sentinel values
+ *   #P/fan0ctl     rw  read: "auto", or "<rpm> rpm" -- the last target
+ *                      this driver commanded (see FIELD NOTE below for
+ *                      why it's not a live readback). write: "auto"
+ *                      hands the fan back to the EC's own thermal
+ *                      curve; a number (bare, or "<rpm> rpm") takes
+ *                      manual control and sets that target rpm
  *
  * FIELD NOTE (real hardware, k3-pico-itx): the underlying transport
  * (espik3.c) and SET_FAN_TARGET_RPM/THERMAL_AUTO_FAN_CTRL(SET) are
@@ -68,7 +71,7 @@ fan0statusread(Chan*, void *a, long n, vlong off)
 	else if(rpm == 0xFFFE)
 		snprint(str, sizeof str, "stalled\n");
 	else
-		snprint(str, sizeof str, "%d\n", rpm);
+		fanfmt(str, sizeof str, "rpm", rpm, 0);
 	return readstr(off, a, n, str);
 }
 
@@ -101,10 +104,7 @@ fan0ctlread(Chan*, void *a, long n, vlong off)
 {
 	char str[32];
 
-	if(isauto)
-		snprint(str, sizeof str, "auto\n");
-	else
-		snprint(str, sizeof str, "%lud\n", lasttarget);
+	fanfmt(str, sizeof str, "rpm", lasttarget, isauto);
 	return readstr(off, a, n, str);
 }
 
@@ -114,16 +114,16 @@ fan0ctlwrite(Chan*, void *a, long n, vlong)
 	Cmdbuf *cb;
 	uchar req[4];
 	ulong rpm;
+	int au;
 
 	cb = parsecmd(a, n);
 	if(waserror()){
 		free(cb);
 		nexterror();
 	}
-	if(cb->nf < 1)
-		error(Ebadctl);
 
-	if(strcmp(cb->f[0], "auto") == 0){
+	rpm = fanparse(cb, "rpm", 1, &au);
+	if(au){
 		if(ecsetfanauto(FanIdx0, 1) < 0)
 			error(Eio);
 		poperror();
@@ -138,7 +138,6 @@ fan0ctlwrite(Chan*, void *a, long n, vlong)
 	 */
 	ecsetfanauto(FanIdx0, 0);
 
-	rpm = strtoul(cb->f[0], nil, 10);
 	/* struct ec_params_pwm_set_fan_target_rpm_v0 { uint32_t rpm; },
 	 * CONFIRMED against the real cros_ec_commands.h -- 4 bytes */
 	req[0] = rpm & 0xFF;
