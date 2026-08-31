@@ -3,8 +3,14 @@
  *
  * The two CPU cluster temperatures are exported as #P/cputemp in the
  * usual "value±resolution" form that stats(1) reads from /dev/cputemp.
- * Fan control is expressed as percentage in #P/fanpwm; the fan stalls
- * at less than half though, so a value < 50 turns the fan off.
+ *
+ * Fan control is #P/fan0ctl, in the shared fanparse()/fanfmt() grammar
+ * (fan.c): it reads back "<pct> %" and a write takes a bare number or
+ * "<pct> %". This board drives a mosfet open-loop with no rpm feedback
+ * (the BPI-F3 fan header is +/-/pwm, no tachometer), so there is no
+ * #P/fan0status and no "auto": writing "auto" errors, since regulating
+ * temperature here is a userspace job reading #P/cputemp. The fan
+ * stalls below half duty, so a value < 50 turns it off.
  */
 #include "u.h"
 #include "../port/lib.h"
@@ -134,26 +140,29 @@ setfan(int pct)
 }
 
 static long
-fanpwmread(Chan*, void *a, long n, vlong off)
+fan0ctlread(Chan*, void *a, long n, vlong off)
 {
-	char str[16];
+	char str[32];
 
-	snprint(str, sizeof str, "%d\n", fanpct);
+	fanfmt(str, sizeof str, "%", fanpct, 0);
 	return readstr(off, a, n, str);
 }
 
 static long
-fanpwmwrite(Chan*, void *a, long n, vlong)
+fan0ctlwrite(Chan*, void *a, long n, vlong)
 {
-	char buf[16];
-	int m;
+	Cmdbuf *cb;
+	int au;
 
-	m = n;
-	if(m > sizeof buf - 1)
-		m = sizeof buf - 1;
-	memmove(buf, a, m);
-	buf[m] = 0;
-	setfan(atoi(buf));
+	cb = parsecmd(a, n);
+	if(waserror()){
+		free(cb);
+		nexterror();
+	}
+	/* no hardware auto here: fanparse() errors on "auto" or "N rpm" */
+	setfan(fanparse(cb, "%", 0, &au));
+	poperror();
+	free(cb);
 	return n;
 }
 
@@ -213,7 +222,7 @@ faninit(void)
 	vunmap(aib, AibSize);
 
 	setfan(Fandefault);
-	addarchfile("fanpwm", 0664, fanpwmread, fanpwmwrite);
+	addarchfile("fan0ctl", 0664, fan0ctlread, fan0ctlwrite);
 }
 
 void
