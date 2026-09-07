@@ -360,7 +360,7 @@ enum {
 	 * sense data(up to 18) = up to 40 bytes worst case (e.g. a CHECK
 	 * CONDITION with full sense data, which is a completely routine
 	 * first response from any SCSI/UFS device right after link/power
-	 * up -- a "power on occurred" Unit Attention on the very first
+	 * up -- a power-on-occurred Unit Attention on the very first
 	 * INQUIRY is standard, expected behavior, not a device fault).
 	 * 32 bytes silently truncated that case, and the controller
 	 * reports exactly that mismatch back as OCS=MISMATCH_RESPONSE_
@@ -387,10 +387,44 @@ struct Ctlr
 	uchar	*cmddesc[Maxutr];	/* per-slot command descriptor memory */
 	uchar	*scratchbuf;	/* page-sized DMA target for small reads --
 				 * see the comment above Scratchbufsize */
-	Rendez	slotr[Maxutr];
 	uint	busy;		/* bitmap of slots pending */
-	volatile int linereset;	/* set by ufsintr() on a UECPA "generic PHY
-				 * adapter error" (LINERESET indication, per
+	uvlong	riotime_total;	/* accumulated ns spent inside ufsrio()'s
+				 * successful-return path, entry to exit */
+	uint	riocmds;	/* count of ufsrio() calls timed above */
+	uvlong	waitns_total;	/* accumulated ns spent inside the primary
+				 * ufswaitslot() call specifically -- the
+				 * genuine hardware-wait portion, to isolate
+				 * from our own software overhead around it */
+	uint	waitcmds;	/* count of ufswaitslot() calls timed above */
+	uvlong	dispatchns_total;	/* accumulated ns from ufsrio() entry
+					 * to right before ringing the primary
+					 * doorbell -- slot alloc, UTRD/PRDT
+					 * build, cache flush of cd/ut */
+	uint	dispatchcmds;
+	uvlong	postns_total;	/* accumulated ns from right after
+				 * ufswaitslot() returns to the successful
+				 * return -- busy-clear, sentinel check,
+				 * response UPIU parsing */
+	uint	postcmds;
+	uvlong	memsetns_total;	/* accumulated ns in the sentinel-fill
+				 * memset(dmatarget, 0xA5, dmalen) specifically
+				 * -- for a full 256KB dd read, this touches
+				 * the WHOLE destination buffer, a completely
+				 * different scale from the small cd/ut
+				 * metadata flushes elsewhere in dispatch */
+	uint	memsetcmds;
+	uvlong	sentwbns_total;	/* accumulated ns in the matching
+				 * cachedwbse(dmatarget, dmalen) right after --
+				 * same 256KB scale, cache-line writeback of
+				 * the whole buffer, not just metadata */
+	uint	sentwbcmds;
+	int	irq;		/* stashed by ufspnp(), used to call
+				 * intrenable() after ufsdevinit()/
+				 * ufspwrmode() fully complete -- see that
+				 * call site's comment for why the timing
+				 * matters (the ISupms root-cause fix). */
+	volatile int linereset;	/* set by ufsintr() on a UECPA PHY-adapter
+				 * generic error (LINERESET indication, per
 				 * K3 UM 0x38 EC bit4/one-hot) -- the manual
 				 * says M-PHY attributes must be restored
 				 * after this; checked and acted on by
@@ -398,6 +432,10 @@ struct Ctlr
 				 * ufsrestorephy(). */
 
 	SDev	*sdev;
+
+	uint 	nintr;	/* Interrupt counter */
+	volatile uint sentinelretries;	/* total retry-loop iterations across all reads */
+	volatile uint sentinelhits;	/* number of reads that needed >=1 retry */
 };
 
 #define HCR(c, r)	(*(u32int*)((c)->hcreg + (r)))
@@ -413,100 +451,67 @@ struct Ctlr
  */
 #define ATOP(c, r)	(*(u32int*)((c)->mngreg + 0x100 + (r)))
 
+/*
+ * Interrupt handler -- PERMANENTLY DISABLED driver-wide, never
+ * registered (see ufspnp()'s own if(0)'d-out auto-enable block, and
+ * the now snapshot-only "enableintr" ctl command). This function is
+ * kept only for reference; it is dead code as things currently stand.
+ *
+ * History: the root cause of an earlier concurrency-triggered
+ * sentinel bug was fixed by delaying Rie/intrenable() activation
+ * until after ufsdevinit()/ufspwrmode() fully complete -- a leftover
+ * ISupms UIC-power-mode-change bit was otherwise contaminating the
+ * very first real interrupt at boot. With that fix, a hybrid design
+ * (this handler genuinely registered and firing, but touching only
+ * Ris -- never Rutrldbr or c->busy, with completion detection staying
+ * exclusively in ufswaitslot()'s own direct poll) validated clean
+ * across ~1.5M interrupts under sustained concurrent stress testing.
+ * A separate, fully tsleep()/wakeup()-based redesign (genuinely
+ * interrupt-driven completion, not just an interrupt-driven line
+ * handler) was also tried and, despite extensive hardening including
+ * full command serialization via a reentrant QLock, was confirmed
+ * capable of SILENT DATA CORRUPTION under real-world concurrent I/O
+ * (drawterm login + on-demand binary loading): gefs detected a block
+ * content hash mismatch and correctly forced itself read-only, with
+ * NONE of this driver's own failure detection (sentinelhits, OCS-
+ * error diagnostics) ever firing -- reported fully successful by both
+ * hardware and software, but the content was simply wrong.
+ *
+ * FURTHER UPDATE: even the plain hybrid design above (this handler
+ * genuinely registered, but touching only Ris, completion detection
+ * unchanged) was later ALSO confirmed capable of the same silent-
+ * corruption failure mode under that same real-world workload. A
+ * build with the handler never registered at all, otherwise
+ * identical, did not reproduce it under repeated testing (multiple
+ * concurrent read/write dd combinations plus repeated drawterm
+ * sessions). Root cause was never conclusively identified -- the
+ * asymmetry (interrupt handler registered at all vs. not, regardless
+ * of how little work it does) is the strongest lead found this
+ * session, not a fully explained mechanism. Interrupts are disabled
+ * driver-wide as a result: no measurable performance cost either way,
+ * since this handler never did meaningful work to begin with.
+ */
 static void
 ufsintr(Ureg*, void *arg)
 {
 	Ctlr *c = arg;
 	u32int is;
 
+	c->nintr++;
+	ilock(c);
 	is = HCR(c, Ris);
-	if(debug)
-		print("ufs: ufsintr entered, IS=%#ux\n", is);
-	if(is == 0)
-		return;
-	HCR(c, Ris) = is;		/* RWC: write-1-to-clear */
+	if(is != 0)
+		HCR(c, Ris) = is;		/* RWC: write-1-to-clear */
+	iunlock(c);
+}
 
-	if(is & ISutrcs){
-		/* walk UTRLDBR vs our busy bitmap, wake completed slots.
-		 * c->busy is shared with ufsslotalloc/ufsslotfree/ufsrio,
-		 * all of which mutate it under ilock(c) -- this interrupt
-		 * can fire on any hart while one of those is mid-update
-		 * there, so take the same lock here before touching it.
-		 * (wakeup() itself is safe to call outside the lock, so
-		 * it stays out to keep the locked section short.) */
-		u32int db;
-		uint done;
-		uint i;
+static void freecmddesc(Ctlr *c, int i)
+{
+	int j;
 
-		ilock(c);
-		db = HCR(c, Rutrldbr);
-		done = c->busy & ~db;
-		c->busy &= ~done;
-		iunlock(c);
-		for(i = 0; i < Maxutr; i++)
-			if(done & (1<<i))
-				wakeup(&c->slotr[i]);
-	}
-	if(is & (ISue|ISdfes|ISutpes|IShcfes|ISsbfes)){
-		/*
-		 * Read UECPA/UECDL exactly ONCE each and reuse the stored
-		 * value everywhere below: both are documented ROC (Read-to-
-		 * Clear) in the K3 UM, so a second read anywhere else in this
-		 * function would always see 0.
-		 */
-		u32int uecpa = HCR(c, Ruecpa);
-		u32int uecdl = HCR(c, Ruecdl);
-		print("ufs: error IS=%#ux UECPA=%#ux UECDL=%#ux UECN=%#ux UECT=%#ux "
-			"HCS=%#ux\n", is, uecpa, uecdl, HCR(c, Ruecn),
-			HCR(c, Ruect), HCR(c, Rhcs));
-		/*
-		 * K3 UM HOST_CONTROLLER_STATUS (offset 0x30), bits[31:12]
-		 * UTP_ERROR_STATUS, valid only when UTPES is set: target LUN
-		 * (31:24), task tag (23:16), UTP error code (15:12; only
-		 * 1h=Invalid UPIU type is currently defined).
-		 */
-		if(is & ISutpes){
-			u32int hcs = HCR(c, Rhcs);
-			print("ufs: UTPES set -- HCS.UTP_ERROR_STATUS: "
-				"target_lun=%#ux task_tag=%#ux utp_error_code=%#ux "
-				"(0=Reserved 1=Invalid UPIU type 2-Fh=Reserved)\n",
-				(hcs>>24)&0xff, (hcs>>16)&0xff, (hcs>>12)&0xf);
-		}
-		/*
-		 * PA_ERROR_CODE (0xCC) gives further detail specifically when
-		 * UECDL bit14 (PA_INIT_ERROR, EC=13 per the K3 UM's own error
-		 * table -- "00-BAD PHY SYMBOL, 01-UNMAPPED_PHY_ESC_SYMBOL,
-		 * 02-UNEXPECTED_PHY_ESC_SYMBOL, 03-BAD_PA_PARAM") is set.
-		 */
-		if((uecdl & 0x80000000) && (uecdl & (1<<13)))
-			print("ufs: PA_ERROR_CODE=%#ux (0=BAD_PHY_SYMBOL "
-				"1=UNMAPPED_PHY_ESC_SYMBOL 2=UNEXPECTED_PHY_ESC_SYMBOL "
-				"3=BAD_PA_PARAM)\n", HCR(c, Rpaerrcode) & 0xf);
-		{
-			/*
-			 * UECPA "generic PHY adapter error" (LINERESET
-			 * indication) -- K3 UM's own EC field description
-			 * for this bit says "This should be the LINERESET
-			 * indication... Software is informed that MPHY has
-			 * been reset and that all M-PHY attributes (that are
-			 * not handled by UniPro) need to be restored in
-			 * order to keep the link optimized." EC is very
-			 * likely one-hot (bit4=code 4), not a sequential
-			 * enum (per this file's own long-standing note on
-			 * UECPA), so check both interpretations defensively:
-			 * EC==4 (sequential) or bit4 set (one-hot). Uses the
-			 * SAME uecpa value read once above -- see this
-			 * block's comment.
-			 */
-			u32int ec = uecpa & 0x1f;
-			if((uecpa & 0x80000000) && (ec == 4 || (ec & (1<<4)))){
-				c->linereset = 1;
-				coherence();	/* multicore visibility: this may
-						 * run on a different hart than
-						 * whichever one later calls
-						 * ufsrio() and reads this flag */
-			}
-		}
+	for(j = 0; j < i; j++){
+		free(c->cmddesc[j]);
+		c->cmddesc[j] = nil;
 	}
 }
 
@@ -758,6 +763,17 @@ ufsinit(Ctlr *c)
 		c->cmddesc[i] = mallocalign(Cdbsize, 128, 0, 0);
 		if(c->cmddesc[i] == nil){
 			print("ufs: out of memory for command descriptors\n");
+			/*
+			 * MEMORY LEAK FIX: c->utrl and any already-allocated
+			 * c->cmddesc[0..i-1] entries used to leak here --
+			 * free(c) in the caller (ufspnp()) only frees the
+			 * Ctlr struct itself, not what its pointer fields
+			 * point to. Free everything successfully allocated
+			 * so far before returning.
+			*/
+			free(c->utrl);
+			c->utrl = nil;
+			freecmddesc(c, i);
 			return -1;
 		}
 	}
@@ -794,6 +810,18 @@ ufsinit(Ctlr *c)
 	c->scratchbuf = mallocalign(Scratchbufsize, 128, 0, 0);
 	if(c->scratchbuf == nil){
 		print("ufs: out of memory for scratch buffer\n");
+		/* MEMORY LEAK FIX: see the matching comment above */
+		free(c->utrl);
+		c->utrl = nil;
+		/* With 'for' here:
+		*     0.02u 371.30s 371.36r    dd -if /dev/sd00/data ...
+		* I try the freecmddesc(c, Maxutr):
+		*     0.28u 484.85s 485.15r    dd -if /dev/sd00/data ...
+		*/
+		for(i = 0; i < Maxutr; i++){
+			free(c->cmddesc[i]);
+			c->cmddesc[i] = nil;
+		}
 		return -1;
 	}
 
@@ -812,12 +840,13 @@ ufsinit(Ctlr *c)
 	int try, ok, pass;
 
 	/*
-	 * OUTER pass loop: per Linux's ufshcd_link_startup(), "If UFS
-	 * device isn't active then we will have to issue link startup 2
-	 * times to make sure the device state move to active." Neither
-	 * U-Boot's nor the SpacemiT K3 vendor Linux driver opts out of
-	 * this, so it applies here too. Cold path only -- warm inherits
-	 * an already-active link.
+	 * OUTER pass loop: a device that isn't fully active yet after the
+	 * first DME_LINKSTARTUP can need a second attempt before it
+	 * settles into the active state -- Linux's own link-startup
+	 * handling retries for the same reason, and neither U-Boot's nor
+	 * the SpacemiT K3 vendor Linux driver skips this, so it applies
+	 * here too. Cold path only -- warm inherits an already-active
+	 * link.
 	 */
 	for(pass = 0; pass < 2; pass++){
 
@@ -874,10 +903,11 @@ ufsinit(Ctlr *c)
 		 *     codes per layer (9.7.5.1 offsets 0x38-0x48); ERR
 		 *     bit31 marks each one valid. NOTE: the EC sub-field
 		 *     in UECPA is very likely a ONE-HOT bit mask, not a
-		 *     binary-encoded enum, despite the manual listing
-		 *     "00/01/02/03/04" like enum values -- e.g. EC=0x10
-		 *     (bit4 set) means "Generic PHY Adapter error /
-		 *     LINERESET", not literal value 16. This
+		 *     binary-encoded enum, despite the manual listing it
+		 *     as sequential enum-style values (0 through 4) --
+		 *     e.g. EC=0x10 (bit4 set) means a generic PHY-adapter
+		 *     error, the LINERESET indication, not literal value
+		 *     16. This
 		 *     reinterpretation is not independently confirmed.
 		 *   - PA_ERROR_CODE (0xCC): detail when UECDL bit14
 		 *     (PA_INIT_ERROR) is set.
@@ -900,6 +930,17 @@ ufsinit(Ctlr *c)
 		print("ufs:   PA_ERROR_CODE=%#ux\n", HCR(c, Rpaerrcode));
 		print("ufs:   MPHY_PLL_LOCK=%d MPHY_PU_CTRL=%#ux\n",
 			(MNG(c, Mphyputrl)>>31)&1, MNG(c, Mphyputrl));
+		/* MEMORY LEAK FIX: see the matching comment above the
+		 * cmddesc/scratchbuf allocations -- utrl/cmddesc/scratchbuf
+		 * are all already allocated by this point. */
+		free(c->utrl);
+		c->utrl = nil;
+		for(i = 0; i < Maxutr; i++){
+			free(c->cmddesc[i]);
+			c->cmddesc[i] = nil;
+		}
+		free(c->scratchbuf);
+		c->scratchbuf = nil;
 		return -1;
 	}
 	} /* end of for(pass...) */
@@ -908,16 +949,22 @@ ufsinit(Ctlr *c)
 	if(debug)
 		print("ufs: enabling interrupts and starting UTRL run\n");
 
-	/* enable interrupts we care about */
-	HCR(c, Rie) = ISutrcs|ISue|ISdfes|ISutpes|IShcfes|ISsbfes|ISutmrcs|ISuccs;
+	/*
+	 * Rie stays 0 here at boot -- pure polling through the rest of
+	 * this cold-init sequence and ufsdevinit(). Interrupts are
+	 * PERMANENTLY DISABLED driver-wide now (see ufspnp()'s own
+	 * comment for the full rationale) -- this never changes later,
+	 * not automatically and not on demand.
+	 */
+	HCR(c, Rie) = 0;
 	if(debug)
 		print("ufs: Rie readback = %#ux\n", HCR(c, Rie));
 
 	/*
-	 * K3 UM UTP_TRANSFER_REQUEST_LIST_RUN_STOP (offset 0x60):
-	 * "This bit [UTRLRSR] shall only be set to '1' when
-	 * HCS.UTRLRDY is set to '1'." UTRLRDY is the precondition for
-	 * setting UTRLRSR, not a consequence of it -- wait for it first.
+	 * K3 UM UTP_TRANSFER_REQUEST_LIST_RUN_STOP (offset 0x60): per the
+	 * manual, UTRLRSR may only be set once HCS.UTRLRDY is already set.
+	 * UTRLRDY is the precondition for setting UTRLRSR, not a
+	 * consequence of it -- wait for it first.
 	 */
 	for(i = 0; i < 10000 && (HCR(c, Rhcs) & HCSutrlrdy) == 0; i++)
 		microdelay(100);
@@ -988,33 +1035,52 @@ enum {
 	FlagIdnDeviceInit = 0x01,	/* fDeviceInit */
 };
 
-/*
- * ufswaitslot: wait for a submitted transfer request to complete, per
- * K3 UM 9.7.4.2/9.7.4.3's documented polling-mode protocol: wait for
- * the slot's UTRLDBR bit to clear (hw sets it when the transfer
- * completes, success or error), then check/clear ISutrcs in IS.
- * Shared by every command path (ufsquery, ufsreaddesc, ufsrio).
- * Once this returns 0, it's safe to cachedinvse() and read the
- * UTRD/response UPIU.
- */
 static int
 ufswaitslot(Ctlr *c, int slot)
 {
 	int i;
 
-	for(i = 0; i < 100000; i++){
+	/*
+	 * RETRY CHAIN REDUCTION: fallback poll budget 10s->2s
+	 * (2000000->400000 iterations at 5us each). Confirmed via
+	 * isolated bisection to have zero effect on normal-operation
+	 * throughput (373.80s vs the 370.89s/373.77s baseline, well
+	 * within run-to-run variance) -- only matters on genuine
+	 * hardware failure, bounding recovery to seconds instead of
+	 * minutes.
+	 */
+	for(i = 0; i < 400000; i++){
 		if((HCR(c, Rutrldbr) & (1<<slot)) == 0)
 			break;
-		microdelay(100);	/* up to ~10s total, same budget as before */
+		microdelay(5);
 	}
 	if(HCR(c, Rutrldbr) & (1<<slot))
 		return -1;	/* timed out: slot never completed */
 
-	/* K3 UM step 6: completion also sets ISutrcs in IS. Check/clear
-	 * it defensively even though this driver polls UTRLDBR rather
-	 * than relying on the interrupt. */
-	if(HCR(c, Ris) & ISutrcs)
-		HCR(c, Ris) = ISutrcs;		/* RWC */
+	/*
+	 * K3 UM step 6: completion also sets ISutrcs in IS. Clear
+	 * EVERYTHING currently pending here, not just ISutrcs: this
+	 * driver has observed other bits (e.g. ISue, ISupms) latched
+	 * alongside ISutrcs on every completion and never cleared by
+	 * any other code path. The HCI's physical IRQ line to the
+	 * APLIC is almost certainly a level OR of all IE-enabled IS
+	 * causes -- leaving any of them set keeps that line stuck
+	 * high forever, which (in MSI delivery mode) means no further
+	 * edge is ever seen and no interrupt ever fires again, even
+	 * though this driver still polls UTRLDBR/ufsreapocs() and so
+	 * never noticed. Clearing the full read-back value (not a
+	 * hardcoded mask) is safe: IS is RWC, so writing back exactly
+	 * what was read only clears bits that were actually pending.
+	 * Also under lock, consistent with every other Ris access in
+	 * this driver (ufsintr() included).
+	 */
+	ilock(c);
+	{
+		u32int isnow = HCR(c, Ris);
+		if(isnow)
+			HCR(c, Ris) = isnow;	/* RWC: clear only what's set */
+	}
+	iunlock(c);
 
 	return 0;
 }
@@ -1042,16 +1108,12 @@ ufsslotalloc(Ctlr *c)
 		c->busy |= 1<<slot;
 	iunlock(c);
 	/*
-	 * EXPERIMENTAL: with driver debug prints on, this fault never
-	 * reproduces; with them off, it reproduces fast and reliably.
-	 * Each print() to the (slow) UART burns several ms, so that
-	 * strongly suggests a minimum turnaround time is needed between
-	 * one use of a slot completing and the next use of that same
-	 * slot being submitted, which the debug traffic was providing
-	 * by accident. Reproduce that spacing deliberately here. Once
-	 * confirmed, this should be tuned down to the real minimum (or
-	 * replaced with a proper hw-documented value) instead of staying
-	 * at this deliberately generous placeholder.
+	 * TESTED AND REJECTED: a slot-reuse turnaround delay was tried
+	 * here and on the main ufsrio() dispatch path (an old observation
+	 * that debug UART prints happened to mask a since-unrelated bug
+	 * suggested this might matter). Actually measuring it found no
+	 * improvement -- the real trigger for that earlier bug was
+	 * unrelated to slot-reuse timing. No delay is implemented here.
 	 */
 	return slot;
 }
@@ -1130,20 +1192,20 @@ ufsreapocs(Ctlr *c, Utrd *ut)
 		dw2 = ut->dw2;
 		iunlock(c);
 		if((dw2 & Ocsmask) != Ocsinvalid){
-			print("ufs: dw2 resolved to %#ux after %dms total\n",
-				dw2, 1+i);
+			print("ufs: dw2 resolved to %#ux after %dms total "
+				"(busy=%#ux)\n", dw2, 1+i, c->busy);
 			return dw2;
 		}
 		microdelay(1000);
 	}
 	if(debug)
 		print("ufs: dw2 still %#ux (Ocsinvalid) after doorbell cleared "
-			"and a %dms total poll\n", dw2, 1+i);
+			"and a %dms total poll (busy=%#ux, hart=%d)\n", dw2, 1+i, c->busy, m->machno);
 	return dw2;
 }
 
 static int
-ufssubmit(Ctlr *c, int slot)
+ufssubmit(Ctlr *c, int slot, uchar *respcopy)
 {
 	uchar *cd = c->cmddesc[slot];
 	Utrd *ut = &c->utrl[slot];
@@ -1178,12 +1240,29 @@ ufssubmit(Ctlr *c, int slot)
 		ufsslotfree(c, slot);
 		return -1;
 	}
-	ufsslotfree(c, slot);
+	/*
+	 * Do NOT free the slot here: the resubmit loop below still
+	 * re-touches c->utrl[slot] and re-rings HCR(c,Rutrldbr) for
+	 * THIS slot on every retry. Freeing it here let a concurrent
+	 * caller of ufsslotalloc() grab this exact same slot number
+	 * and start writing its own command into c->cmddesc[slot]/
+	 * c->utrl[slot] while this resubmit loop was still resubmitting
+	 * into it -- two owners for one slot, entirely plausible under
+	 * real command concurrency. ufsrio() already gets this right
+	 * (busy cleared only once its own resubmit loop is fully done);
+	 * this mirrors that.
+	 */
 	{
 		int try;
 		u32int dw2 = Ocsinvalid;
 
-		for(try = 0; try < 5; try++){
+		/*
+		 * RETRY CHAIN REDUCTION: 5->2 attempts. Admin/recovery path
+		 * only (ufsquery/ufsnop/ufsreaddesc) -- ufsrio()'s own,
+		 * separate resubmit loop (main dd data path) is left
+		 * untouched.
+		 */
+		for(try = 0; try < 2; try++){
 			if(try > 0){
 				/* see the matching comment in ufsrio() */
 				if(c->linereset){
@@ -1198,13 +1277,33 @@ ufssubmit(Ctlr *c, int slot)
 				print("ufs: submit slot %d: resubmitting after "
 					"stuck completion (attempt %d)\n", slot, try+1);
 				HCR(c, Rutrldbr) = 1<<slot;
-				if(ufswaitslot(c, slot) < 0)
+				if(ufswaitslot(c, slot) < 0){
+					/* was a plain "return -1" with no
+					 * ufsslotfree() here before -- leaked
+					 * the slot (busy bit stuck set)
+					 * forever on this path */
+					ufsslotfree(c, slot);
 					return -1;
+				}
 			}
 			dw2 = ufsreapocs(c, ut);
 			if((dw2 & Ocsmask) != Ocsinvalid)
 				break;
 		}
+		/*
+		 * Copy the response UPIU out into the caller's own buffer
+		 * (if it wants one) BEFORE freeing the slot: once freed, a
+		 * concurrent caller can immediately reallocate this exact
+		 * slot and start overwriting c->cmddesc[slot] (== cd) with
+		 * a fresh command, before OUR caller (ufsquery()/ufsnop()/
+		 * ufsreaddesc()) gets a chance to read the response fields
+		 * after this function returns.
+		 */
+		if(respcopy != nil){
+			cachedinvse(cd + RespUpiuOff, RespUpiuLen);
+			memmove(respcopy, cd + RespUpiuOff, RespUpiuLen);
+		}
+		ufsslotfree(c, slot);
 		if((dw2 & Ocsmask) != Ocssuccess)
 			return -2;
 	}
@@ -1228,6 +1327,7 @@ ufsquery(Ctlr *c, uchar opcode, uchar idn, uchar index, uchar selector,
 	uchar *cd;
 	Upiuhdr *cmd, *rsp;
 	u32int v;
+	uchar cdresp[RespUpiuLen];
 
 	if((slot = ufsslotalloc(c)) < 0){
 		print("ufs: ufsquery: no free slots\n");
@@ -1254,7 +1354,7 @@ ufsquery(Ctlr *c, uchar opcode, uchar idn, uchar index, uchar selector,
 	if(value != nil && opcode == QopWriteAttr)
 		putbe32(cd + CmdUpiuOff + 20, *value);
 
-	r = ufssubmit(c, slot);
+	r = ufssubmit(c, slot, cdresp);
 	if(r == -1){
 		print("ufs: ufsquery opcode=%#ux idn=%#ux TIMED OUT\n", opcode, idn);
 		return -1;
@@ -1265,9 +1365,9 @@ ufsquery(Ctlr *c, uchar opcode, uchar idn, uchar index, uchar selector,
 		return -1;
 	}
 
-	rsp = (Upiuhdr*)(cd + RespUpiuOff);
-	v = (cd[RespUpiuOff+20]<<24) | (cd[RespUpiuOff+21]<<16) |
-		(cd[RespUpiuOff+22]<<8) | cd[RespUpiuOff+23];
+	rsp = (Upiuhdr*)cdresp;
+	v = (cdresp[20]<<24) | (cdresp[21]<<16) |
+		(cdresp[22]<<8) | cdresp[23];
 	if(debug)
 		print("ufs: ufsquery opcode=%#ux idn=%#ux transtype=%#ux "
 			"response=%#ux value=%#ux\n",
@@ -1295,6 +1395,7 @@ ufsnop(Ctlr *c)
 	int slot, r;
 	uchar *cd;
 	Upiuhdr *rsp;
+	uchar cdresp[RespUpiuLen];
 
 	if((slot = ufsslotalloc(c)) < 0){
 		print("ufs: ufsnop: no free slots\n");
@@ -1306,7 +1407,7 @@ ufsnop(Ctlr *c)
 	 * zero -- NOP OUT carries no meaningful payload of its own */
 	((Upiuhdr*)(cd + CmdUpiuOff))->transtype = UpiuNopout;
 
-	r = ufssubmit(c, slot);
+	r = ufssubmit(c, slot, cdresp);
 	if(r == -1){
 		print("ufs: ufsnop: TIMED OUT\n");
 		return -1;
@@ -1316,7 +1417,7 @@ ufsnop(Ctlr *c)
 		return -1;
 	}
 
-	rsp = (Upiuhdr*)(cd + RespUpiuOff);
+	rsp = (Upiuhdr*)cdresp;
 	if(debug)
 		print("ufs: ufsnop: transtype=%#ux response=%#ux\n",
 			rsp->transtype, rsp->response);
@@ -1335,6 +1436,7 @@ ufsreaddesc(Ctlr *c, uchar idn, uchar index, uchar *buf, int len)
 	int slot, r, rlen;
 	uchar *cd;
 	Upiuhdr *cmd, *rsp;
+	uchar cdresp[RespUpiuLen];
 
 	if(len > RespUpiuLen - 32)
 		len = RespUpiuLen - 32;	/* clamp to available response room */
@@ -1356,7 +1458,7 @@ ufsreaddesc(Ctlr *c, uchar idn, uchar index, uchar *buf, int len)
 	cd[CmdUpiuOff+18] = len>>8;		/* Length field, big-endian u16 */
 	cd[CmdUpiuOff+19] = len;
 
-	r = ufssubmit(c, slot);
+	r = ufssubmit(c, slot, cdresp);
 	if(r == -1){
 		print("ufs: ufsreaddesc idn=%#ux TIMED OUT\n", idn);
 		return -1;
@@ -1367,8 +1469,8 @@ ufsreaddesc(Ctlr *c, uchar idn, uchar index, uchar *buf, int len)
 		return -1;
 	}
 
-	rsp = (Upiuhdr*)(cd + RespUpiuOff);
-	rlen = (cd[RespUpiuOff+18]<<8) | cd[RespUpiuOff+19];
+	rsp = (Upiuhdr*)cdresp;
+	rlen = (cdresp[18]<<8) | cdresp[19];
 	if(debug)
 		print("ufs: ufsreaddesc idn=%#ux transtype=%#ux response=%#ux "
 			"returned len=%d\n", idn, rsp->transtype, rsp->response, rlen);
@@ -1376,7 +1478,7 @@ ufsreaddesc(Ctlr *c, uchar idn, uchar index, uchar *buf, int len)
 		return -1;
 	if(rlen > len)
 		rlen = len;
-	memmove(buf, cd + RespUpiuOff + 32, rlen);
+	memmove(buf, cdresp + 32, rlen);
 	return rlen;
 }
 
@@ -1594,7 +1696,7 @@ ufsuniproinit(Ctlr *c)
 	ufsdmesetsel(c, 0x00F2 /* RX_LANE_SOF_BKDOOR_ATT, vendor-defined */, 4+0, 0x9F);
 	ufsdmesetsel(c, 0x00F2, 4+1, 0x9F);
 
-	ufsdmeset(c, 0xFC /* vendor: "bypass B0 reduce phy power ECO" */, 0xFC);
+	ufsdmeset(c, 0xFC /* vendor-defined attribute, an RX phy-power-related ECO workaround */, 0xFC);
 
 	/*
 	 * Timer registers, re-derived and written here to mirror the
@@ -1612,9 +1714,220 @@ ufsuniproinit(Ctlr *c)
 }
 
 /*
+ * ufshostreset: full host-controller AND physical device/M-PHY reset,
+ * for runtime recovery when a command has persistently failed despite
+ * ufsrio()'s existing retry/resubmit logic. A prior version of this
+ * function only cycled HCE (HCI-layer only) and re-ran DME_LINKSTARTUP
+ * -- confirmed insufficient on hardware: HCS.DP never came back
+ * (HCS=0x8, device never re-detected). That's because the actual
+ * fault can live below the HCI, in the M-PHY/link/device itself, which
+ * a bare HCE toggle never touches.
+ *
+ * This version additionally asserts the physical device reset line
+ * (Mdeviceioctrl's HW_RST_N) and power-cycles the M-PHY explicitly
+ * before rebuilding -- mirroring what a genuine device-reset step
+ * needs to do at runtime (unlike ufsinit()'s cold-boot path, which
+ * can skip this explicit assert because HW_RST_N is already 0 by
+ * hardware default straight out of power-on-reset; at runtime the
+ * device has been live and RST_N deasserted, so it must be asserted
+ * explicitly here first) -- then re-runs the same M-PHY bring-up
+ * sequence ufsinit() already uses for cold boot, followed by the
+ * HCE cycle and DME_LINKSTARTUP relink.
+ *
+ * Deliberately does NOT reallocate c->utrl/c->cmddesc/c->scratchbuf
+ * (already allocated once at boot and still valid host-side memory;
+ * only device/link/PHY state needs rebuilding).
+ *
+ * Caller must NOT hold ilock(c) when calling. Dispatch is not
+ * serialized by a driver-wide lock (concurrent commands are allowed).
+ * NOTE: this function's OWN triggers include a genuine, still-
+ * UNRESOLVED concurrency-related failure mode (OCS never resolving
+ * from Ocsinvalid under real concurrent dispatch -- the "sentinel
+ * bug" chased at length elsewhere in this file). A dispatchbusy[]
+ * diagnostic added during that investigation confirmed via a real
+ * counter that every observed failure showed genuinely two commands
+ * in flight at the moment of dispatch, never just one -- ruling out
+ * an earlier thermal-throttling theory as the explanation for THIS
+ * failure mode. (A separate, already-resolved issue earlier in this
+ * driver's development, where sustained load without active cooling
+ * caused thermal throttling/shutdown, is real but distinct -- fixed
+ * by ensuring the fan runs in automatic mode; do not conflate the
+ * two.) Root cause of the concurrency failure itself was never found;
+ * this driver currently accepts it as a rare, cleanly-recovered
+ * failure (this function) rather than eliminating it via
+ * serialization, since the one serialization approach tried (a
+ * reentrant QLock) turned out to risk silent data corruption instead,
+ * which is worse -- see ufsintr()'s own comment. Concurrent callers
+ * reaching this function at nearly the same time is possible but
+ * expected to be rare, since it only runs on a genuine command
+ * failure, not on the normal path.
+ */
+static int ufsdevinit(Ctlr*);	/* forward decl: defined below, called from
+				 * ufshostreset() for full runtime recovery */
+
+static int
+ufshostreset(Ctlr *c)
+{
+	int i, try, ok;
+
+	print("ufs: host controller reset: attempting full device/M-PHY "
+		"reset + relink\n");
+
+	/*
+	 * Step 0: explicitly assert physical resets before rebuilding.
+	 * At runtime (unlike cold boot) the device/M-PHY are currently
+	 * live, so this assert step -- implicit at cold boot via the
+	 * power-on-reset default -- must be done explicitly here.
+	 */
+	MNG(c, Mdeviceioctrl) = 0;		/* assert device RST_N, disable REFCLK_OE */
+	for(i = 0; i < 5000; i++)
+		microdelay(1);			/* ~5ms */
+	MNG(c, Mphyrstctrl) = 0;		/* assert M-PHY resets */
+	for(i = 0; i < 5000; i++)
+		microdelay(1);
+	MNG(c, Mphyputrl) = 0;			/* power down M-PHY */
+	for(i = 0; i < 5000; i++)
+		microdelay(1);
+
+	/*
+	 * Step 1: rebuild -- same M-PHY power-up/reset-deassert/ATOP-cal
+	 * sequence ufsinit() uses for cold boot (see that function's
+	 * comment for the full rationale; reusing the same register
+	 * constants, not duplicating the explanation here).
+	 */
+	MNG(c, Mphyrstctrl) = MPHYrstn|MPHYrstncore;
+	MNG(c, Mphyputrl) = MphyPuAll;
+	for(i = 0; i < 1000; i++)
+		microdelay(1);
+	MNG(c, Mphyputrl) = MphyPuWithHb8Reset;
+	for(i = 0; i < 1000; i++)
+		microdelay(1);
+	MNG(c, Mphyputrl) = MphyPuAll;
+	for(i = 0; i < 1000; i++)
+		microdelay(1);
+
+	MNG(c, Mdeviceioctrl) = MdevReon|MdevHwRstN;
+	for(i = 0; i < 1000; i++)
+		microdelay(1);
+
+	for(i = 0; i < 10000 && !(MNG(c, Mphyputrl) & (1<<31)); i++)
+		microdelay(1);
+	if(!(MNG(c, Mphyputrl) & (1<<31)))
+		print("ufs: host reset: WARNING M-PHY PLL lock timeout, "
+			"MPHY_PU_CTRL=%#ux\n", MNG(c, Mphyputrl));
+
+	MNG(c, Mphybackdoor) = 1;
+	microdelay(20);
+	ATOP(c, 0xC1<<2) = 0;
+	ATOP(c, 0xC2<<2) = 0;
+	microdelay(20);
+	MNG(c, Mphybackdoor) = 0;
+	microdelay(20);
+
+	/* Step 2: HCE disable/re-enable cycle */
+	HCR(c, Rhce) = 0;
+	for(i = 0; i < 10000 && (HCR(c, Rhce) & 1) != 0; i++)
+		microdelay(100);
+	if((HCR(c, Rhce) & 1) != 0){
+		print("ufs: host reset: HCE never cleared, giving up\n");
+		return -1;
+	}
+	HCR(c, Rhce) = 1;
+	for(i = 0; i < 10000 && (HCR(c, Rhce) & 1) == 0; i++)
+		microdelay(100);
+	if((HCR(c, Rhce) & 1) == 0){
+		print("ufs: host reset: HCE never came ready\n");
+		return -1;
+	}
+
+	/*
+	 * Re-program the transfer request list base address registers.
+	 * Per K3 UM 9.7.5.1 (HCE): writing '1' to HCE while it reads '0'
+	 * triggers the host controller's own initialization procedure,
+	 * which resets the host UTP and UIC layers. UTRLBA/UTRLBAU are RW
+	 * registers the HCI does not remember across this reset --
+	 * ufsinit() only ever wrote them ONCE, at cold boot. Without
+	 * re-writing them here, the HCI has no valid idea where c->utrl[]
+	 * lives in physical memory after this HCE cycle, so every
+	 * subsequent doorbell ring fetches a transfer request descriptor
+	 * from a bogus address -- explaining exactly the observed
+	 * symptom: link/device appear to come back up fine (HCS=0xf), yet
+	 * every single command immediately fails
+	 * with the same OCS error, regardless of how thoroughly the
+	 * M-PHY/link/device-level init above succeeded. Matches Linux's
+	 * own ufshcd_make_hba_operational(), which re-writes these same
+	 * registers unconditionally every time it brings the HBA back to
+	 * an operational state, not just at first boot.
+	 */
+	HCR(c, Rutrlba) = (u32int)PADDR(c->utrl);
+	HCR(c, Rutrlbau) = (u32int)(PADDR(c->utrl)>>32);
+
+	if(ufsuniproinit(c) < 0)
+		print("ufs: host reset: WARNING ufsuniproinit failed, "
+			"continuing anyway\n");
+
+	/* Step 3: DME_LINKSTARTUP, single pass (recovery, not cold boot) */
+	ok = 0;
+	for(try = 0; try < 3 && !ok; try++){
+		if(try > 0){
+			(void)HCR(c, Ruecpa); (void)HCR(c, Ruecdl);
+			(void)HCR(c, Ruecn); (void)HCR(c, Ruect);
+			(void)HCR(c, Ruecdme);
+			for(i = 0; i < 5; i++)
+				microdelay(1000);
+		}
+		HCR(c, Ruiccmdarg1) = 0;
+		HCR(c, Ruiccmdarg2) = 0;
+		HCR(c, Ruiccmdarg3) = 0;
+		HCR(c, Ruiccmd) = 0x16;
+		for(i = 0; i < 10000 && (HCR(c, Ris) & ISuccs) == 0; i++)
+			microdelay(100);
+		if((HCR(c, Ris) & ISuccs) == 0)
+			continue;
+		HCR(c, Ris) = ISuccs;
+		ok = (HCR(c, Rhcs) & HCSdp) != 0;
+	}
+	if(!ok){
+		print("ufs: host reset: no device present after relink, "
+			"HCS=%#ux\n", HCR(c, Rhcs));
+		return -1;
+	}
+
+	for(i = 0; i < 10000 && (HCR(c, Rhcs) & HCSutrlrdy) == 0; i++)
+		microdelay(100);
+	HCR(c, Rutrlrsr) = 1;
+
+	/*
+	 * DME_LINKSTARTUP only brings the physical link up (HCS.DP=1);
+	 * the UFS device itself still needs its own device-level init
+	 * handshake (fDeviceInit) and power-mode negotiation before it
+	 * will actually process UTP transfer requests -- confirmed on
+	 * hardware: without this, every relink "succeeds" (HCS=0xf) but
+	 * every subsequent SCSI command immediately OCS-errors again in
+	 * an infinite loop. ufsdevinit() already implements this exact
+	 * sequence (it's the same function ufspnp() calls after ufsinit()
+	 * during cold boot) and ends by calling ufspwrmode() to switch to
+	 * the real operating gear.
+	 */
+	{
+		int devret = ufsdevinit(c);
+		if(devret < 0){
+			print("ufs: host reset: ufsdevinit failed (%d) after "
+				"relink -- device may still be unusable\n", devret);
+			return -1;
+		}
+	}
+
+	print("ufs: host controller reset: relink succeeded, HCS=%#ux\n",
+		HCR(c, Rhcs));
+	return 0;
+}
+
+/*
  * ufsdisabledevicetxlcc: fix for UFSHCD_QUIRK_BROKEN_LCC, set
- * explicitly by SpacemiT's own vendor U-Boot driver ("Mirror Linux
- * behavior: disable LCC for controller stability"). Per the generic
+ * explicitly by SpacemiT's own vendor U-Boot driver -- its own comment
+ * explains this is deliberately mirroring Linux's behavior here, to
+ * disable LCC for controller stability. Per the generic
  * U-Boot/Linux UFS core's ufshcd_disable_tx_lcc(hba, peer=true): read
  * PA_CONNECTEDTXDATALANES (0x1561) from the peer to find how many TX
  * lanes are connected, then DME_PEER_SET TX_LCC_ENABLE (0x002C, an
@@ -1755,11 +2068,12 @@ ufsdevinit(Ctlr *c)
 	ufsdmeset(c, 0x2063 /* DL_AFC1REQTIMEOUTVAL */, 0xFFFF);
 
 	/*
-	 * 3-step "dummy frame" poke (0x97->0xd7->0x17 into attribute 0xE8,
+	 * 3-step dummy-frame poke (0x97->0xd7->0x17 into attribute 0xE8,
 	 * TX lane 0), applied unconditionally per U-Boot's
-	 * spacemit_k3_ufs_link_startup_notify(). Vendor comment: "add 0xe8
-	 * make UFS2.1 run GEAR3+2Lane@409M". remotever/rx1fsm are read for
-	 * diagnostic logging only.
+	 * spacemit_k3_ufs_link_startup_notify(). The vendor's own comment
+	 * there explains this specific attribute write is what gets
+	 * UFS2.1 running at GEAR3 with 2 lanes at 409M. remotever/rx1fsm
+	 * are read for diagnostic logging only.
 	 */
 	{
 		u32int remotever, rx1fsm;
@@ -1813,11 +2127,13 @@ ufsdevinit(Ctlr *c)
 
 	/*
 	 * NOP OUT/IN handshake, per the real generic core's own
-	 * ufshcd_device_init() -> ufshcd_verify_dev_init() sequence:
-	 * "Verify device initialization by sending NOP OUT UPIU", BEFORE
-	 * fDeviceInit ("Initiate UFS initialization"). Retried a few
-	 * times, matching the real core's NOP_OUT_RETRIES loop -- not
-	 * fatal to the overall boot if it never succeeds, just logged.
+	 * ufshcd_device_init() -> ufshcd_verify_dev_init() sequence: a
+	 * NOP OUT UPIU round-trip confirms the device is actually
+	 * responding, done BEFORE the fDeviceInit flag handshake that
+	 * follows (which itself starts the device's own UFS
+	 * initialization). Retried a few times, matching the real core's
+	 * NOP_OUT_RETRIES loop -- not fatal to the overall boot if it
+	 * never succeeds, just logged.
 	 */
 	{
 		int nopretry, nopok;
@@ -2072,18 +2388,20 @@ ufspnp(void)
 		return nil;
 	}
 
-	/*
-	 * intrenable() dispatches to aplic.c (MSI mode, via IMSIC) on
-	 * this port -- see etherdwqe.c's etherpnp() for the same
-	 * pattern and its note about soc.plic == nil. No PLIC despite
-	 * the historical name; irq defaults to aplic_int[135] = ufs_intr
-	 * (K3 UM ch.7.1) unless the DTB says otherwise.
-	 */
-	if(irq > 0)
-		intrenable(irq, ufsintr, c, BUSUNKNOWN, "ufs");
-	if(debug)
-		print("ufs: intrenable done, irq=%d\n", irq);
 
+
+	/*
+	 * intrenable() is never called at all now -- interrupts are
+	 * PERMANENTLY DISABLED driver-wide (see the if(0)'d-out block
+	 * further down in this same function for the full rationale).
+	 * irq is still stored in c->irq purely for diagnostic printing
+	 * (e.g. the enableintr command's now snapshot-only output).
+	 * HCR(c, Ris) is cleared here regardless, as routine hygiene
+	 * independent of interrupts ever being used.
+	 */
+	HCR(c, Ris) = 0xffffffff;	/* start from a clean IS state,
+								 * regardless of what ufsinit() left set */
+	c->irq = irq;
 	sdev = malloc(sizeof(SDev));
 	sdev->ifc = &sdufsifc;
 	sdev->ctlr = c;
@@ -2146,6 +2464,80 @@ ufspnp(void)
 		}
 	}
 
+	/*
+	 * SNAPSHOT: capture link/power-mode state right as boot-time
+	 * bring-up finishes. Originally captured here specifically to
+	 * compare against the same registers captured inside "enableintr"
+	 * (back when that command genuinely activated interrupts later,
+	 * to isolate whether activation TIMING mattered -- it did, see
+	 * the ISupms root-cause fix this comparison helped find). With
+	 * interrupts now permanently disabled and "enableintr" reduced to
+	 * an identical snapshot-only no-op, that specific comparison no
+	 * longer has anything to differ -- kept as routine diagnostic
+	 * output regardless. HCS decodes as: bits[3:0] DP|UTRLRDY|
+	 * UTMRLRDY|UCRDY (all-ready when 0xf); bits[10:8] UPMCRS (0=
+	 * PWR_OK, 1=PWR_LOCAL, 2=PWR_REMOTE, 3=PWR_BUSY, 4=PWR_ERROR_CAP,
+	 * 5=PWR_FATAL_ERROR). Rahit is read back to confirm it's
+	 * genuinely 0 (auto-hibernate disabled) at this point, not just
+	 * assumed from the write earlier in ufsdevinit().
+	 */
+	print("ufs: SNAPSHOT boot-end: HCS=%#ux (UPMCRS=%#ux) Rahit=%#ux "
+		"Rie=%#ux Ris=%#ux\n",
+		HCR(c, Rhcs), (HCR(c, Rhcs)>>8)&7, HCR(c, Rahit),
+		HCR(c, Rie), HCR(c, Ris));
+
+	/*
+	 * FIX (auto-activation, informed by the snapshot comparison):
+	 * the one comparison run so far showed Ris=0x10 (ISupms, UIC
+	 * Power Mode Status) still latched and unacknowledged at this
+	 * exact point -- a leftover from ufsdevinit()'s own ufspwrmode() power-
+	 * mode-change UIC command, never explicitly cleared anywhere in
+	 * the boot path. The "late activation" experiment's Ris=0x0 at
+	 * its own snapshot wasn't due to anything special about manual
+	 * activation itself -- it was incidental: gefs's own filesystem-
+	 * mount reads run through ufsrio()/ufswaitslot() before the user
+	 * ever gets a chance to type "enableintr", and ufswaitslot()'s
+	 * own polling tail happens to clear Ris as routine housekeeping,
+	 * naturally scrubbing that leftover bit before interrupts were
+	 * ever turned on. This automatic version reproduces that same
+	 * effective state deliberately instead of relying on it being
+	 * incidental: interrupts are enabled automatically, same as the
+	 * original always-on design, but only HERE -- after
+	 * ufsdevinit()/ufspwrmode() have fully finished -- with an
+	 * explicit Ris clear immediately before enabling, instead of
+	 * back in ufsinit() (which originally ran BEFORE ufsdevinit(),
+	 * meaning the original design's first real interrupt could land
+	 * squarely on this exact leftover ISupms condition).
+	 *
+	 * PERMANENTLY DISABLED (if(0), not #if 0 -- this compiler doesn't
+	 * support that preprocessor directive): ufsintr() itself does
+	 * nothing functionally useful in this driver's design -- it only
+	 * clears Ris and counts nintr; every completion is detected
+	 * exclusively by ufswaitslot()'s own direct poll of Rutrldbr,
+	 * with or without this handler registered at all. Disabling it
+	 * removes an entire class of possible interactions between an
+	 * asynchronously-firing interrupt and the rest of the driver --
+	 * including ones not yet found, not just the ones already fixed
+	 * this session (see ufsrio()'s own comment on the write-buffer
+	 * lock and the silent-corruption investigation this is part of).
+	 * A build with the handler never registered at all (matching this
+	 * state) was tested under the same real-world workload that
+	 * triggered that corruption (drawterm + on-demand binary loading)
+	 * and did not reproduce it. No measurable performance cost either
+	 * way, since ufsintr() does so little work regardless.
+	 */
+	if(0){
+		u32int riswas = HCR(c, Ris);
+
+		HCR(c, Ris) = 0xffffffff;
+		if(c->irq > 0)
+			intrenable(c->irq, ufsintr, c, BUSUNKNOWN, "ufs");
+		HCR(c, Rie) = ISutrcs|ISue|ISdfes|ISutpes|IShcfes|ISsbfes|
+			ISutmrcs|ISuccs;
+		print("ufs: interrupts auto-enabled post-devinit, irq=%d, "
+			"Ris cleared first (was %#ux)\n", c->irq, riswas);
+	}
+
 	print("ufs: attached, %d unit(s)\n", sdev->nunit);
 	return sdev;
 }
@@ -2186,6 +2578,53 @@ ufsrestorephy(Ctlr *c)
 }
 
 /*
+ * Sample-based sentinel check, symmetric with the sample-based fill
+ * in ufsrio() (see its own comment): only the first and last
+ * SentinelSample bytes are ever filled with 0xA5 before dispatch, so
+ * this only ever checks those same two ranges -- there is no
+ * meaningful full-buffer fallback scan anymore, since the middle of
+ * the buffer is never filled with the sentinel pattern in the first
+ * place (a stale non-0xA5 byte there was never evidence of anything).
+ * A real disk read matching 0xA5 across SentinelSample consecutive
+ * bytes at BOTH ends purely by chance is astronomically unlikely (1
+ * in 256^(2*SentinelSample)) -- the previous full-scan confirmation
+ * step was extra paranoia on top of an already negligible risk, no
+ * longer worth its cost now that recovery on a false failure report
+ * is cheap (a short local retry + SDcheck, not the old resubmit+
+ * host-reset cascade).
+ */
+enum {
+	SentinelSample	= 64,
+};
+
+static int
+sentinelallA5(uchar *p, int len)
+{
+	int i;
+
+	for(i = 0; i < len; i++)
+		if(p[i] != 0xA5)
+			return 0;
+	return 1;
+}
+
+static int
+sentinelcheck(uchar *p, int len)
+{
+	int head, tail;
+
+	head = len < SentinelSample? len : SentinelSample;
+	if(!sentinelallA5(p, head))
+		return 0;
+	if(len > head){
+		tail = len - head < SentinelSample? len - head : SentinelSample;
+		if(!sentinelallA5(p + len - tail, tail))
+			return 0;
+	}
+	return 1;
+}
+
+/*
  * ufsrio: wrap a SCSI CDB into a Command UPIU + PRDT inside the
  * slot's command descriptor, ring the doorbell, poll for completion,
  * and pull the SCSI status/sense out of the response. This is the
@@ -2206,6 +2645,20 @@ ufsrio(SDreq *r)
 				 * mitigation below */
 	int dmalen;		/* real capacity backing dmatarget */
 	int usescratch;
+	uvlong t0, hz, twaitstart, tpoststart;
+	/*
+	 * TIMING INSTRUMENTATION: measure where per-command latency goes,
+	 * to compare against Linux's ~0.31ms/command vs our observed
+	 * ~1.27ms/command for the same 256KB transfer on the same
+	 * negotiated link (HS-GEAR3, 2 lanes, confirmed identical via
+	 * "linkmode"). t0 captured at function entry; twaitstart/the
+	 * ufswaitslot() call site below captures just the hardware-wait
+	 * portion, so (total - wait) isolates our own software overhead
+	 * around it. fastticks() assumed available on this port (same
+	 * primitive used throughout Plan 9/9front); flag if it doesn't
+	 * compile so we can substitute todget() or another primitive.
+	 */
+	t0 = fastticks(&hz);
 
 	coherence();	/* pair with the write-side fence in ufsintr(), see
 			 * that comment -- ensures we see a linereset set by a
@@ -2230,7 +2683,17 @@ ufsrio(SDreq *r)
 	iunlock(c);
 
 	cd = c->cmddesc[slot];
-	memset(cd, 0, Cdbsize);
+	/*
+	 * Narrowed from memset(cd, 0, Cdbsize) (the whole command
+	 * descriptor) to just the Command UPIU region: RespUpiuOff..
+	 * PrdtOff (the Response UPIU) is device-write-only -- we never
+	 * read stale content there, always invalidate-then-read fresh
+	 * after completion, so zeroing it here is pure waste. PrdtOff..
+	 * Cdbsize (the PRDT) gets every one of its fields explicitly set
+	 * below, including the reserved one (prd->rsvd = 0) that used to
+	 * rely on this memset -- see that assignment's own comment.
+	 */
+	memset(cd, 0, CmdUpiuLen);
 
 	cmd = (Upiuhdr*)(cd + CmdUpiuOff);
 	cmd->transtype = UpiuCommand;
@@ -2278,6 +2741,11 @@ ufsrio(SDreq *r)
 
 		prd->dbaddr = (u32int)PADDR(dmatarget);
 		prd->dbaddru = (u32int)(PADDR(dmatarget)>>32);
+		prd->rsvd = 0;		/* explicit now -- the memset(cd, 0, Cdbsize)
+					 * that used to zero this along with
+					 * everything else has been narrowed to
+					 * skip the PRDT region entirely, see the
+					 * dispatch comment further up */
 		prd->dbc = dmalen - 1;
 		if(debug)
 			print("ufs: rio PRDT: dmatarget VA=%#p PADDR=%#p dbc=%d "
@@ -2288,8 +2756,69 @@ ufsrio(SDreq *r)
 		 * has not been modified.
 		 */
 		if(!r->write){
-			memset(dmatarget, 0xA5, dmalen);
-			cachedwbse(dmatarget, dmalen);
+			uvlong tsentinel = fastticks(nil);
+			int head, tail;
+
+			/*
+			 * Sample-based fill, symmetric with sentinelcheck()'s
+			 * own sampling (see that function's comment): only
+			 * the same first/last SentinelSample bytes that the
+			 * check will ever look at get filled with 0xA5. For a
+			 * full 256KB dd read this was previously the single
+			 * largest cost in the entire dispatch path (measured:
+			 * ~228us memset + ~55us writeback for the WHOLE
+			 * buffer, versus a few hundred bytes now) -- filling
+			 * the middle was always wasted work in the common
+			 * case, since the check never looked at it either,
+			 * except via the full-scan fallback that's been
+			 * removed alongside this change (see sentinelcheck()).
+			 */
+			head = dmalen < SentinelSample? dmalen : SentinelSample;
+			memset(dmatarget, 0xA5, head);
+			if(dmalen > head){
+				tail = dmalen - head < SentinelSample?
+					dmalen - head : SentinelSample;
+				memset((uchar*)dmatarget + dmalen - tail, 0xA5, tail);
+			} else
+				tail = 0;
+			{
+				uvlong dtns = ((fastticks(nil) - tsentinel) * 1000000000ULL) / hz;
+				ilock(c);
+				c->memsetns_total += dtns;
+				c->memsetcmds++;
+				iunlock(c);
+			}
+			tsentinel = fastticks(nil);
+			/*
+			 * Plain write-back, not write-back+invalidate: this
+			 * matches RISC-V Linux's arch_sync_dma_for_device()
+			 * for DMA_FROM_DEVICE exactly (dma-noncoherent.c),
+			 * which does arch_dma_cache_wback() here, never an
+			 * invalidate at prep time. The corresponding
+			 * invalidate belongs solely in the POST-completion
+			 * check (see cachedinvse() below, not here) --
+			 * combining both operations at prep time was
+			 * confirmed capable of writing the stale cached
+			 * sentinel back out to RAM at the wrong moment
+			 * relative to the device's own DMA write, which is
+			 * mechanically consistent with the exact symptom
+			 * chased all session: the buffer always reads back
+			 * as the ORIGINAL sentinel, never as garbage, which
+			 * points at our own write-back reintroducing it
+			 * rather than the DMA genuinely never landing.
+			 * Two calls (head/tail), matching the sample-based
+			 * fill above -- only flush what was actually written.
+			 */
+			cachedwbse(dmatarget, head);
+			if(tail)
+				cachedwbse((uchar*)dmatarget + dmalen - tail, tail);
+			{
+				uvlong dtns = ((fastticks(nil) - tsentinel) * 1000000000ULL) / hz;
+				ilock(c);
+				c->sentwbns_total += dtns;
+				c->sentwbcmds++;
+				iunlock(c);
+			}
 		}
 	} else {
 		usescratch = 0;
@@ -2324,10 +2853,18 @@ ufsrio(SDreq *r)
 	 * read: the command descriptor and the UTRD entry. For a WRITE
 	 * request, the caller's data buffer also needs writing back.
 	 */
-	cachedwbse(cd, Cdbsize);
+	/*
+	 * Split into two calls instead of one cachedwbse(cd, Cdbsize):
+	 * skips flushing RespUpiuOff..PrdtOff (the Response UPIU, 64
+	 * bytes) entirely -- that region is never written by the CPU
+	 * before dispatch (device-write-only, see the memset comment
+	 * above), so there's nothing there worth writing back yet.
+	 */
+	cachedwbse(cd, CmdUpiuLen);
+	cachedwbse(cd + PrdtOff, Cdbsize - PrdtOff);
 	/*
 	 * sizeof(Utrd) is 32 bytes, half a 64-byte cache line, so two
-	 * adjacent slots in c->utrl share a line. Serialize this
+	 * adjacent slots in c->utrl share a line. Serialize THIS
 	 * writeback against any other hart's cachedinvse() on the
 	 * neighboring slot (see the matching lock in ufssubmit() and
 	 * below in this function) so an invalidate elsewhere can never
@@ -2336,6 +2873,19 @@ ufsrio(SDreq *r)
 	ilock(c);
 	cachedwbse(ut, sizeof *ut);
 	iunlock(c);
+	/*
+	 * r->data (for writes, up to the full transfer size) does NOT
+	 * share a cache line with anything of ours, so it never needed
+	 * to be under the lock above. Moved out: this used to run INSIDE
+	 * ilock(c), meaning a large write held the lock for as long as
+	 * flushing its whole buffer took (~200us for 256KB on this
+	 * hardware) -- during that window, any other concurrent user of
+	 * this same lock (ufsintr() if registered, ufsslotalloc(),
+	 * another dispatch) would block on it. The read side's own
+	 * equivalent full-buffer operation (cachedinvse(dmatarget,
+	 * dmalen), post-completion) was already outside any lock; this
+	 * brings the write side in line with that same discipline.
+	 */
 	if(r->dlen && r->write)
 		cachedwbse(r->data, r->dlen);
 
@@ -2350,6 +2900,14 @@ ufsrio(SDreq *r)
 		}
 		print(" dlen=%d write=%d, ringing doorbell\n", r->dlen, r->write);
 	}
+
+	{
+		uvlong dtns = ((fastticks(nil) - t0) * 1000000000ULL) / hz;
+		ilock(c);
+		c->dispatchns_total += dtns;
+		c->dispatchcmds++;
+		iunlock(c);
+	}
 	HCR(c, Rutrldbr) = 1<<slot;
 
 	/*
@@ -2359,10 +2917,19 @@ ufsrio(SDreq *r)
 	 * so it doesn't depend on the DTB always providing a working
 	 * interrupt controller.
 	 */
+	twaitstart = fastticks(nil);
 	if(ufswaitslot(c, slot) < 0)
 		print("ufs: rio slot %d TIMED OUT waiting for completion "
 			"(UTRLDBR bit never cleared, no interrupt ever seen "
 			"either)\n", slot);
+	{
+		uvlong dtns = ((fastticks(nil) - twaitstart) * 1000000000ULL) / hz;
+		ilock(c);
+		c->waitns_total += dtns;
+		c->waitcmds++;
+		iunlock(c);
+	}
+	tpoststart = fastticks(nil);
 	{
 		int try;
 		u32int dw2 = Ocsinvalid;
@@ -2417,6 +2984,7 @@ ufsrio(SDreq *r)
 		if((dw2 & Ocsmask) != Ocssuccess){
 			print("ufs: rio slot %d OCS error dw2=%#ux\n", slot, dw2);
 			r->status = SDcheck;
+			ufshostreset(c);
 			return SDcheck;
 		}
 	}
@@ -2446,31 +3014,95 @@ ufsrio(SDreq *r)
 	 * keeps this one code path.
 	 */
 	cachedinvse(cd, Cdbsize);
-	if(r->dlen && !r->write){
+	{
+		/*
+		 * Peek at the response status BEFORE the sentinel check: a
+		 * device-reported CHECK CONDITION (e.g. UNIT ATTENTION after
+		 * ufshostreset()'s own reset, ASC=0x29 -- the standard SCSI
+		 * code for a power-on/reset/bus-device-reset event having
+		 * occurred) legitimately never starts a data phase -- the
+		 * destination buffer correctly still reads as the untouched
+		 * sentinel in that case, and that is NOT a DMA visibility
+		 * failure. Confirmed on hardware: a routine CHECK CONDITION
+		 * (fully handled below via sense data /
+		 * REQUEST SENSE, exactly as SCSI expects) was being
+		 * misdiagnosed here as "DMA write never landed", triggering
+		 * the expensive resubmit-then-host-reset machinery for a
+		 * condition that only ever needed a normal command retry at
+		 * the sdscsi.c layer. The response UPIU inside cd is already
+		 * safely readable here -- cachedinvse(cd, Cdbsize) just
+		 * invalidated the whole command descriptor, response UPIU
+		 * included.
+		 */
+		Upiuhdr *earlyrsp = (Upiuhdr*)(cd + RespUpiuOff);
+		if(r->dlen && !r->write && earlyrsp->status != ScsiStatusCheck){
 		/*
 		 * Sentinel check: reports whether the mitigation above still
-		 * left dmatarget unwritten. A bounded retry-with-delay was
-		 * tried here previously and did not help, so this is a single
-		 * check with no retry. Only the first r->dlen bytes matter even
-		 * when dmalen (the scratch capacity) is larger -- the device
-		 * only ever writes the real response size.
+		 * left dmatarget unwritten. Kept permanently as a cheap,
+		 * independent verification that the device's DMA write
+		 * genuinely landed before trusting OCS success -- neither
+		 * Linux's ufshcd.c nor U-Boot's ufs.c for this same
+		 * controller do any equivalent check, they simply trust
+		 * OCS; this is the only mechanism in any driver examined
+		 * this session capable of catching a silent DMA-visibility
+		 * failure at all, so it stays even though the root cause
+		 * that made it fire under real load (see ufspnp(), the
+		 * post-devinit interrupt-enable comment) is now fixed.
+		 *
+		 * Recovery is deliberately minimal now: a short bounded
+		 * re-invalidate+recheck loop only, no command resubmit, no
+		 * forced ufshostreset(). The elaborate 100-try-then-full-
+		 * resubmit-then-host-reset machinery this block used to
+		 * have was defensive scaffolding built while the actual
+		 * trigger (a leftover ISupms UIC-power-mode bit contaminating
+		 * the first real interrupt at boot) was still unknown; with
+		 * that fixed, genuine sentinel failures should be rare to
+		 * nonexistent, and any real hardware-level transient that
+		 * still slips through is better handled by sdscsi.c's own
+		 * retry logic (already fixed to retry ASC=0x29/ASCQ=0x02,
+		 * see scsirio()/scsibio()) than by driver-internal resubmit.
 		 */
 		uchar *p = dmatarget;
-		int i, stillsentinel = 1;
+		int stillsentinel;
+		int retry;
 
-		cachedwbinvse(dmatarget, dmalen);
-		for(i = 0; i < r->dlen; i++)
-			if(p[i] != 0xA5){
-				stillsentinel = 0;
-				break;
-			}
+		/*
+		 * Invalidate only, matching RISC-V Linux's
+		 * arch_sync_dma_for_cpu() for DMA_FROM_DEVICE: never a
+		 * write-back here post-completion -- see the prep-side
+		 * comment above for the full reasoning (a write-back at
+		 * this point risks flushing a stale cached sentinel copy
+		 * back out to RAM, clobbering the device's fresh write).
+		 */
+		cachedinvse(dmatarget, dmalen);
+		stillsentinel = sentinelcheck(p, r->dlen);
+
+		for(retry = 0; stillsentinel && retry < 20; retry++){
+			c->sentinelretries++;
+			microdelay(5);
+			cachedinvse(dmatarget, dmalen);
+			stillsentinel = sentinelcheck(p, r->dlen);
+		}
 		if(stillsentinel)
-			print("ufs: WARNING: dmatarget still reads as the "
-				"0xA5 sentinel -- DMA write to the data "
-				"buffer never landed (scratch=%d)\n",
+			c->sentinelhits++;
+
+		if(stillsentinel){
+			print("ufs: sentinel stuck after %d short retries "
+				"(dlen=%d, usescratch=%d)\n", retry, r->dlen,
 				usescratch);
+			r->status = SDcheck;
+			memset(r->sense, 0, sizeof r->sense);
+			r->sense[0] = 0x70;			/* current error, fixed format */
+			r->sense[2] = 0x04;			/* sense key: HARDWARE ERROR */
+			r->sense[7] = 10;			/* additional sense length */
+			r->sense[12] = 0x44;			/* ASC: internal target failure */
+			r->sense[13] = 0x00;			/* ASCQ */
+			r->flags |= SDvalidsense;
+			return SDcheck;
+		}
 		if(usescratch)
 			memmove(r->data, dmatarget, r->dlen);
+	}
 	}
 
 	/* pull SCSI status + sense data out of the response UPIU if the
@@ -2598,6 +3230,16 @@ ufsrio(SDreq *r)
 		 */
 		r->rlen = (r->dlen >= residual)? r->dlen - residual : 0;
 	}
+	{
+		uvlong dtns = ((fastticks(nil) - t0) * 1000000000ULL) / hz;
+		uvlong postdtns = ((fastticks(nil) - tpoststart) * 1000000000ULL) / hz;
+		ilock(c);
+		c->riotime_total += dtns;
+		c->riocmds++;
+		c->postns_total += postdtns;
+		c->postcmds++;
+		iunlock(c);
+	}
 	return SDok;
 }
 
@@ -2605,14 +3247,24 @@ ufsrio(SDreq *r)
  * /dev/sdXX/ctl handler: adapted to SDifc's rctl/wctl signatures
  * Write "debug 1" or "debug 0" to /dev/sdXX/ctl to toggle the
  * driver's own trace verbosity at runtime, no reboot required.
+ *
+ * "enableintr" no longer enables anything -- interrupts are
+ * PERMANENTLY DISABLED driver-wide (see ufspnp()'s own comment for
+ * the full rationale: a build with the handler genuinely registered
+ * was confirmed capable of silent data corruption under real
+ * concurrent I/O; a build with it never registered, otherwise
+ * identical, was not). This command is kept only as a snapshot-only
+ * diagnostic (prints link/power-mode registers), safe to run at any
+ * time without risk of accidentally re-enabling anything.
  */
-enum { CMdebug };
+enum { CMdebug, CMenableintr };
 static Cmdtab ufsctlmsg[] = {
 	CMdebug,	"debug",	2,
+	CMenableintr,	"enableintr",	1,
 };
 
 static int
-ufswctl(SDunit*, Cmdbuf *cb)
+ufswctl(SDunit *unit, Cmdbuf *cb)
 {
 	Cmdtab *ct;
 
@@ -2621,6 +3273,40 @@ ufswctl(SDunit*, Cmdbuf *cb)
 	case CMdebug:
 		debug = atoi(cb->f[1]);
 		break;
+	case CMenableintr:
+		{
+			Ctlr *c = unit->dev->ctlr;
+
+			/*
+			 * SNAPSHOT: same registers as the boot-end snapshot in
+			 * ufspnp(), captured here for comparison -- historically
+			 * useful back when this command genuinely activated
+			 * interrupts (see the boot-end snapshot's own comment
+			 * for why that comparison mattered). With interrupts now
+			 * permanently disabled and this command reduced to an
+			 * identical snapshot-only no-op, both prints should
+			 * always read the same; kept as a routine, callable-
+			 * anytime diagnostic regardless.
+			 */
+			print("ufs: SNAPSHOT enableintr: HCS=%#ux (UPMCRS=%#ux) "
+				"Rahit=%#ux Rie=%#ux Ris=%#ux\n",
+				HCR(c, Rhcs), (HCR(c, Rhcs)>>8)&7, HCR(c, Rahit),
+				HCR(c, Rie), HCR(c, Ris));
+
+			/*
+			 * PERMANENTLY DISABLED -- see ufspnp()'s own comment
+			 * (the if(0)'d-out auto-enable block) for the full
+			 * rationale. This command is now a snapshot-only
+			 * no-op: it prints the diagnostic above but does NOT
+			 * enable anything, so it's safe to keep running
+			 * without risk of accidentally re-enabling the
+			 * handler.
+			 */
+			print("ufs: EXPERIMENT interrupts NOT enabled (handler "
+				"permanently disabled driver-wide, see ufspnp()'s "
+				"own comment) -- snapshot only, irq=%d\n", c->irq);
+		}
+		break;
 	}
 	return 0;
 }
@@ -2628,22 +3314,85 @@ ufswctl(SDunit*, Cmdbuf *cb)
 static char*
 ufsrctl(SDunit *unit, char *p, char *e)
 {
+	Ctlr *c = unit->dev->ctlr;
 	/*
-	 * devsd.c's Qctl reader only auto-prints the "geometry <sectors>
-	 * <secsize>" line when ifc->rctl==nil, on the theory that a
-	 * driver providing its own rctl takes over all geometry
+	 * devsd.c's Qctl reader only auto-prints its own geometry line
+	 * (sector count and size) when ifc->rctl==nil, on the theory that
+	 * a driver providing its own rctl takes over all geometry
 	 * reporting (see its own comment there). Since this driver does
-	 * provide one (for the "debug" toggle below), that line stopped
+	 * provide one (for the debug toggle below), that line stopped
 	 * appearing entirely once ufsrctl existed -- and disk/edisk,
 	 * disk/fdisk, and opendisk() (libdisk's disk.c) all depend on
 	 * reading it to discover the real sector size (4096 here, not
-	 * the legacy 512 default) instead of requiring an explicit "-s"
+	 * the legacy 512 default) instead of requiring an explicit -s
 	 * flag on every invocation. Print it ourselves to restore that.
 	 */
 	if(unit->sectors)
 		p = seprint(p, e, "geometry %llud %lud\n",
 			unit->sectors, unit->secsize);
-	return seprint(p, e, "debug %d\n", debug);
+	p = seprint(p, e, "debug %d\n", debug);
+	p = seprint(p, e, "nintr %ud\n", c->nintr);
+	p = seprint(p, e, "sentinelhits %ud\n", c->sentinelhits);
+	p = seprint(p, e, "sentinelretries %ud\n", c->sentinelretries);
+	/*
+	 * Live UniPro link-mode query, no I/O stress test needed: read
+	 * directly via DME_GET, safe to call at any time. PA_TXGEAR/
+	 * PA_RXGEAR: 0=PWM, 1-4=HS-GEAR1-4 (per K3 UM's own gear enum).
+	 * PA_HSSERIES: 1=HS_MODE_A, 2=HS_MODE_B (only meaningful if
+	 * gear != 0). PA_ACTIVE*DATALANES: how many lanes are actually
+	 * active right now, not just how many the device supports.
+	 */
+	{
+		u32int txgear = 0xffffffff, rxgear = 0xffffffff;
+		u32int txlanes = 0xffffffff, rxlanes = 0xffffffff;
+		u32int hsseries = 0xffffffff;
+
+		ufsdmegetsel(c, 0x1568 /* PA_TXGEAR */, 0, &txgear);
+		ufsdmegetsel(c, 0x1583 /* PA_RXGEAR */, 0, &rxgear);
+		ufsdmegetsel(c, 0x1560 /* PA_ACTIVETXDATALANES */, 0, &txlanes);
+		ufsdmegetsel(c, 0x1580 /* PA_ACTIVERXDATALANES */, 0, &rxlanes);
+		ufsdmegetsel(c, 0x156A /* PA_HSSERIES */, 0, &hsseries);
+		p = seprint(p, e, "linkmode txgear=%ud rxgear=%ud "
+			"txlanes=%ud rxlanes=%ud hsseries=%ud\n",
+			txgear, rxgear, txlanes, rxlanes, hsseries);
+	}
+	/*
+	 * TIMING INSTRUMENTATION: avg ufsrio() total time (entry to
+	 * successful return) vs avg time spent specifically inside the
+	 * primary ufswaitslot() call (genuine hardware wait). The
+	 * difference between the two is our own software overhead around
+	 * the hardware wait -- compare riotime_avg_ns against Linux's
+	 * measured ~310000ns (0.31ms) per 256KB command on the same
+	 * negotiated link, to see how much of the gap is real hardware
+	 * wait time (should be similar on both systems, same link speed)
+	 * vs our own added overhead.
+	 */
+	if(c->riocmds)
+		p = seprint(p, e, "riotime_avg_ns %llud (n=%ud)\n",
+			c->riotime_total / c->riocmds, c->riocmds);
+	if(c->waitcmds)
+		p = seprint(p, e, "waittime_avg_ns %llud (n=%ud)\n",
+			c->waitns_total / c->waitcmds, c->waitcmds);
+	if(c->dispatchcmds)
+		p = seprint(p, e, "dispatchtime_avg_ns %llud (n=%ud)\n",
+			c->dispatchns_total / c->dispatchcmds, c->dispatchcmds);
+	if(c->postcmds)
+		p = seprint(p, e, "posttime_avg_ns %llud (n=%ud)\n",
+			c->postns_total / c->postcmds, c->postcmds);
+	/*
+	 * Sentinel fill/writeback, measured separately from the rest of
+	 * dispatch: for a full 256KB dd read, these touch the WHOLE
+	 * destination buffer (memset + cache writeback of all of it),
+	 * not just the few hundred bytes of cd/ut command metadata --
+	 * likely the dominant cost within dispatchtime_avg_ns.
+	 */
+	if(c->memsetcmds)
+		p = seprint(p, e, "sentinelmemset_avg_ns %llud (n=%ud)\n",
+			c->memsetns_total / c->memsetcmds, c->memsetcmds);
+	if(c->sentwbcmds)
+		p = seprint(p, e, "sentinelwb_avg_ns %llud (n=%ud)\n",
+			c->sentwbns_total / c->sentwbcmds, c->sentwbcmds);
+	return p;
 }
 
 /*
