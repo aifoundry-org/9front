@@ -1,13 +1,12 @@
 /*
  * Spacemit K3 on-die temperature sensor (TSEN_LITE block)
  *
- * Exports #P/cputemp as "name value±resolution" lines, one per enabled sensor
+ * Exports #P/cputemp as "name value±resolution" lines, one per enabled sensor.
+ * K3 UM 16.4 gives the block seven measurement points -- top, vpu, gpu and
+ * one per cluster -- sampled to 12 bits, but documents no registers; the
+ * layout below is what the block answers to at the address the DTB gives.
  *
- * Based on:
- *   9front k1thermal.c (k1 temperature sensor) - overall 9front driver architecture
- *   Linux K3 BSP driver - k3-thermal.c/.h register + descriptor layout reference
- *   k3.dtsi - Device tree source include / Common k3 pico itx & k3 com260
- *
+ * The driver structure follows k1thermal.c, the K1 temperature sensor.
  */
 #include "u.h"
 #include "../port/lib.h"
@@ -30,7 +29,6 @@ enum {
 	TsenPhys	= 0xD4018000ull,
 	TsenSize	= 0x100,
 
-	/* -- below: from the K3 BSP driver's register facts -- */
 	TsCfg		= 0x00,
 	 CfgCkdivMask	= 3<<2,		/* clock divider select */
 	 CfgCkdivDiv4	= 0<<2,		/* /4 -- the only divider this driver sets */

@@ -1,9 +1,9 @@
 /*
- * Driver for the SpacemiT K3 Ethernet controller (GMAC0/dwqe)
+ * Driver for the SpacemiT K3 Ethernet controller (GMAC0/dwqe): a
+ * Synopsys DesignWare GMAC4 core behind the SoC's own clock and reset
+ * wrapper (K3 UM 14.3).  Register and bit names below are the core's.
  *
- * Based on:
- *   9front ethersmte.c (K1 EMAC driver) - overall 9front driver architecture
- *   Linux stmmac driver - dwmac4/5 register + descriptor layout reference
+ * The 9front driver structure follows ethersmte.c, the K1 EMAC driver.
  */
 
 #include "u.h"
@@ -43,7 +43,7 @@ enum {
 	DwqeTxDelay	= 100,
 };
 
-/* GMAC (MAC-level) registers -- verified against dwmac4.h */
+/* GMAC (MAC-level) registers */
 enum {
 	GmacConfig			= 0x0000,
 	GmacConfigArpen		= (1U << 31),
@@ -82,7 +82,7 @@ enum {
 	GmacAddr0Lo			= 0x0304,
 };
 
-/* GmacMdioAddr fields -- verified against stmmac_mdio.c + dwmac4_core.c */
+/* GmacMdioAddr fields */
 enum {
 	MdioGbusy			= (1U << 0),
 	MdioGocShift		= 2,
@@ -95,7 +95,7 @@ enum {
 	MdioGdMask		= 0xffff,
 };
 
-/* DMA (global) registers -- verified against dwmac4_dma.h */
+/* DMA (global) registers */
 enum {
 	DmaBusMode			= 0x1000,
 	DmaBusModeSwr		= (1U << 0),
@@ -149,7 +149,7 @@ enum {
 	DmaStatusTi		= (1U << 0),
 };
 
-/* MTL (queue) registers -- verified against dwmac4.h */
+/* MTL (queue) registers */
 enum {
 	MtlChanBase			= 0x0d00,
 	MtlTxOpMode		= 0x00,
@@ -204,8 +204,7 @@ enum {
 /*
  * Normal descriptors, "Read Format" while owned by the DMA engine,
  * "Write-Back Format" once it hands them back -- both are the same
- * 4 x u32int words, reused as r[4*i + 0..3].  Bit values verified
- * against dwmac4_descs.h.
+ * 4 x u32int words, reused as r[4*i + 0..3].
  */
 enum {
 	/* TDES2 (read format) */
@@ -235,7 +234,7 @@ enum {
 
 /* Standard MII registers (RTL8211F): all from ../port/ethermii.h */
 enum {
-	PhyAddr		= 1,	/* confirmed: dmesg said "stmmac-0:01" */
+	PhyAddr		= 1,	/* where the RTL8211F answers on this board */
 	Linkdelay	= 500,
 };
 
@@ -313,7 +312,7 @@ csr32w(ulong *base, uintptr off, u32int v)
 	coherence();
 }
 
-/* MDIO -- GMAC4-style GOC field, verified against stmmac_mdio.c */
+/* MDIO -- GMAC4-style GOC field */
 
 static void
 mdwrite(Ctlr *c, int reg, u16int v)
