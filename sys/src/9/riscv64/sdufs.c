@@ -3,7 +3,7 @@
  * skeleton for 9front, devsd/SDifc convention (cf. sdiahci.c)
  *
  * Register map: SpacemiT K3 User Manual ch. 9.7 (UFS Interface),
- * cross-checked against the real DT node in k3.dtsi:
+ * cross-checked against the device tree node:
  *   ufshc: ufshc@0xc0e00000 {
  *       compatible = "spacemit,k3-ufshcd";
  *       reg = <0x0 0xc0e00000 0x0 0x40000>;
@@ -40,10 +40,10 @@
 static int debug = 0;
 
 /* ---- physical bases from K3 UM 9.7.5, cross-checked against
- * k3.dtsi's "ufshc: ufshc@0xc0e00000" node ----------------------- */
+ * the device tree's "ufshc: ufshc@0xc0e00000" node ----------------------- */
 enum {
 	UfshcPhys	= 0xC0E00000,
-	/* k3.dtsi: reg = <0x0 0xc0e00000 0x0 0x40000>; ONE range
+	/* the device tree gives reg = <0x0 0xc0e00000 0x0 0x40000>; ONE range
 	 * covering both UFSHC and UFS_MNG (UFS_MNG is at +0x1B00,
 	 * well inside this window) -- so we vmap it once and reach
 	 * UFS_MNG via pointer offset, not a second vmap. */
@@ -68,11 +68,11 @@ enum {
 
 /*
  * APMU (syscon_apmu) -- shared clock/reset syscon referenced by
- * k3.dtsi as "<&syscon_apmu ...>" for both this device and GMAC0.
+ * the device tree as "<&syscon_apmu ...>" for both this device and GMAC0.
  *
  * UFS CLOCK/RESET CONTROL REGISTER, K3 UM ch.17.4.2.4 (PMUAP),
  * PMU_UFS_CLK_RST_CTRL offset 0x268 -- this is
- * CLK_APMU_UFS_ACLK / RESET_APMU_UFS_ACLK from k3.dtsi's "clocks"/
+ * CLK_APMU_UFS_ACLK / RESET_APMU_UFS_ACLK from the device tree's "clocks"/
  * "resets" properties (clock-names "ufs-aclk", reset-names
  * "ufs-aclk-rst").
  */
@@ -86,7 +86,7 @@ enum {
 	UfsAclkDivshift	= 5,		/* [7:5] */
 	UfsAclkSelshift	= 2,		/* [4:2] */
 	UfsAclkSel491M	= 0<<2,		/* matches clock-freq=491520000 in
-					 * k3.dtsi (rounded to "491MHz" in
+					 * the device tree (rounded to "491MHz" in
 					 * the register description) */
 	UfsAclkEn	= 1<<1,		/* 0=Disable 1=Enable */
 	UfsAclkRstRel	= 1<<0,		/* 0=Reset 1=Release -- NOTE this
@@ -188,8 +188,8 @@ enum {
 
 /*
  * Full-register values written to Mphyputrl during the M-PHY bring-up
- * handshake, taken from the vendor's own Linux driver for this exact
- * controller. Bits 0-6 = Mpupll|Mputx|Mpurx plus two further enable
+ * handshake, which the manual does not describe.  Bits 0-6 =
+ * Mpupll|Mputx|Mpurx plus two further enable
  * bits (5,6), bits[11:10] = ref-clock-select = Mrefclk19M2 (0x400),
  * matching the board's real 19.2MHz reference clock (see file header).
  * MphyPuWithHb8Reset adds bits 8-9 on top of MphyPuAll, held briefly
@@ -229,12 +229,8 @@ enum {
  * ---- UTP Transfer Request Descriptor (UTRD), 32 bytes ----
  *
  * Layout mandated by JEDEC JESD223 (UFSHCI) -- NOT specific to the
- * K3, and not in the excerpted manual pages. Field names/shapes here
- * are cross-checked against Linux's include/scsi/ufs/ufshci.h
- * (struct request_desc_header / struct utp_transfer_req_desc) purely
- * to confirm the wire layout the spec requires; this is a clean-room
- * reimplementation of that layout (same approach OpenBSD's ufshci.c
- * takes independently under its own BSD license), no GPL code used.
+ * K3, and not in the excerpted manual pages.  The field names and
+ * shapes below are the spec's.
  *
  *   DW0: CT[31:28] (command type), DD[26:25] (data direction),
  *        Int[24] (interrupt on completion) -- see enum below
@@ -349,8 +345,8 @@ enum {
 
 	/* Command descriptor layout, chosen by us (offsets are told to
 	 * hw via UTRD.RUO/RUL/PRDTO/PRDTL, so any 4-byte-aligned layout
-	 * works -- this one mirrors the compact EDK2/OpenBSD style
-	 * rather than Linux's fixed 512B/512B slots). */
+	 * works -- this one is compact rather than the fixed 512B/512B
+	 * slots other implementations use). */
 	CmdUpiuOff	= 0,
 	CmdUpiuLen	= 32,			/* hdr(12)+explen(4)+cdb(16) */
 	RespUpiuOff	= CmdUpiuLen,		/* must be dword-aligned */
@@ -442,12 +438,11 @@ struct Ctlr
 #define MNG(c, r)	(*(u32int*)((c)->mngreg + (r)))
 #define APMU(c, r)	(*(u32int*)((c)->apmureg + (r)))
 /*
- * ATOP ("analog top") block, per the vendor Linux driver: base offset
- * 0x1C00 from hcreg, i.e. mngreg+0x100 since mngreg=hcreg+UfsMngOff
+ * ATOP ("analog top") block, undocumented: base offset 0x1C00 from
+ * hcreg, i.e. mngreg+0x100 since mngreg=hcreg+UfsMngOff
  * (UfsMngOff=0x1B00, 0x1C00-0x1B00=0x100). Word-indexed once unlocked
- * via Mphybackdoor -- the vendor driver addresses entries as
- * ATOP_BASE + (index << 2), which this macro takes 'r' as already
- * being (index << 2) to keep call sites matching that convention.
+ * via Mphybackdoor, entries at base + (index << 2); this macro takes
+ * 'r' as already being (index << 2) so call sites read as indices.
  */
 #define ATOP(c, r)	(*(u32int*)((c)->mngreg + 0x100 + (r)))
 
@@ -559,7 +554,7 @@ ufsinit(Ctlr *c)
 	/*
 	 * UFS ACLK enable + reset release, K3 UM ch.17.4.2.4 (PMUAP),
 	 * PMU_UFS_CLK_RST_CTRL @ 0x268 -- CLK_APMU_UFS_ACLK /
-	 * RESET_APMU_UFS_ACLK from k3.dtsi. Without this the AXI/APB
+	 * RESET_APMU_UFS_ACLK from the device tree. Without this the AXI/APB
 	 * fabric to the UFSHC register block may not be clocked, so
 	 * every HCR()/MNG() access -- including the warm-boot check
 	 * below -- could read back garbage. Must run before the first
@@ -641,9 +636,9 @@ ufsinit(Ctlr *c)
 	if(!warm){
 
 	/*
-	 * ACLK reset PULSE (assert, ~1us, deassert), per the vendor's
-	 * Linux ufs_spacemit_platform_init(): done unconditionally at the
-	 * start of every cold probe, before mphy_init. Resets internal
+	 * ACLK reset PULSE (assert, ~1us, deassert), done unconditionally
+	 * at the start of every cold probe, before the M-PHY comes up.
+	 * Resets internal
 	 * stateful logic (sequencers, FIFOs) scoped to this clock domain
 	 * that a plain "ensure released" write does not touch. Cold-path
 	 * only: applying this on the warm (kexec-preserved-link) path
@@ -657,9 +652,8 @@ ufsinit(Ctlr *c)
 			APMU(c, Rpmuufsclkrst));
 
 	/*
-	 * M-PHY power-up handshake and post-lock ATOP calibration, per
-	 * the vendor's Linux glue driver (ufs-spacemit) for this exact
-	 * controller. Not a single register write:
+	 * M-PHY power-up handshake and post-lock ATOP calibration, none
+	 * of which the manual describes.  Not a single register write:
 	 *   1. assert PHY + core reset together
 	 *   2. power up PLL+TX+RX (MphyPuAll = 0x47f, ref-clock-select =
 	 *      19.2MHz -- see MphyPuAll's own comment for why this
@@ -733,9 +727,9 @@ ufsinit(Ctlr *c)
 	}
 
 	/*
-	 * PA-layer/M-PHY UniPro attribute tuning, per the vendor's
-	 * spacemit_k3_ufs_unipro_init(): called right after HCE=1 takes
-	 * effect and before DME_LINKSTARTUP is attempted below.
+	 * PA-layer/M-PHY UniPro attribute tuning, which has to happen
+	 * right after HCE=1 takes effect and before DME_LINKSTARTUP is
+	 * attempted below.
 	 */
 	if(ufsuniproinit(c) < 0)
 		print("ufs: WARNING: ufsuniproinit failed, continuing anyway\n");
@@ -831,22 +825,17 @@ ufsinit(Ctlr *c)
 	 * at the top of this function. LINERESET and similar
 	 * PA-layer errors on the very first attempt are common if the
 	 * device wasn't fully powered up yet despite the wait above
-	 * -- this is the standard pattern real UFS host drivers use
-	 * (e.g. Linux ufshcd retries DME_LINKSTARTUP up to a few
-	 * times before giving up), not something specific to this
-	 * driver's other bugs.
+	 * -- retrying DME_LINKSTARTUP a few times before giving up is
+	 * the standard pattern for a UFS host, not something specific
+	 * to this driver's other bugs.
 	 */
 	if(!warm){
 	int try, ok, pass;
 
 	/*
-	 * OUTER pass loop: a device that isn't fully active yet after the
-	 * first DME_LINKSTARTUP can need a second attempt before it
-	 * settles into the active state -- Linux's own link-startup
-	 * handling retries for the same reason, and neither U-Boot's nor
-	 * the SpacemiT K3 vendor Linux driver skips this, so it applies
-	 * here too. Cold path only -- warm inherits an already-active
-	 * link.
+	 * OUTER pass loop: a device that is not already active needs
+	 * link startup issued twice before its state moves to active.
+	 * Cold path only -- warm inherits an already-active link.
 	 */
 	for(pass = 0; pass < 2; pass++){
 
@@ -1010,10 +999,7 @@ enum {
  * Separate from ufsrio()'s SCSI Command UPIU path: Query UPIUs use a
  * completely different transaction-specific field layout. Facts below
  * (field order: opcode/idn/index/selector, then a big-endian 4-byte
- * value with a flag's actual bit in its LAST byte) were confirmed by
- * inspecting the generic Linux UFS core (ufshcd_init_query() and
- * ufshcd_query_flag()) -- not copied as code, just the field layout
- * facts, reimplemented independently here.
+ * value with a flag's actual bit in its LAST byte) are the spec's.
  * The specific numeric opcode/idn constants below are standard JEDEC
  * UFS values (not vendor-specific), used identically across every
  * public UFS implementation.
@@ -1382,10 +1368,8 @@ ufsquery(Ctlr *c, uchar opcode, uchar idn, uchar index, uchar selector,
 /*
  * ufsnop: send a NOP OUT UPIU (transtype 0x00, the most basic UPIU
  * transaction type, per JEDEC UFS spec) and confirm a NOP IN response
- * (transtype 0x20). Per the generic Linux UFS core's device-init
- * sequence (ufshcd_device_init() -> ufshcd_verify_dev_init()), this
- * runs first, immediately after DME_LINKSTARTUP succeeds and before
- * fDeviceInit. NOP OUT/IN has no payload beyond the header; the
+ * (transtype 0x20).  This runs first in the device-init sequence,
+ * immediately after DME_LINKSTARTUP succeeds and before fDeviceInit. NOP OUT/IN has no payload beyond the header; the
  * response has no data segment to parse, just transtype+response to
  * confirm the round trip worked.
  */
@@ -1506,11 +1490,10 @@ enum {
  *
  * Facts (attribute IDs, DME_SET opcode 0x02, UPMCRS field at HCS
  * bits[10:8], PWR_LOCAL=1, and the DL_*_Default/PA_PWRMODEUSERDATA*
- * timeout programming sequence) confirmed directly from the real
- * public unipro.h/ufshci.h headers -- not copied as code, only the
- * numeric IDs/values, reimplemented independently here using this
- * driver's own polling-based UIC command dispatch (the same pattern
- * already proven working for DME_LINKSTARTUP).
+ * timeout programming sequence) are all MIPI UniPro and JEDEC UFSHCI
+ * standard values, dispatched here through this driver's own
+ * polling-based UIC command path (the same pattern already proven
+ * working for DME_LINKSTARTUP).
  */
 enum {
 	UicDmeSet	= 0x02,
@@ -1536,8 +1519,8 @@ enum {
 	PwrFastAutoMode		= 4,
 	PwrLocal		= 1,	/* UPMCRS success value */
 
-	/* target config: matches ufs-spacemit.h's own recommended
-	 * UFS_SPACEMIT_LIMIT_* values (HS Gear3, 2 lanes, HS Mode B) */
+	/* target config: the limits this controller is specified for
+	 * (HS Gear3, 2 lanes, HS Mode B) */
 	TargetHsGear		= 3,
 	TargetLanes		= 2,
 	TargetHsSeries		= 2,	/* PA_HS_MODE_B */
@@ -1591,9 +1574,9 @@ ufsdmeset(Ctlr *c, u32int attr, u32int value)
 
 /*
  * ufsdmesetsel/ufsdmegetsel: local DME_SET/DME_GET with an explicit
- * GenSelectorIndex (needed for per-lane M-PHY attributes).
- *   UIC_ARG_MPHY_TX_GEN_SEL_INDEX(lane) = lane
- *   UIC_ARG_MPHY_RX_GEN_SEL_INDEX(lane) = PA_MAXDATALANES(4) + lane
+ * GenSelectorIndex (needed for per-lane M-PHY attributes).  A TX lane
+ * selects as the lane number; an RX lane selects as PA_MAXDATALANES
+ * (4) plus the lane number.
  */
 enum {
 	UicDmeGet	= 0x01,
@@ -1617,10 +1600,8 @@ ufsdmegetsel(Ctlr *c, u32int attr, u32int sel, u32int *value)
  * REMOTE device's attribute space instead of this host controller's
  * own. Opcodes confirmed standard UIC command values (DME_GET=0x01,
  * DME_SET=0x02, DME_PEER_GET=0x03, DME_PEER_SET=0x04 per the
- * UFS/UniPro spec, matching U-Boot's own UIC_CMD_DME_PEER_SET/
- * UIC_CMD_DME_PEER_GET constants). Needed for UFSHCD_QUIRK_BROKEN_LCC's
- * fix (disable TX_LCC_ENABLE on the DEVICE side), which requires
- * writing to the peer.
+ * UFS/UniPro spec).  Needed to disable TX_LCC_ENABLE on the DEVICE
+ * side, which requires writing to the peer.
  */
 enum {
 	UicDmePeerGet	= 0x03,
@@ -1640,27 +1621,22 @@ ufsdmegetselpeer(Ctlr *c, u32int attr, u32int sel, u32int *value)
 }
 
 /*
- * ufsuniproinit: PA-layer/M-PHY UniPro attribute tuning, per the
- * vendor's spacemit_k3_ufs_unipro_init(). Vendor-specific attributes
- * governing HS-gear sync/prepare lengths, scrambling, TX skip, and
- * RX/TX capability values, none of which are guessable from the
- * generic UFS/UniPro spec. Runs after HCE=1, before DME_LINKSTARTUP.
+ * ufsuniproinit: PA-layer/M-PHY UniPro attribute tuning.  These are
+ * vendor-specific attributes governing HS-gear sync/prepare lengths,
+ * scrambling, TX skip, and RX/TX capability values, none of which are
+ * guessable from the generic UFS/UniPro spec. Runs after HCE=1, before DME_LINKSTARTUP.
  *
- * Standard PA_* attribute IDs are from the official U-Boot
- * drivers/ufs/unipro.h (standard MIPI UniPro attribute numbers, not
- * vendor-original expression). The vendor-proprietary M-PHY backdoor
- * attribute IDs (RX_LS_PRE_LEN_CAP, RX_LANE_HB8_BKDOOR_ATTR,
- * RX_PWRM_CLOSURE_LEN_CAP, RX_MIN_STALL_CAP, RX_LANE_SOF_BKDOOR_ATT,
- * ANA_EQ_CTRL_REG_ATTR, PA_MK2EXTENSIONGUARDBAND) and their tuning
- * values below are hardware facts -- the specific numeric attribute
- * ID SpacemiT's M-PHY vendor assigned each register, and the specific
- * value this silicon needs written to it -- cross-checked against
- * SpacemiT's own ufs-spacemit-k3.c purely to confirm those numbers;
- * no code structure, comments, or naming scheme from that source is
- * reproduced here.
+ * The standard PA_* attribute IDs are MIPI UniPro attribute numbers.
+ * The vendor-proprietary M-PHY backdoor attribute IDs
+ * (RX_LS_PRE_LEN_CAP, RX_LANE_HB8_BKDOOR_ATTR, RX_PWRM_CLOSURE_LEN_CAP,
+ * RX_MIN_STALL_CAP, RX_LANE_SOF_BKDOOR_ATT, ANA_EQ_CTRL_REG_ATTR,
+ * PA_MK2EXTENSIONGUARDBAND) and their tuning values below are hardware
+ * facts: the numeric attribute ID this M-PHY's vendor assigned each
+ * register, and the value this silicon needs written to it.  None of
+ * it is documented in the manual.
  *
- * Selector encoding: RX0/TX0 = UIC_ARG_MPHY_*_GEN_SEL_INDEX(0),
- * RX1/TX1 = ..._INDEX(1); RX uses 4+lane per this driver's convention.
+ * Selector encoding: RX0/TX0 = generation-select index 0, RX1/TX1 =
+ * index 1; RX uses 4+lane per this driver's convention.
  */
 static int
 ufsuniproinit(Ctlr *c)
@@ -1714,225 +1690,12 @@ ufsuniproinit(Ctlr *c)
 }
 
 /*
- * ufshostreset: full host-controller AND physical device/M-PHY reset,
- * for runtime recovery when a command has persistently failed despite
- * ufsrio()'s existing retry/resubmit logic. A prior version of this
- * function only cycled HCE (HCI-layer only) and re-ran DME_LINKSTARTUP
- * -- confirmed insufficient on hardware: HCS.DP never came back
- * (HCS=0x8, device never re-detected). That's because the actual
- * fault can live below the HCI, in the M-PHY/link/device itself, which
- * a bare HCE toggle never touches.
- *
- * This version additionally asserts the physical device reset line
- * (Mdeviceioctrl's HW_RST_N) and power-cycles the M-PHY explicitly
- * before rebuilding -- mirroring what a genuine device-reset step
- * needs to do at runtime (unlike ufsinit()'s cold-boot path, which
- * can skip this explicit assert because HW_RST_N is already 0 by
- * hardware default straight out of power-on-reset; at runtime the
- * device has been live and RST_N deasserted, so it must be asserted
- * explicitly here first) -- then re-runs the same M-PHY bring-up
- * sequence ufsinit() already uses for cold boot, followed by the
- * HCE cycle and DME_LINKSTARTUP relink.
- *
- * Deliberately does NOT reallocate c->utrl/c->cmddesc/c->scratchbuf
- * (already allocated once at boot and still valid host-side memory;
- * only device/link/PHY state needs rebuilding).
- *
- * Caller must NOT hold ilock(c) when calling. Dispatch is not
- * serialized by a driver-wide lock (concurrent commands are allowed).
- * NOTE: this function's OWN triggers include a genuine, still-
- * UNRESOLVED concurrency-related failure mode (OCS never resolving
- * from Ocsinvalid under real concurrent dispatch -- the "sentinel
- * bug" chased at length elsewhere in this file). A dispatchbusy[]
- * diagnostic added during that investigation confirmed via a real
- * counter that every observed failure showed genuinely two commands
- * in flight at the moment of dispatch, never just one -- ruling out
- * an earlier thermal-throttling theory as the explanation for THIS
- * failure mode. (A separate, already-resolved issue earlier in this
- * driver's development, where sustained load without active cooling
- * caused thermal throttling/shutdown, is real but distinct -- fixed
- * by ensuring the fan runs in automatic mode; do not conflate the
- * two.) Root cause of the concurrency failure itself was never found;
- * this driver currently accepts it as a rare, cleanly-recovered
- * failure (this function) rather than eliminating it via
- * serialization, since the one serialization approach tried (a
- * reentrant QLock) turned out to risk silent data corruption instead,
- * which is worse -- see ufsintr()'s own comment. Concurrent callers
- * reaching this function at nearly the same time is possible but
- * expected to be rare, since it only runs on a genuine command
- * failure, not on the normal path.
- */
-static int ufsdevinit(Ctlr*);	/* forward decl: defined below, called from
-				 * ufshostreset() for full runtime recovery */
-
-static int
-ufshostreset(Ctlr *c)
-{
-	int i, try, ok;
-
-	print("ufs: host controller reset: attempting full device/M-PHY "
-		"reset + relink\n");
-
-	/*
-	 * Step 0: explicitly assert physical resets before rebuilding.
-	 * At runtime (unlike cold boot) the device/M-PHY are currently
-	 * live, so this assert step -- implicit at cold boot via the
-	 * power-on-reset default -- must be done explicitly here.
-	 */
-	MNG(c, Mdeviceioctrl) = 0;		/* assert device RST_N, disable REFCLK_OE */
-	for(i = 0; i < 5000; i++)
-		microdelay(1);			/* ~5ms */
-	MNG(c, Mphyrstctrl) = 0;		/* assert M-PHY resets */
-	for(i = 0; i < 5000; i++)
-		microdelay(1);
-	MNG(c, Mphyputrl) = 0;			/* power down M-PHY */
-	for(i = 0; i < 5000; i++)
-		microdelay(1);
-
-	/*
-	 * Step 1: rebuild -- same M-PHY power-up/reset-deassert/ATOP-cal
-	 * sequence ufsinit() uses for cold boot (see that function's
-	 * comment for the full rationale; reusing the same register
-	 * constants, not duplicating the explanation here).
-	 */
-	MNG(c, Mphyrstctrl) = MPHYrstn|MPHYrstncore;
-	MNG(c, Mphyputrl) = MphyPuAll;
-	for(i = 0; i < 1000; i++)
-		microdelay(1);
-	MNG(c, Mphyputrl) = MphyPuWithHb8Reset;
-	for(i = 0; i < 1000; i++)
-		microdelay(1);
-	MNG(c, Mphyputrl) = MphyPuAll;
-	for(i = 0; i < 1000; i++)
-		microdelay(1);
-
-	MNG(c, Mdeviceioctrl) = MdevReon|MdevHwRstN;
-	for(i = 0; i < 1000; i++)
-		microdelay(1);
-
-	for(i = 0; i < 10000 && !(MNG(c, Mphyputrl) & (1<<31)); i++)
-		microdelay(1);
-	if(!(MNG(c, Mphyputrl) & (1<<31)))
-		print("ufs: host reset: WARNING M-PHY PLL lock timeout, "
-			"MPHY_PU_CTRL=%#ux\n", MNG(c, Mphyputrl));
-
-	MNG(c, Mphybackdoor) = 1;
-	microdelay(20);
-	ATOP(c, 0xC1<<2) = 0;
-	ATOP(c, 0xC2<<2) = 0;
-	microdelay(20);
-	MNG(c, Mphybackdoor) = 0;
-	microdelay(20);
-
-	/* Step 2: HCE disable/re-enable cycle */
-	HCR(c, Rhce) = 0;
-	for(i = 0; i < 10000 && (HCR(c, Rhce) & 1) != 0; i++)
-		microdelay(100);
-	if((HCR(c, Rhce) & 1) != 0){
-		print("ufs: host reset: HCE never cleared, giving up\n");
-		return -1;
-	}
-	HCR(c, Rhce) = 1;
-	for(i = 0; i < 10000 && (HCR(c, Rhce) & 1) == 0; i++)
-		microdelay(100);
-	if((HCR(c, Rhce) & 1) == 0){
-		print("ufs: host reset: HCE never came ready\n");
-		return -1;
-	}
-
-	/*
-	 * Re-program the transfer request list base address registers.
-	 * Per K3 UM 9.7.5.1 (HCE): writing '1' to HCE while it reads '0'
-	 * triggers the host controller's own initialization procedure,
-	 * which resets the host UTP and UIC layers. UTRLBA/UTRLBAU are RW
-	 * registers the HCI does not remember across this reset --
-	 * ufsinit() only ever wrote them ONCE, at cold boot. Without
-	 * re-writing them here, the HCI has no valid idea where c->utrl[]
-	 * lives in physical memory after this HCE cycle, so every
-	 * subsequent doorbell ring fetches a transfer request descriptor
-	 * from a bogus address -- explaining exactly the observed
-	 * symptom: link/device appear to come back up fine (HCS=0xf), yet
-	 * every single command immediately fails
-	 * with the same OCS error, regardless of how thoroughly the
-	 * M-PHY/link/device-level init above succeeded. Matches Linux's
-	 * own ufshcd_make_hba_operational(), which re-writes these same
-	 * registers unconditionally every time it brings the HBA back to
-	 * an operational state, not just at first boot.
-	 */
-	HCR(c, Rutrlba) = (u32int)PADDR(c->utrl);
-	HCR(c, Rutrlbau) = (u32int)(PADDR(c->utrl)>>32);
-
-	if(ufsuniproinit(c) < 0)
-		print("ufs: host reset: WARNING ufsuniproinit failed, "
-			"continuing anyway\n");
-
-	/* Step 3: DME_LINKSTARTUP, single pass (recovery, not cold boot) */
-	ok = 0;
-	for(try = 0; try < 3 && !ok; try++){
-		if(try > 0){
-			(void)HCR(c, Ruecpa); (void)HCR(c, Ruecdl);
-			(void)HCR(c, Ruecn); (void)HCR(c, Ruect);
-			(void)HCR(c, Ruecdme);
-			for(i = 0; i < 5; i++)
-				microdelay(1000);
-		}
-		HCR(c, Ruiccmdarg1) = 0;
-		HCR(c, Ruiccmdarg2) = 0;
-		HCR(c, Ruiccmdarg3) = 0;
-		HCR(c, Ruiccmd) = 0x16;
-		for(i = 0; i < 10000 && (HCR(c, Ris) & ISuccs) == 0; i++)
-			microdelay(100);
-		if((HCR(c, Ris) & ISuccs) == 0)
-			continue;
-		HCR(c, Ris) = ISuccs;
-		ok = (HCR(c, Rhcs) & HCSdp) != 0;
-	}
-	if(!ok){
-		print("ufs: host reset: no device present after relink, "
-			"HCS=%#ux\n", HCR(c, Rhcs));
-		return -1;
-	}
-
-	for(i = 0; i < 10000 && (HCR(c, Rhcs) & HCSutrlrdy) == 0; i++)
-		microdelay(100);
-	HCR(c, Rutrlrsr) = 1;
-
-	/*
-	 * DME_LINKSTARTUP only brings the physical link up (HCS.DP=1);
-	 * the UFS device itself still needs its own device-level init
-	 * handshake (fDeviceInit) and power-mode negotiation before it
-	 * will actually process UTP transfer requests -- confirmed on
-	 * hardware: without this, every relink "succeeds" (HCS=0xf) but
-	 * every subsequent SCSI command immediately OCS-errors again in
-	 * an infinite loop. ufsdevinit() already implements this exact
-	 * sequence (it's the same function ufspnp() calls after ufsinit()
-	 * during cold boot) and ends by calling ufspwrmode() to switch to
-	 * the real operating gear.
-	 */
-	{
-		int devret = ufsdevinit(c);
-		if(devret < 0){
-			print("ufs: host reset: ufsdevinit failed (%d) after "
-				"relink -- device may still be unusable\n", devret);
-			return -1;
-		}
-	}
-
-	print("ufs: host controller reset: relink succeeded, HCS=%#ux\n",
-		HCR(c, Rhcs));
-	return 0;
-}
-
-/*
- * ufsdisabledevicetxlcc: fix for UFSHCD_QUIRK_BROKEN_LCC, set
- * explicitly by SpacemiT's own vendor U-Boot driver -- its own comment
- * explains this is deliberately mirroring Linux's behavior here, to
- * disable LCC for controller stability. Per the generic
- * U-Boot/Linux UFS core's ufshcd_disable_tx_lcc(hba, peer=true): read
+ * ufsdisabledevicetxlcc: this controller's line-control capability is
+ * broken and has to be turned off for the link to be stable.  Read
  * PA_CONNECTEDTXDATALANES (0x1561) from the peer to find how many TX
  * lanes are connected, then DME_PEER_SET TX_LCC_ENABLE (0x002C, an
- * M-TX config attribute, selected per-lane via
- * UIC_ARG_MPHY_TX_GEN_SEL_INDEX(lane)=lane) to 0 for each one. Must
+ * M-TX config attribute, selected per-lane by the lane number) to 0
+ * for each one. Must
  * run after DME_LINKSTARTUP succeeds and before any command/data
  * traffic.
  */
@@ -1961,12 +1724,11 @@ ufsdisabledevicetxlcc(Ctlr *c)
 
 /*
  * ufspwrmode: negotiate the link out of its post-LINKSTARTUP default
- * (minimal) power mode into the real operational HS mode. Two-step
- * FASTAUTO_MODE-then-FAST_MODE is SpacemiT-specific, per the vendor's
- * spacemit_k3_ufs_set_power_mode() (a .set_power_mode hba_ops hook
- * that fully replaces the generic core's own power-mode-change
- * logic). Negotiated values (HS-Gear3, 2 lanes, FAST_MODE, HS-Mode-B)
- * match U-Boot's own successful negotiation on this hardware exactly.
+ * (minimal) power mode into the real operational HS mode. The
+ * two-step FASTAUTO_MODE-then-FAST_MODE is SpacemiT-specific and
+ * replaces the generic power-mode change entirely.  The negotiated
+ * values -- HS-Gear3, 2 lanes, FAST_MODE,
+ * HS-Mode-B -- are what this hardware settles on.
  *
  * Retries the whole FASTAUTO+FAST sequence up to 3 times on failure
  */
@@ -2030,10 +1792,7 @@ ufspwrmode(Ctlr *c)
  * ufsdevinit: mandatory post-LINKSTARTUP device-init handshake (JEDEC
  * UFS spec, not vendor-specific -- see the long comment at the call
  * site in ufspnp()). Set fDeviceInit, then poll Read Flag until the
- * device clears it, exactly mirroring the generic Linux UFS core's
- * ufshcd_complete_dev_init()/ufshcd_verify_dev_init() sequence (facts
- * only: set-then-poll-until-clear on this specific flag idn; this
- * implementation, loop structure, and comments are original).
+ * device clears it.
  */
 static int
 ufsdevinit(Ctlr *c)
@@ -2044,9 +1803,8 @@ ufsdevinit(Ctlr *c)
 	/*
 	 * DL_AFC0REQTIMEOUTVAL (0x2043, Data Link layer attribute --
 	 * distinct from PA_PWRMODEUSERDATA2/DME_LocalAFC0ReqTimeOutVal
-	 * already programmed in ufspwrmode()) set to max (0xFFFF), per
-	 * the vendor's ufs_spacemit_link_startup_post_change(), called
-	 * right after LINKSTARTUP succeeds and before the fDeviceInit
+	 * already programmed in ufspwrmode()) set to max (0xFFFF), right
+	 * after LINKSTARTUP succeeds and before the fDeviceInit
 	 * handshake.
 	 */
 	ufsdmeset(c, 0x2043 /* DL_AFC0REQTIMEOUTVAL */, 0xFFFF);
@@ -2057,9 +1815,9 @@ ufsdevinit(Ctlr *c)
 	 * DL_AFC0REQTIMEOUTVAL (0x2043) above. Setting DL_PEERTC1PRESENT=1
 	 * tells the local DL layer the peer supports TC1, needed if UFS's
 	 * data-carrying CPort is assigned that traffic class. DL_PEERTC0
-	 * PRESENT=1 set too, defensively. Timeout/replay defaults for TC1
-	 * taken from unipro.h's own _Default constants, matching the TC0
-	 * values already in use elsewhere in this file.
+	 * PRESENT=1 set too, defensively. The TC1 timeout and replay
+	 * values are the UniPro defaults, matching the TC0 values already
+	 * in use elsewhere in this file.
 	 */
 	ufsdmeset(c, 0x2046 /* DL_PEERTC0PRESENT */, 1);
 	ufsdmeset(c, 0x2066 /* DL_PEERTC1PRESENT */, 1);
@@ -2068,12 +1826,10 @@ ufsdevinit(Ctlr *c)
 	ufsdmeset(c, 0x2063 /* DL_AFC1REQTIMEOUTVAL */, 0xFFFF);
 
 	/*
-	 * 3-step dummy-frame poke (0x97->0xd7->0x17 into attribute 0xE8,
-	 * TX lane 0), applied unconditionally per U-Boot's
-	 * spacemit_k3_ufs_link_startup_notify(). The vendor's own comment
-	 * there explains this specific attribute write is what gets
-	 * UFS2.1 running at GEAR3 with 2 lanes at 409M. remotever/rx1fsm
-	 * are read for diagnostic logging only.
+	 * 3-step "dummy frame" poke (0x97->0xd7->0x17 into attribute 0xE8,
+	 * TX lane 0), applied unconditionally: without it this M-PHY will
+	 * not run GEAR3 on 2 lanes at 409M.  remotever/rx1fsm are read
+	 * for diagnostic logging only.
 	 */
 	{
 		u32int remotever, rx1fsm;
@@ -2091,13 +1847,12 @@ ufsdevinit(Ctlr *c)
 	}
 
 	/*
-	 * Local-side TX_LCC_ENABLE disable (M-PHY attribute 0x002C, per
-	 * unipro.h), for TX lanes 0 and 1 -- distinct from and in
+	 * Local-side TX_LCC_ENABLE disable (M-PHY attribute 0x002C), for
+	 * TX lanes 0 and 1 -- distinct from and in
 	 * addition to both PA_Local/Peer_TX_LCC_Enable (already set in
 	 * ufsuniproinit(), before LINKSTARTUP) and this driver's existing
 	 * ufsdisabledevicetxlcc() (a DME_PEER_SET-based disable on the
-	 * device side, from the generic UFSHCD_QUIRK_BROKEN_LCC
-	 * mechanism).
+	 * device side).
 	 */
 	ufsdmesetsel(c, 0x002C /* TX_LCC_ENABLE */, 0, 0);
 	ufsdmesetsel(c, 0x002C, 1, 0);
@@ -2126,14 +1881,10 @@ ufsdevinit(Ctlr *c)
 	}
 
 	/*
-	 * NOP OUT/IN handshake, per the real generic core's own
-	 * ufshcd_device_init() -> ufshcd_verify_dev_init() sequence: a
-	 * NOP OUT UPIU round-trip confirms the device is actually
-	 * responding, done BEFORE the fDeviceInit flag handshake that
-	 * follows (which itself starts the device's own UFS
-	 * initialization). Retried a few times, matching the real core's
-	 * NOP_OUT_RETRIES loop -- not fatal to the overall boot if it
-	 * never succeeds, just logged.
+	 * NOP OUT/IN handshake: verify the device is initialised by
+	 * sending a NOP OUT UPIU, BEFORE fDeviceInit.  Retried a few
+	 * times -- not fatal to the overall boot if it never succeeds,
+	 * just logged.
 	 */
 	{
 		int nopretry, nopok;
@@ -2170,7 +1921,7 @@ ufsdevinit(Ctlr *c)
 				 * the device's own record of its expected reference
 				 * clock, expected to agree with the host's
 				 * MPHY_REF_CLK_SEL=Mrefclk19M2 (19.2MHz, matching
-				 * k3.dtsi's freq-table-hz).
+				 * the device tree's freq-table-hz).
 				 */
 				u32int refclk;
 
@@ -2250,8 +2001,8 @@ ufsdevinit(Ctlr *c)
 				 */
 				HCR(c, Rahit) = 0;
 				if(debug)
-					print("ufs: disabled Auto-Hibern8 (Rahit=0, "
-						"UFSHCD_QUIRK_BROKEN_AUTO_HIBERN8 per vendor)\n");
+					print("ufs: disabled Auto-Hibern8 "
+						"(Rahit=0; broken on this controller)\n");
 			}
 			{
 				/*
@@ -2357,7 +2108,7 @@ ufspnp(void)
 	if(c == nil)
 		return nil;
 	/*
-	 * Single vmap over the whole reg range, k3.dtsi confirms
+	 * Single vmap over the whole reg range, the device tree confirms
 	 * UFSHC and UFS_MNG share one physical window; UFS_MNG is
 	 * reached by pointer offset, not a second vmap.
 	 */
@@ -2409,8 +2160,8 @@ ufspnp(void)
 	c->sdev = sdev;
 
 	/*
-	 * The SpacemiT K3 UFS has a known issue with LCC; both U-Boot and Linux
-	 * work around it by disabling LCC. We should do the same in Plan 9, even
+	 * The SpacemiT K3 UFS has a known issue with LCC, and the standard
+	 * workaround is to disable it.  We do the same here, even
 	 * if we inherit an already-initialized link, because this also covers the
 	 * case where Plan 9 performed its own `LINKSTARTUP` on a cold boot.
 	 */
@@ -2836,8 +2587,7 @@ ufsrio(SDreq *r)
 	ut->ru = (RespUpiuLen/4) | ((RespUpiuOff/4)<<16);
 	/*
 	 * DW6 (response UPIU offset/length) and DW7 (PRDT offset/length):
-	 * per the real UTP Transfer Request Descriptor layout (matching
-	 * Linux's ufshcd.h struct utp_transfer_req_desc), the LOW 16 bits
+	 * per the UTP Transfer Request Descriptor layout, the LOW 16 bits
 	 * hold LENGTH and the HIGH 16 bits hold OFFSET, for both fields.
 	 */
 	ut->prdt = r->dlen?
@@ -3134,8 +2884,8 @@ ufsrio(SDreq *r)
 		}
 		if(rsp->status == ScsiStatusCheck){
 			/*
-			 * Sense data segment layout, per Linux's utp_cmd_rsp
-			 * struct (matches JEDEC UFS Response UPIU): 12-byte
+			 * Sense data segment layout, per the JEDEC UFS
+			 * Response UPIU: 12-byte
 			 * basic header, then residual_transfer_count (4 bytes,
 			 * offset 12-15, read above), then reserved[4] (FOUR
 			 * reserved DWORDs, 16 bytes, offset 16-31 -- not one
