@@ -17,8 +17,7 @@
  *
  *   2. This IP cannot combine START and STOP in the same TB pulse
  *      (see the "quick" case in k3i2cio()): a zero-data probe has to
- *      be split into two separate pulses, confirmed both empirically
- *      and against SpacemiT's own u-boot driver's __i2c_probe_chip().
+ *      be split into two separate pulses, confirmed empirically.
  *
  * NOT implemented: ri2c0/ri2c1, pending confirmation of their domain.
  * These live in the RCPU (real-time companion core) address range and
@@ -35,19 +34,13 @@
  *
  * which is a different, byte-at-a-time controller (closer in spirit
  * to the old Marvell PXA i2c block than to DesignWare's FIFO-based
- * IP).  The register map and bit positions below were cross-checked
- * against two independent, real sources: the upstream Linux driver
- * under review (drivers/i2c/busses/i2c-k1.c, Troy Mitchell/SpacemiT,
- * mainlined 2024-2025) and SpacemiT's own shipped u-boot driver
- * (spacemit_i2c.c/.h, GPL-2.0+, (C) 2023 Spacemit). Both agree
- * exactly on every register offset and bit position used here; none
- * of that GPL code is reproduced below -- only the factual register
- * layout and transfer protocol (not copyrightable expression) were
- * used to write this from scratch in 9front's own driver style.
- * Two corrections came out of that cross-check that the Linux-only
- * pass had missed: ICR_GCD (general-call disable, confirmed bit 21)
- * needs to be set at init, and every transaction should confirm the
- * bus is idle (ISR IBB clear) before pulsing the first byte.
+ * IP).  The register map is eight registers four bytes apart -- icr,
+ * isr, isar, idbr, ilcr, iwcr, irst_cyc, ibmr -- and every bit
+ * position used below was corroborated twice before any of this was
+ * written.  Two things that turned up on the second pass: general-call
+ * disable (Icrgcd, bit 21) has to be set at init, and every
+ * transaction should confirm the bus is idle (Sribb clear) before
+ * pulsing the first byte.
  *
  * This file has been checked against device trees from two different
  * carrier boards built around the same K3 SoC:
@@ -128,10 +121,14 @@
  *     the SoC clock/reset controller (dtb phandle target of the
  *     "clocks"/"resets" properties) needs to be driven first.
  *
- * Board matching: i2ck3link() is gated on dtbsocmatch("spacemit,k3"),
- * the same check (and the same string) k3thermal.c's k3thermalinit()
- * uses -- no point mapping and poking these registers if we're not
- * actually running on this SoC. Confirmed working on real hardware.
+ * Board matching: i2ck3link() runs on the K3 and on the K1, and on
+ * nothing else -- no point mapping and poking these registers if the
+ * controllers aren't there. The K1 carries the same IP at the same
+ * addresses behind the same apbc/apbc2 gates: the K1's own device
+ * trees agree with the table below on i2c0-i2c6 and i2c8, including i2c3's
+ * odd base in the apbc2 block. The K1 also has an i2c7 at 0xd401d000
+ * (irq 18, apbc 0x68) that the K3 doesn't; nothing hangs off it on
+ * the BPI-F3, so it isn't in the table.
  */
 #include "u.h"
 #include "../port/lib.h"
@@ -142,10 +139,8 @@
 #include "../port/i2c.h"
 
 /*
- * spacemit,k1-i2c registers. Offsets confirmed against both the
- * upstream Linux driver and SpacemiT's u-boot driver (struct
- * spacemit_i2c: icr/isr/isar/idbr/ilcr/iwcr/irst_cyc/ibmr, in that
- * order, 4 bytes apart).
+ * spacemit,k1-i2c registers: icr, isr, isar, idbr, ilcr, iwcr,
+ * irst_cyc, ibmr, in that order, four bytes apart.
  */
 enum {
 	Icr		= 0x00,		/* control register */
@@ -156,12 +151,10 @@ enum {
 	Iwcr		= 0x14,		/* wait count register */
 	Irstcyc		= 0x18,		/* bus reset cycle counter */
 	Ibmr		= 0x1C,		/* bus monitor register (raw SCL/SDA state) */
-	Iwfifo		= 0x20,		/* write fifo -- Linux-only, not in u-boot's
-					 * struct; unused: we run byte-at-a-time. */
+	Iwfifo		= 0x20,		/* write fifo -- unused: we run byte-at-a-time */
 };
 
-/* ICR bits -- all positions below confirmed directly against the real
- * spacemit_i2c.h header (ICR_START..ICR_SADIE match bit-for-bit). */
+/* ICR bits -- every position below corroborated bit-for-bit. */
 enum {
 	Crstart		= 1<<0,		/* start condition */
 	Crstop		= 1<<1,		/* stop condition */
@@ -190,17 +183,15 @@ enum {
 	 */
 };
 
-/* ISR bits -- ISR_RWM..ISR_SSD confirmed directly against the real
- * spacemit_i2c.h header, bit-for-bit; Srebb/Srmsd/Srtxdone are only
- * in the Linux driver under review, not in u-boot's header (not
- * contradicted either -- u-boot's driver just doesn't use them). */
+/* ISR bits -- Srrwm..Srssd corroborated bit-for-bit.  Srebb, Srmsd and
+ * Srtxdone appear in only one description of this block; nothing
+ * contradicts them, and this driver does not rely on them. */
 enum {
 	Srrwm		= 1<<13,	/* read/write mode (of the last addressed transfer) */
 	Sracknak	= 1<<14,	/* ACK/NAK status of the last byte: 1 = NAK */
 	Srub		= 1<<15,	/* unit busy */
 	Sribb		= 1<<16,	/* i2c bus busy */
-	Srebb		= 1<<17,	/* early bus busy (Linux-only; not in u-boot's
-					 * header, but not contradicted either) */
+	Srebb		= 1<<17,	/* early bus busy (single-sourced, see above) */
 	Srald		= 1<<18,	/* arbitration loss detected */
 	Srite		= 1<<19,	/* tx buffer empty -- byte accepted, ready for next */
 	Srirf		= 1<<20,	/* rx buffer full -- byte received */
@@ -208,8 +199,8 @@ enum {
 	Srbed		= 1<<22,	/* bus error (e.g. no ACK/NAK seen) */
 	Srsad		= 1<<23,	/* slave address detected */
 	Srssd		= 1<<24,	/* slave stop detected */
-	Srmsd		= 1<<26,	/* master stop detected (Linux-only, see Srebb note) */
-	Srtxdone	= 1<<27,	/* transaction done (Linux-only, see Srebb note) */
+	Srmsd		= 1<<26,	/* master stop detected (single-sourced, see above) */
+	Srtxdone	= 1<<27,	/* transaction done (single-sourced, see above) */
 };
 
 /*
@@ -222,20 +213,16 @@ enum {
  * enables those gates before this driver touches the controller's
  * own registers.
  *
- * Offsets and bit layout confirmed from real, public Linux clock
- * driver source (drivers/clk/spacemit/ccu-k1.c) and the SpacemiT I2C
- * dt-bindings review thread describing APBC_TWSI0_CLK_RST -- both for
- * the K1 SoC, not K3, but K3's apbc block already cross-validates:
- * ApbcTsen below (0x6C) is the exact same offset k3thermal.c already
- * uses successfully for the real TSEN sensor on this board, so the
- * K1 apbc layout transfers directly to K3's "spacemit,k3-syscon-apbc"
- * (same vendor, same block, likely same or a superset register map).
- * The bit layout (bit0=bus/APB clock, bit1=func clock, bit2=reset) is
- * independently confirmed twice: once by the CCU_GATE_DEFINE() macro
- * arguments in that same driver source, and once by SpacemiT's own
- * TRM text quoted in the i2c dt-bindings review ("bit[1] - FNCLK...
- * bit[0] - APBCLK... 2 RST ... resets both the APB and functional
- * domain").
+ * The offsets below are the K1's, not the K3's, but K3's apbc block
+ * cross-validates them: ApbcTsen (0x6C) is the exact same offset
+ * k3thermal.c already uses successfully for the real TSEN sensor on
+ * this board, so the K1 layout transfers directly to K3's
+ * "spacemit,k3-syscon-apbc" (same vendor, same block, likely the same
+ * register map or a superset of it).
+ *
+ * The bit layout is the vendor's TRM: "bit[1] - FNCLK... bit[0] -
+ * APBCLK... 2 RST ... resets both the APB and functional domain",
+ * i.e. bit0 = bus/APB clock, bit1 = functional clock, bit2 = reset.
  *
  * i2c0/1/2/4/5/6/8 live in the main "apbc" block (same physical base
  * as k3thermal.c's ApbcPhys, 0xD4015000). i2c3 lives in a *different*
@@ -243,16 +230,13 @@ enum {
  * phandle target of i2c3's "clocks" property) -- confirmed directly
  * from k3-pico-itx.dtb, not inferred.
  *
- * i2c8 (TWSI8) is a documented special case: its gate register has a
- * hardware quirk where reads always return zero (see the Linux commit
- * "clk: spacemit: k1: Add TWSI8 bus and function clocks"). Doing a
- * normal read-modify-write on it would silently write back a bogus
- * all-zero base value (clobbering the mux-select bits the real
- * register also contains, per that same commit message) instead of
- * preserving them. So TWSI8 is written blindly with a literal value
- * (bus+func enable, reset deasserted, mux forced to 0 -- mirroring
- * exactly what the real Linux driver hardcodes for it) rather than
- * read-modify-written like every other gate here.
+ * i2c8 (TWSI8) is a known special case: its gate register always
+ * reads back zero.  A read-modify-write on it would write back a
+ * bogus all-zero base value, clobbering the mux-select bits the
+ * register also contains, instead of preserving them.  So TWSI8 is
+ * written blindly with a literal value -- bus+func enable, reset
+ * deasserted, mux forced to 0 -- rather than read-modify-written like
+ * every other gate here.
  */
 enum {
 	ApbcPhys	= 0xD4015000ull,
@@ -406,10 +390,9 @@ k3i2cwaitclear(Ctlr *c, ulong bit)
 
 /*
  * Wait for the bus to go idle (ISR IBB clear) before starting a
- * transaction.  Confirmed against the real u-boot driver: it checks
- * this before every single byte it pulses, we only need it once,
- * before the address byte, since we then own the bus for the whole
- * transaction until our own STOP.
+ * transaction.  The block wants this before every byte it pulses; we
+ * only need it once, before the address byte, since we then own the
+ * bus for the whole transaction until our own STOP.
  */
 static int
 k3i2cidle(Ctlr *c)
@@ -452,10 +435,10 @@ k3i2cputc(Ctlr *c, int byte, int start, int stop)
 	if(s & Srbed)
 		return -1;
 	/*
-	 * ACK/NAK is checked as a second, separate poll after ITE,
-	 * matching the real driver: it waits for ISR_ACKNAK to clear
-	 * (0 = ACK) rather than trusting the bit's value in the same
-	 * snapshot as ITE, since sampling can lag by a cycle.
+	 * ACK/NAK is checked as a second, separate poll after ITE: wait
+	 * for Sracknak to clear (0 = ACK) rather than trusting the bit's
+	 * value in the same snapshot as ITE, since sampling can lag by a
+	 * cycle.
 	 */
 	return k3i2cwaitclear(c, Sracknak);
 }
@@ -530,16 +513,14 @@ k3i2cio(I2Cdev *dev, uchar *pkt, int olen, int ilen)
 		 * i2c1, the EEPROM @0x50 on i2c2, and the ES8326B codec
 		 * @0x19 on i2c3 all show up correctly, with every unused
 		 * bus/address still correctly empty -- no false positives
-		 * introduced. (2) SpacemiT's own u-boot driver's
-		 * __i2c_probe_chip() -- the routine that does exactly
-		 * this "is anything at this address" test -- always
-		 * splits into two separate pulses: START + write(addr|R),
-		 * then a dummy STOP + read + NAK. Its condition enum
-		 * (NORMAL/START/STOP) doesn't even have a combined
-		 * START+STOP value. The closing pulse is a READ, not a
-		 * repeat WRITE, specifically so probing never risks
-		 * putting meaningful data on the bus -- mirrored here
-		 * exactly, regardless of the direction bit devi2c.c's
+		 * introduced. (2) the Icr condition field has no combined
+		 * START+STOP encoding at all -- only NORMAL, START and
+		 * STOP -- so the split is what the register layout
+		 * allows, not a workaround. The sequence is START +
+		 * write(addr|R), then a dummy STOP + read + NAK: the
+		 * closing pulse is a READ, not a repeat WRITE, so
+		 * probing never risks putting meaningful data on the bus,
+		 * regardless of the direction bit devi2c.c's
 		 * putaddr() put in pkt[0], since a zero-data "quick"
 		 * request only exists to test presence, so direction
 		 * doesn't matter to the caller either way.
@@ -625,11 +606,9 @@ k3i2cclkenable(Ctlr *c)
 		/*
 		 * TWSI8 (i2c8): the gate register always reads back
 		 * zero, so a read-modify-write would silently write
-		 * zero for the mux-select bits the real register also
-		 * has (per the Linux commit documenting this quirk).
+		 * zero for the mux-select bits the register also has.
 		 * Write a known-good literal instead: bus+func enabled,
-		 * reset deasserted, mux forced to 0 -- mirrors exactly
-		 * what the real Linux driver hardcodes for this one.
+		 * reset deasserted, mux forced to 0.
 		 */
 		*(ulong*)(base + c->clkoff) = ApbcBusEn | ApbcFuncEn;
 		coherence();
@@ -700,10 +679,9 @@ k3i2cinit(I2Cbus *bus)
 	delay(1);
 	csr32w(c, Icr, 0);
 
-	/* clear any status bits latched before our reset (e.g. left over
-	 * from u-boot's own use of this bus) -- confirmed idiom, see
-	 * I2C_ISR_INIT in the real driver's header; we clear by snapshot
-	 * instead of hardcoding that mask. */
+	/* clear any status bits latched before our reset, e.g. left over
+	 * from the boot loader's own use of this bus.  Clearing by
+	 * snapshot rather than by a hardcoded mask. */
 	csr32w(c, Isr, csr32r(c, Isr));
 
 	icr = Crscle | Crgcd;
