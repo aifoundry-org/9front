@@ -100,30 +100,22 @@
  *      the vendor's own device tree says to map -- not a coin flip
  *      between two equally-plausible numbers.
  *
- *   3. Linux mainline, drivers/gpio/gpio-spacemit-k1.c (the real,
- *      in-tree "spacemit,k1-gpio"/"spacemit,k3-gpio" driver by Yixun
- *      Lan, K3 support added Jan 2026, commit da64eb51595b). This
- *      independently confirms two things found in isolation from the
- *      manual: (a) that K3 really does use a DIFFERENT register
- *      layout/bank-offset than the earlier K1 IP (the K1 offsets --
- *      GPLR 0x00, GPDR 0x0c, GPSR 0x18, ... GAPMASK 0x9c, all packed
- *      into one 0xa8-byte block covering all 4 banks together -- do
- *      NOT match this file, on purpose: they're the wrong SoC), and
- *      (b) a real, upstream fix (Jan 2026, Vivian Wang, "gpio:
- *      spacemit-k1: Use PDR for pin direction, not SDR/CDR") that
- *      the original K1 driver used the SDR/CDR pulse registers for
- *      direction control, which was WRONG: PDR is a plain R/W
- *      register and should be read-modify-written directly instead.
- *      This driver takes that fix as read from the start -- see the
- *      "not used by this driver" notes on Sdr/Cdr/Srer/Crer/Sfer/Cfer
- *      below -- and does plain RMW on Pdr/Rer/Fer only. I could NOT
- *      obtain the exact K3-specific register-offset table from that
- *      commit's body (lore.kernel.org and git.kernel.org both refuse
- *      automated fetches from here), so the actual offsets below
- *      come from source (1), not (3); source (3) is corroborating
- *      evidence that a K3-specific layout is expected to exist and
- *      that PDR-not-SDR/CDR is the right pattern to copy, not the
- *      origin of the numbers themselves.
+ *   3. Another implementation of this block for the same SoC family,
+ *      seen only from the outside.  It corroborates two things found
+ *      in isolation from the manual: (a) that K3 really does use a
+ *      DIFFERENT register layout/bank-offset than the earlier K1 IP
+ *      (the K1 offsets -- GPLR 0x00, GPDR 0x0c, GPSR 0x18, ... GAPMASK
+ *      0x9c, all packed into one 0xa8-byte block covering all 4 banks
+ *      together -- do NOT match this file, on purpose: they're the
+ *      wrong SoC), and (b) that pin direction belongs on PDR as a
+ *      plain read-modify-write and not on the SDR/CDR pulse
+ *      registers, which is a mistake that block's first driver made
+ *      and had to correct.  This driver does plain RMW on Pdr/Rer/Fer
+ *      only -- see the "not used by this driver" notes on
+ *      Sdr/Cdr/Srer/Crer/Sfer/Cfer below.  No K3-specific offset
+ *      table was obtainable from there, so every offset below comes
+ *      from source (1); this is corroboration that a K3-specific
+ *      layout is expected to exist, not the origin of the numbers.
  *
  *   4. K3 User Manual, chapter 17.4.2.3 "APBCLOCK" (page 624),
  *      "CLOCK/RESET CONTROL REGISTER FOR GPIO". Gives the real
@@ -298,9 +290,7 @@ enum {
 	 * is UNCONFIRMED -- see the big comment above) but NOT USED by
 	 * this driver: Pdr/Rer/Fer are documented plain R/W registers,
 	 * so a direct read-modify-write is both simpler and avoids the
-	 * exact bug the real Linux driver shipped and then had to fix
-	 * (see source 3 above, "Use PDR for pin direction, not
-	 * SDR/CDR").
+	 * direction-control mistake noted as source 3 above.
 	 */
 	Apmask		= 0x34,	/* AP-domain edge-irq mask, 1=unmasked	RW */
 	Cpmask		= 0x38,	/* CP/RCPU-domain edge-irq mask -- not touched, see header */
