@@ -2,7 +2,7 @@
  * Driver for the SpacemiT K3 USB host controller (xhci)
  * -- K3-CoM260 (BPI-SM10) variant --
  *
- * Brings up usb3@81400000 ("usb3_portb" in k3.dtsi), the DWC3
+ * Brings up usb3@81400000 ("usb3_portb" in the device tree), the DWC3
  * instance whose downstream USB-A ports are the onboard VL817 hub.
  * Confirmed by the board's compiled DTB, where the VL817's two USB
  * IDs (usb2109,2817 / usb2109,817) are declared as direct children of
@@ -11,12 +11,11 @@
  * usb2@c0a00000 ("usb2_host") is a separate, USB2-only DWC3 instance
  * wired to the M.2 Key-E slot (Bluetooth); this file does not touch it.
  *
- * Register offsets and init sequences below are ported from:
- *   - k3.dtsi / board DTB          - addresses, IRQs, apmu offsets
- *   - phy-k3-usb3.c (SpacemiT)     - combo-PHY mux + USB3 PHY bring-up
- *   - phy-k1-usb2.c (SpacemiT)     - USB2 PHY bring-up (same driver
- *                                    covers "k1-usb2-phy" and
- *                                    "k3-usb2-phy")
+ * Addresses, IRQs and apmu offsets come from the board's DTB.  The
+ * combo-PHY mux and the USB3 and USB2 PHY bring-up sequences are not
+ * documented in the manual; the same USB2 PHY answers to both the K1
+ * and K3 compatible strings, so what usbxhcibpif3.c established on the
+ * K1 applies here.
  *
  * Based on:
  *   9front usbxhciimx.c   - general driver structure on imx8 arch
