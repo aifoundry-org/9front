@@ -153,7 +153,7 @@ dtbufs(int i)
 /*
  * Match the root node's compatible list against a prefix.  The list is
  * NUL-separated strings, most specific first; "spacemit,k1" matches
- * both mainline "spacemit,k1" and the vendor tree's "spacemit,k1x",
+ * both "spacemit,k1" and the "spacemit,k1x" some device trees use,
  * and nothing on any other SoC.  K1-only drivers gate on this instead
  * of probing their MMIO, which faults (qemu) or wedges the bus (other
  * SoCs) when the device isn't there.
@@ -295,7 +295,7 @@ isufsnode(char *path)
 	if(base == nil)
 		return 0;
 	base++;
-	/* Confirmed against k3.dtsi: "ufshc: ufshc@0xc0e00000 { ... }". */
+	/* the K3 device tree names it "ufshc: ufshc@0xc0e00000". */
 	return strncmp(base, "ufshc@", 6) == 0;
 }
 
@@ -589,8 +589,8 @@ devtreeprop(char *path, char *key, void *val, int len)
 			return;
 		if(strcmp(key, "reg") == 0 && len >= 16){
 			/*
-			 * #address-cells=2 #size-cells=2. Confirmed against
-			 * k3.dtsi: "reg = <0x0 0xc0e00000 0x0 0x40000>" is a
+			 * #address-cells=2 #size-cells=2.  In the K3 device
+			 * tree "reg = <0x0 0xc0e00000 0x0 0x40000>" is a
 			 * single <addr size> pair (16 bytes) covering both
 			 * UFSHC and UFS_MNG (UFS_MNG sits at +0x1B00, well
 			 * inside the 0x40000 window) -- so mngbase stays 0
@@ -605,8 +605,8 @@ devtreeprop(char *path, char *key, void *val, int len)
 				u->mngsize = ((uvlong)beget4(p + 24) << 32) | beget4(p + 28);
 			}
 		} else if(strcmp(key, "interrupts") == 0 && len >= 4){
-			/* k3.dtsi: interrupts = <135 0x4>; -- first cell is
-			 * the aplic_int number, matches ch.7.1 exactly. */
+			/* interrupts = <135 0x4>; -- the first cell is the
+			 * aplic_int number, matching K3 UM ch.7.1 exactly. */
 			u->irq = beget4(p);
 		} else if(strcmp(key, "interrupts-extended") == 0 && len >= 8){
 			/* <phandle irq> — second cell is the source number,

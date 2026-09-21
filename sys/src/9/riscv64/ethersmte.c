@@ -551,8 +551,7 @@ ethproc(void *ved)
 		 * so only frames the MAC has just accepted flow into our
 		 * descriptors — no kexec-leftover FIFO residue.  Then drain
 		 * once for safety, W1C status, and finally arm DmaIntrena
-		 * for IRQ-driven completion.  This order matches Linux's
-		 * emac_configure_{tx,rx}.
+		 * for IRQ-driven completion.
 		 */
 		csr32w(c->regs, DmaCtrl,
 			DmaCtrlTxstart | DmaCtrlRxstart);
@@ -1024,8 +1023,8 @@ ethinit(Ether *edev)
 	 * held in reset), then after a generous delay re-enable the
 	 * clock and release reset, preserving unrelated clock-config
 	 * bits firmware may have set (1588/PTP, RGMII TXC source, etc).
-	 * Also enables PTP clock gate (BIT(15)) to match Linux probe,
-	 * so 1588 register block is reachable if we ever query it.
+	 * Bit 15 gates the PTP clock; enable it too so the 1588 register
+	 * block is reachable if we ever query it.
 	 */
 	{
 		u32int origv = csr32r(c->apmu, c->apmuctrloff);

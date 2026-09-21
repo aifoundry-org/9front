@@ -6,7 +6,7 @@
  *   9front usbxhcilx2k.c - general driver structure on lx2k arch
  *   usbxhcibpif3.c         - original SpacemiT K1 port (this file's ancestor)
  *
- * Add USB2.0 support" (applied to k3.dtsi):
+ * What the K3 device tree gives for this controller:
  *   usb2_host (dwc3):  reg 0xC0A00000, len 0x10000
  *   usb2_phy:          reg 0xC0A20000, len 0x200   (separate MMIO block,
  *                       unlike K1 where the USB2 PHY reset lived inside
@@ -27,7 +27,7 @@
 #include    "../port/usbxhci.h"
 
 enum {
-    /* SoC K3 base addresses -- VERIFIED against upstream k3.dtsi */
+    /* SoC K3 base addresses -- from the K3 device tree */
     Xhcibase    = 0xC0A00000,    /* usb2_host DWC3 controller */
     Xhcilen     = 0x10000,
     Usb2phybase = 0xC0A20000,    /* usb2_phy, separate block on K3 */
@@ -70,7 +70,7 @@ enum {
      */
     Usbsdrotwakeclr = 0x7C/4,
 
-    IrqUsb2     = 105,            /* usb2_host interrupt, per upstream DT */
+    IrqUsb2     = 105,            /* usb2_host interrupt, per the DT */
 };
 
 /* usb2phyinit - reset/bring-up for the standalone usb2_phy block */
