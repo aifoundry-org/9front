@@ -14,21 +14,16 @@
  * i2ck3faninit() does below, not a reason to touch this one, and
  * definitely not a reason to touch i2ck3.c.
  *
- * Register offsets and bit meanings below are cross-checked against
- * two independent real sources, the same standard this tree holds
- * i2ck3.c/k3thermal.c to:
- *   - mainline drivers/hwmon/lm63.c (LM63/LM64/LM96163 support,
- *     stable since 2004 -- the base register map).
- *   - the "hwmon: (lm63) Add Sensylink CTF2301 support" series
- *     (Troy Mitchell, linux-hwmon, v2), which adds the CTF2301
- *     variant on top of that same driver and confirms it's
- *     register-compatible.
+ * The CTF2301 is register-compatible with the LM63 family
+ * (LM63/LM64/LM96163), whose register map its original vendor
+ * documents publicly; the offsets and bit meanings below are that map.
+ *
  * UNCONFIRMED, unlike espik3fan.c: none of this has been run against
  * real CTF2301 hardware yet. espik3fan.c could say "confirmed working
  * end to end" because it was bring-up-tested on a real k3-pico-itx.
  * Nothing here has had that pass yet -- treat every "CONFIRMED" below
- * as "confirmed against the cited software sources", not "confirmed
- * on this board's hardware".
+ * as "matches the documented register map", not "confirmed on this
+ * board's hardware".
  *
  * DESIGN: same #P/fanNstatus + #P/fanNctl pair as espik3fan.c, and the
  * same shared fanparse()/fanfmt() grammar (fan.c). The one difference
@@ -38,7 +33,7 @@
  *     and runs its own closed loop to get there; fan0ctl on that
  *     driver is in "rpm".
  *   - The CTF2301's manual mode takes a raw 0-255 PWM duty
- *     (LM63_REG_PWM_VALUE) with no closed loop of its own attached
+ *     (RegPwmValue below) with no closed loop of its own attached
  *     to that mode -- it either free-runs the duty you give it, or
  *     (auto mode) walks its own 12-point temperature/PWM lookup
  *     table with no host involvement at all. There's no "target RPM"
@@ -49,8 +44,8 @@
  *     pwm block, so percent -- not a raw count -- is what makes the
  *     two pwm boards mean the same thing.
  *
- *   #P/fan0status  r   measured "<rpm> rpm", read straight from the
- *                      tachometer count registers (FAN_FROM_REG());
+ *   #P/fan0status  r   measured "<rpm> rpm", converted from the
+ *                      tachometer count registers (tachtorpm());
  *                      "0 rpm" for "not spinning or not connected" --
  *                      the chip doesn't distinguish those two the way
  *                      the EC's MEMMAP sentinels did, so neither do we.
@@ -93,9 +88,8 @@
  * written to REG_PWM_VALUE as a raw 0-255 value on the assumption the
  * chip is in (or defaults to) 8-bit high-resolution PWM mode. In the
  * chip's low-resolution mode, REG_PWM_VALUE is instead a duty scaled
- * by REG_PWM_FREQ (see lm63_pwm_to_reg() in the Linux series for the
- * formula) and a raw 0-255 write here would not mean what the comment
- * above says it means. This driver does not read REG_PWM_FREQ or
+ * by REG_PWM_FREQ, and a raw 0-255 write here would not mean what the
+ * comment above says it means. This driver does not read REG_PWM_FREQ or
  * touch REG_CONFIG_ENHANCED to force high-res mode -- confirm the
  * chip's power-on default on real hardware before trusting fan0ctl's
  * numbers.
@@ -111,7 +105,7 @@
 enum {
 	Ctf2301Addr		= 0x4c,		/* CONFIRMED, i2ck3.c cfg[] comment + the DT patch adding this node */
 
-	/* CONFIRMED against mainline drivers/hwmon/lm63.c */
+	/* the LM63-family register map */
 	RegConfig1		= 0x03,
 	RegConvrate		= 0x04,
 	RegConfigFan		= 0x4A,
@@ -129,9 +123,9 @@ enum {
 	ConfigFanManual		= 1<<5,		/* 1 = manual, REG_PWM_VALUE writable;
 						 * 0 = automatic, chip runs its own LUT */
 
-	PwmMax			= 255,		/* LM63_MAX_PWM, CONFIRMED */
+	PwmMax			= 255,		/* full duty */
 
-	TachStalled		= 0xFFFC,	/* FAN_FROM_REG() sentinel, CONFIRMED mainline lm63.c */
+	TachStalled		= 0xFFFC,	/* the count the tach reads when the fan is not turning */
 };
 /*
  * No FanIdx enum here unlike espik3fan.c: the CTF2301's registers
@@ -203,12 +197,11 @@ getfandev(void)
 	 * i2ck3faninit() runs), just because it's free insurance against
 	 * that ordering ever changing.
 	 *
-	 * Config1TachEn is forced on unconditionally here. The Linux
-	 * series only does this when the i2c client has no irq wired
-	 * (!client->irq) -- on hardware where ALERT/TACH is instead used
-	 * as an interrupt line to the host, forcing this bit would be
-	 * wrong. This driver has no equivalent "does this device have an
-	 * irq" concept to check, so it always forces it. Justified here
+	 * Config1TachEn is forced on unconditionally here. That is only
+	 * right where the pin is wired to a fan tachometer: on a board
+	 * using ALERT/TACH as an interrupt line to the host instead,
+	 * forcing this bit would be wrong. This driver has no "does this
+	 * device have an irq" concept to check, so it always forces it. Justified here
 	 * by the schematic net name (FAN_TACH, wired to the physical fan
 	 * connector, not to any host alert/interrupt net) but that's a
 	 * board-level inference, not something read back from the chip
@@ -229,7 +222,7 @@ getfandev(void)
 	return fandev;
 }
 
-/* FAN_FROM_REG(), CONFIRMED mainline lm63.c */
+/* the tach counts a fixed-frequency clock over two fan poles */
 static int
 tachtorpm(int reg)
 {
