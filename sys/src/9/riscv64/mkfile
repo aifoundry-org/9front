@@ -82,6 +82,7 @@ OBJ=\
 	espik3fan.$O\
 	usbxhcibpif3.$O\
 	usbxhcipicoitx.$O\
+	screenpicoitx.$O\
 	usbxhcicom260.$O\
 	sdscsi.$O\
 	sdufs.$O\
