@@ -20,6 +20,10 @@
  * reference version -- newscreen(), attachscreen(), flushmemscreen(),
  * the console (myscreenputs/screenwin), and the cursor.
  *
+ * Also shared with the K3 CoM260 IFX carrier board (screencom260.c) --
+ * this file is board-agnostic, it just hands off whichever board's
+ * already-live DP1 framebuffer to the generic memimage/devdraw layer.
+ *
  * Removed from the reference version, since none of it applies here:
  * dpuprobe() (guessing what firmware left running -- we already know,
  * we programmed it), the whole EDID/DDC/choosemode/screensize mode-
@@ -268,7 +272,7 @@ screeninit(void)
 	 */
 	fbaddr = dpuk3fbaddr();
 	if(fbaddr == 0){
-		print("screeninit: no K3 Pico-ITX framebuffer\n");
+		print("screeninit: no DP1 framebuffer\n");
 		return;
 	}
 
