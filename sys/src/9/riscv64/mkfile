@@ -84,6 +84,7 @@ OBJ=\
 	usbxhcipicoitx.$O\
 	screenpicoitx.$O\
 	usbxhcicom260.$O\
+	screencom260.$O\
 	sdscsi.$O\
 	sdufs.$O\
 	$CONF.root.$O\
