@@ -1690,6 +1690,216 @@ ufsuniproinit(Ctlr *c)
 }
 
 /*
+ * ufshostreset: full host-controller AND physical device/M-PHY reset,
+ * for runtime recovery when a command has persistently failed despite
+ * ufsrio()'s existing retry/resubmit logic. A prior version of this
+ * function only cycled HCE (HCI-layer only) and re-ran DME_LINKSTARTUP
+ * -- confirmed insufficient on hardware: HCS.DP never came back
+ * (HCS=0x8, device never re-detected). That's because the actual
+ * fault can live below the HCI, in the M-PHY/link/device itself, which
+ * a bare HCE toggle never touches.
+ *
+ * This version additionally asserts the physical device reset line
+ * (Mdeviceioctrl's HW_RST_N) and power-cycles the M-PHY explicitly
+ * before rebuilding -- mirroring what a genuine device-reset step
+ * needs to do at runtime (unlike ufsinit()'s cold-boot path, which
+ * can skip this explicit assert because HW_RST_N is already 0 by
+ * hardware default straight out of power-on-reset; at runtime the
+ * device has been live and RST_N deasserted, so it must be asserted
+ * explicitly here first) -- then re-runs the same M-PHY bring-up
+ * sequence ufsinit() already uses for cold boot, followed by the
+ * HCE cycle and DME_LINKSTARTUP relink.
+ *
+ * Deliberately does NOT reallocate c->utrl/c->cmddesc/c->scratchbuf
+ * (already allocated once at boot and still valid host-side memory;
+ * only device/link/PHY state needs rebuilding).
+ *
+ * Caller must NOT hold ilock(c) when calling. Dispatch is not
+ * serialized by a driver-wide lock (concurrent commands are allowed).
+ * NOTE: this function's OWN triggers include a genuine, still-
+ * UNRESOLVED concurrency-related failure mode (OCS never resolving
+ * from Ocsinvalid under real concurrent dispatch -- the "sentinel
+ * bug" chased at length elsewhere in this file). A dispatchbusy[]
+ * diagnostic added during that investigation confirmed via a real
+ * counter that every observed failure showed genuinely two commands
+ * in flight at the moment of dispatch, never just one -- ruling out
+ * an earlier thermal-throttling theory as the explanation for THIS
+ * failure mode. (A separate, already-resolved issue earlier in this
+ * driver's development, where sustained load without active cooling
+ * caused thermal throttling/shutdown, is real but distinct -- fixed
+ * by ensuring the fan runs in automatic mode; do not conflate the
+ * two.) Root cause of the concurrency failure itself was never found;
+ * this driver currently accepts it as a rare, cleanly-recovered
+ * failure (this function) rather than eliminating it via
+ * serialization, since the one serialization approach tried (a
+ * reentrant QLock) turned out to risk silent data corruption instead,
+ * which is worse -- see ufsintr()'s own comment. Concurrent callers
+ * reaching this function at nearly the same time is possible but
+ * expected to be rare, since it only runs on a genuine command
+ * failure, not on the normal path.
+ */
+static int ufsdevinit(Ctlr*);	/* forward decl: defined below, called from
+				 * ufshostreset() for full runtime recovery */
+
+static int
+ufshostreset(Ctlr *c)
+{
+	int i, try, ok;
+
+	print("ufs: host controller reset: attempting full device/M-PHY "
+		"reset + relink\n");
+
+	/*
+	 * Step 0: explicitly assert physical resets before rebuilding.
+	 * At runtime (unlike cold boot) the device/M-PHY are currently
+	 * live, so this assert step -- implicit at cold boot via the
+	 * power-on-reset default -- must be done explicitly here.
+	 */
+	MNG(c, Mdeviceioctrl) = 0;		/* assert device RST_N, disable REFCLK_OE */
+	for(i = 0; i < 5000; i++)
+		microdelay(1);			/* ~5ms */
+	MNG(c, Mphyrstctrl) = 0;		/* assert M-PHY resets */
+	for(i = 0; i < 5000; i++)
+		microdelay(1);
+	MNG(c, Mphyputrl) = 0;			/* power down M-PHY */
+	for(i = 0; i < 5000; i++)
+		microdelay(1);
+
+	/*
+	 * Step 1: rebuild -- same M-PHY power-up/reset-deassert/ATOP-cal
+	 * sequence ufsinit() uses for cold boot (see that function's
+	 * comment for the full rationale; reusing the same register
+	 * constants, not duplicating the explanation here).
+	 */
+	MNG(c, Mphyrstctrl) = MPHYrstn|MPHYrstncore;
+	MNG(c, Mphyputrl) = MphyPuAll;
+	for(i = 0; i < 1000; i++)
+		microdelay(1);
+	MNG(c, Mphyputrl) = MphyPuWithHb8Reset;
+	for(i = 0; i < 1000; i++)
+		microdelay(1);
+	MNG(c, Mphyputrl) = MphyPuAll;
+	for(i = 0; i < 1000; i++)
+		microdelay(1);
+
+	MNG(c, Mdeviceioctrl) = MdevReon|MdevHwRstN;
+	for(i = 0; i < 1000; i++)
+		microdelay(1);
+
+	for(i = 0; i < 10000 && !(MNG(c, Mphyputrl) & (1<<31)); i++)
+		microdelay(1);
+	if(!(MNG(c, Mphyputrl) & (1<<31)))
+		print("ufs: host reset: WARNING M-PHY PLL lock timeout, "
+			"MPHY_PU_CTRL=%#ux\n", MNG(c, Mphyputrl));
+
+	MNG(c, Mphybackdoor) = 1;
+	microdelay(20);
+	ATOP(c, 0xC1<<2) = 0;
+	ATOP(c, 0xC2<<2) = 0;
+	microdelay(20);
+	MNG(c, Mphybackdoor) = 0;
+	microdelay(20);
+
+	/* Step 2: HCE disable/re-enable cycle */
+	HCR(c, Rhce) = 0;
+	for(i = 0; i < 10000 && (HCR(c, Rhce) & 1) != 0; i++)
+		microdelay(100);
+	if((HCR(c, Rhce) & 1) != 0){
+		print("ufs: host reset: HCE never cleared, giving up\n");
+		return -1;
+	}
+	HCR(c, Rhce) = 1;
+	for(i = 0; i < 10000 && (HCR(c, Rhce) & 1) == 0; i++)
+		microdelay(100);
+	if((HCR(c, Rhce) & 1) == 0){
+		print("ufs: host reset: HCE never came ready\n");
+		return -1;
+	}
+
+	/*
+	 * Re-program the transfer request list base address registers.
+	 * Per K3 UM 9.7.5.1 (HCE): writing '1' to HCE while it reads '0'
+	 * triggers the host controller's own initialization procedure,
+	 * which resets the host UTP and UIC layers. UTRLBA/UTRLBAU are RW
+	 * registers the HCI does not remember across this reset --
+	 * ufsinit() only ever wrote them ONCE, at cold boot. Without
+	 * re-writing them here, the HCI has no valid idea where c->utrl[]
+	 * lives in physical memory after this HCE cycle, so every
+	 * subsequent doorbell ring fetches a transfer request descriptor
+	 * from a bogus address -- explaining exactly the observed
+	 * symptom: link/device appear to come back up fine (HCS=0xf), yet
+	 * every single command immediately fails
+	 * with the same OCS error, regardless of how thoroughly the
+	 * M-PHY/link/device-level init above succeeded. Matches Linux's
+	 * own ufshcd_make_hba_operational(), which re-writes these same
+	 * registers unconditionally every time it brings the HBA back to
+	 * an operational state, not just at first boot.
+	 */
+	HCR(c, Rutrlba) = (u32int)PADDR(c->utrl);
+	HCR(c, Rutrlbau) = (u32int)(PADDR(c->utrl)>>32);
+
+	if(ufsuniproinit(c) < 0)
+		print("ufs: host reset: WARNING ufsuniproinit failed, "
+			"continuing anyway\n");
+
+	/* Step 3: DME_LINKSTARTUP, single pass (recovery, not cold boot) */
+	ok = 0;
+	for(try = 0; try < 3 && !ok; try++){
+		if(try > 0){
+			(void)HCR(c, Ruecpa); (void)HCR(c, Ruecdl);
+			(void)HCR(c, Ruecn); (void)HCR(c, Ruect);
+			(void)HCR(c, Ruecdme);
+			for(i = 0; i < 5; i++)
+				microdelay(1000);
+		}
+		HCR(c, Ruiccmdarg1) = 0;
+		HCR(c, Ruiccmdarg2) = 0;
+		HCR(c, Ruiccmdarg3) = 0;
+		HCR(c, Ruiccmd) = 0x16;
+		for(i = 0; i < 10000 && (HCR(c, Ris) & ISuccs) == 0; i++)
+			microdelay(100);
+		if((HCR(c, Ris) & ISuccs) == 0)
+			continue;
+		HCR(c, Ris) = ISuccs;
+		ok = (HCR(c, Rhcs) & HCSdp) != 0;
+	}
+	if(!ok){
+		print("ufs: host reset: no device present after relink, "
+			"HCS=%#ux\n", HCR(c, Rhcs));
+		return -1;
+	}
+
+	for(i = 0; i < 10000 && (HCR(c, Rhcs) & HCSutrlrdy) == 0; i++)
+		microdelay(100);
+	HCR(c, Rutrlrsr) = 1;
+
+	/*
+	 * DME_LINKSTARTUP only brings the physical link up (HCS.DP=1);
+	 * the UFS device itself still needs its own device-level init
+	 * handshake (fDeviceInit) and power-mode negotiation before it
+	 * will actually process UTP transfer requests -- confirmed on
+	 * hardware: without this, every relink "succeeds" (HCS=0xf) but
+	 * every subsequent SCSI command immediately OCS-errors again in
+	 * an infinite loop. ufsdevinit() already implements this exact
+	 * sequence (it's the same function ufspnp() calls after ufsinit()
+	 * during cold boot) and ends by calling ufspwrmode() to switch to
+	 * the real operating gear.
+	 */
+	{
+		int devret = ufsdevinit(c);
+		if(devret < 0){
+			print("ufs: host reset: ufsdevinit failed (%d) after "
+				"relink -- device may still be unusable\n", devret);
+			return -1;
+		}
+	}
+
+	print("ufs: host controller reset: relink succeeded, HCS=%#ux\n",
+		HCR(c, Rhcs));
+	return 0;
+}
+
+/*
  * ufsdisabledevicetxlcc: this controller's line-control capability is
  * broken and has to be turned off for the link to be stable.  Read
  * PA_CONNECTEDTXDATALANES (0x1561) from the peer to find how many TX
