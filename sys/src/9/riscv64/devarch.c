@@ -285,13 +285,16 @@ archinit(void)
 	 * (screenpicoitx.c) checks the board itself, at its own very
 	 * first line, and does nothing at all if this isn't a K3
 	 * Pico-ITX -- the same pattern that reference kernel's own
-	 * dpuinit() uses for its own board check. screeninit() (screen.c)
-	 * is unconditional here for the same reason the reference
-	 * kernel's own screeninit() call is: it has its own "is there
-	 * really a framebuffer" check (dpuk3fbaddr() returning 0), so it
+	 * dpuinit() uses for its own board check. dpuk3com260()
+	 * (screencom260.c) does the same for the CoM260 IFX carrier; at
+	 * most one of the two does anything on a given boot. screeninit()
+	 * (screen.c) is unconditional here for the same reason the
+	 * reference kernel's own screeninit() call is: it has its own "is
+	 * there really a framebuffer" check (dpuk3fbaddr() returning 0), so it
 	 * doesn't need devarch.c to gate it either. See
 	 * k3-9front-display-investigation.md for the full history. */
 	dpuk3();
+	dpuk3com260();
 	screeninit();
 
 	/* Diagnostic-only calls, not needed for normal boot now that DP1
