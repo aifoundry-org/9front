@@ -18,6 +18,8 @@ dev
 #	bridge	log
 	ip	arp chandial ip ipv6 ipaux iproute netlog nullmedium pktmedium inferno
 	uart
+	draw	screen swcursor
+	mouse	screen swcursor
 	usb
 	i2c
 	gpiok3
