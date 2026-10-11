@@ -16,6 +16,11 @@ serial console logged to `~/p9/console.log`). Commands are sent to it with:
   - Quotes are single quotes: `'error|mk:'`. `"` is not special in rc.
   - No backslash escapes. Plan 9 `grep` alternation is plain `|`, not `\|`.
   - Redirect stderr with `>[2=1]`; the exit status is `$status`, not `$?`.
+  - `^` is rc's concatenation operator and `=` is the assignment token, so an
+    unquoted regex like `grep ^== file` is a **syntax error** that kills the
+    whole line (and the `MARK`). Quote every regex: `grep '^==' file`.
+  - From bash, pass the rc command via a quoted heredoc so the single quotes
+    survive: `cmd=$(cat <<'EOF' ... EOF); p9cmd "$cmd"`. Do not try `''` tricks.
 - **Never let a command block on stdin.** `grep`, `cat`, `sed`, etc. with no
   file argument read the console; the `MARK` line never prints and `p9cmd`
   sits there until the timeout. Always give a filename.
@@ -26,8 +31,17 @@ serial console logged to `~/p9/console.log`). Commands are sent to it with:
   - `tmux capture-pane -pt p9 | tail`
   - `tmux attach -t p9 -r` (read-only)
 - If a `p9cmd` is stuck on stdin, `tmux send-keys -t p9 C-d` sends EOF and
-  lets it finish. To interrupt a running command, send Delete:
-  `tmux send-keys -t p9 DC`.
+  lets it finish. To interrupt a running command send DEL (0x7f):
+  `tmux send-keys -t p9 BSpace`. **Never use `DC`** — it sends the escape
+  sequence `ESC [ 3 ~`, which lands in rc's input line and corrupts the next
+  command (`bad character in file name: './echo'`).
+- If a `p9cmd` is waiting on a `MARK` that will never come (e.g. the line was
+  a syntax error), release it by typing the mark yourself:
+  `tmux send-keys -t p9 -l 'echo MARK<id> reason'; tmux send-keys -t p9 Enter`.
+  The id is in `pgrep -af p9cmd` / the console log.
+- Long builds: run them in the background inside the VM
+  (`rc /tmp/build.rc >/tmp/build.log >[2=1] &`) and poll with short `p9cmd`s
+  (`tail -3 /tmp/build.log`), rather than one huge timeout.
 - Cross-compile for the target with `objtype=riscv64 mk ...` in `/sys/src`.
 
 ## C coding standard
