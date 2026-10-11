@@ -269,12 +269,18 @@ screeninit(void)
 	 * the time we get here, and the mode is the fixed 1920x1080@60
 	 * this whole codebase uses throughout (no EDID/mode negotiation
 	 * ported -- see this file's own header).
+	 *
+	 * dpuk3fbaddr() reserves on first call, so it can't be used as the
+	 * "is there a framebuffer" test: on a board neither driver claimed
+	 * (qemu, bpi-f3) it would reserve 8MB and hand devdraw a screen
+	 * that nothing scans out.  dpuk3fbkaddr() is nil until a board
+	 * driver has made the reservation, which is the test we want.
 	 */
-	fbaddr = dpuk3fbaddr();
-	if(fbaddr == 0){
+	if(dpuk3fbkaddr() == nil){
 		print("screeninit: no DP1 framebuffer\n");
 		return;
 	}
+	fbaddr = dpuk3fbaddr();
 
 	width = 1920;
 	height = 1080;
