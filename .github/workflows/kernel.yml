@@ -1,0 +1,89 @@
+name: Build and test RISC-V kernels
+
+on:
+  push:
+
+permissions:
+  contents: read
+
+jobs:
+  kernel:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    env:
+      ET_WORK: /tmp/p9maxion
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+
+      - name: Install host prerequisites
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y \
+            python3 git tar mawk qemu-system-x86 qemu-system-misc opensbi libslirp0
+          docker info > /dev/null
+          mkdir -p "$ET_WORK/ci"
+          {
+            git rev-parse HEAD
+            python3 --version
+            git --version
+            docker version
+            qemu-system-x86_64 --version
+            qemu-system-riscv64 --version
+          } | tee "$ET_WORK/ci/tool-versions.log"
+
+      - name: Host regression tests
+        run: |
+          python3 -m unittest discover -s et/tests -p 'test_*.py' -v \
+            2>&1 | tee "$ET_WORK/ci/host-tests.log"
+
+      - name: Start fresh builder
+        id: up
+        run: python3 et/scripts/run.py up 2>&1 | tee "$ET_WORK/ci/up.log"
+
+      - name: Full build
+        timeout-minutes: 150
+        run: python3 et/scripts/run.py build 2>&1 | tee "$ET_WORK/ci/build.log"
+
+      - name: Test generic and Maxion kernels
+        timeout-minutes: 15
+        run: python3 et/scripts/run.py test --generic 2>&1 | tee "$ET_WORK/ci/test.log"
+
+      - name: Stop builder and restore ownership
+        if: ${{ always() && steps.up.outcome != 'skipped' }}
+        run: python3 et/scripts/run.py down 2>&1 | tee "$ET_WORK/ci/down.log"
+
+      - name: Verify and annotate exports
+        working-directory: ${{ env.ET_WORK }}/rw/exports
+        run: |
+          sha256sum --check SHA256SUMS
+          test "$(cat source-commit)" = "$GITHUB_SHA"
+          cp "$ET_WORK/rw/full-build" full-build
+          cp "$ET_WORK/ci/tool-versions.log" tool-versions.txt
+
+      - name: Upload validated kernels
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: riscv64-kernels-${{ github.sha }}
+          path: ${{ env.ET_WORK }}/rw/exports/
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Upload diagnostic logs
+        if: ${{ always() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: riscv64-logs-${{ github.sha }}
+          path: |
+            ${{ env.ET_WORK }}/ci/*.log
+            ${{ env.ET_WORK }}/amd64/*.log
+            ${{ env.ET_WORK }}/riscv64/*.log
+            ${{ env.ET_WORK }}/rw/log/build.log
+            ${{ env.ET_WORK }}/rw/log/build.status
+            ${{ env.ET_WORK }}/state.json
+          if-no-files-found: warn
+          retention-days: 14

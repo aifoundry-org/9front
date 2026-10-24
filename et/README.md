@@ -86,6 +86,27 @@ and containers and restores workspace ownership. RISC-V tests use QEMU's
 Record the installed QEMU version with results. This is not hardware
 qualification or a kernel byte-reproducibility claim.
 
+## GitHub Actions
+
+`.github/workflows/kernel.yml` runs on every push, on a fresh Ubuntu 24.04
+hosted runner. It installs the host tools, uses the same pinned container,
+runs host tests, `up`, the full `build`, `test --generic`, and `down`.
+It never reuses build outputs from another run. Host packages may change;
+their versions are recorded, rather than claiming byte reproducibility.
+
+Successful runs attach `riscv64-kernels-<commit>` to the Actions run:
+`9maxion`, `9rv64`, their symbol ELFs, SHA-256 checksums, source/support
+identities, full-build identity and host tool versions. Download it from the
+run's **Artifacts** section. Diagnostic logs are uploaded separately even
+on failure, when available. Both artifacts have 14-day retention.
+
+Actions are pinned to full commit IDs, checkout credentials are not persisted,
+and repository permissions are read-only. Cleanup is attempted even on failure;
+an interrupted active guest build still causes `down` to refuse teardown rather
+than bypass its lock. The disposable hosted runner is removed after the job.
+No kernels are uploaded as validated artifacts unless build, tests, cleanup
+and export verification all succeed. No release or deployment is performed.
+
 ## Kernel-only iteration
 
 After a successful full build, the workspace's tools, libraries and userland

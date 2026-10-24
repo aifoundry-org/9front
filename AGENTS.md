@@ -37,6 +37,12 @@ from `test --generic`. Plain `test` checks only Maxion. Tests use QEMU generic
 firmware/virtual DT (`-bios default`), not hardware firmware; record QEMU's
 version. A test pass is not hardware qualification or byte reproducibility.
 
+`.github/workflows/kernel.yml` repeats the full build/test lifecycle on every
+push to a fresh hosted runner, uploading validated kernels and diagnostic logs
+as run artifacts. Keep action references pinned to full commits, permissions
+read-only and build state uncached. CI artifacts are not releases or deployment.
+Changing this workflow does not authorize pushing or triggering it remotely.
+
 After a successful full build, `build --kernel` reuses its tools/libraries and
 userland. After changing source/support: `down`, commit intended source, `up`,
 then rebuild. Use a full `build` after compiler, shared-library, header or
