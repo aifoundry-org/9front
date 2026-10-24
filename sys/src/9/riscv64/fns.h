@@ -345,6 +345,7 @@ int peekl(void *addr, u32int *dst, int numwords);
 
 /* archrv */
 void calibrate(void);
+void boardinit(void);
 uint mach2context(Mach *);
 void cpuinit(int);
 void clintipitohart(int hart);

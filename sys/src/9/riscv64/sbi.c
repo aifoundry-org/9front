@@ -141,10 +141,14 @@ sbiremotesfencevma(uvlong *hartmask, uvlong start, uvlong size)
 }
 
 void
-_sbisettimer(uvlong tm)
+sbisettimer(uvlong tm)
 {
-	USED(tm);
-	panic("sbisettimer");
+	vlong err;
+
+	/* SBI TIME, set_timer: RV64 passes the absolute deadline in a0. */
+	err = sbicall(0x54494d45, 0, tm, nil, nil);
+	if(err != 0)
+		panic("sbisettimer: SBI TIME error %lld", err);
 }
 
 void

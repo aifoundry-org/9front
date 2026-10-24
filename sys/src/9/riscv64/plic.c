@@ -31,6 +31,12 @@ enum {
 	 * is not worth the risk.
 	 */
 	Nplicsrc	= 221,
+
+	/* ET-SoC-1: shared priorities, but only hart 0 S-mode is ours. */
+	Maxionctxt	= 0,
+	Maxionnsrc	= 42,		/* source IDs 1..41 */
+	Maxionuart	= 15,
+	Maxionplicsize	= 0x02000000,
 };
 
 extern uintptr setsie(uintptr);
@@ -38,33 +44,57 @@ extern uintptr setsie(uintptr);
 static Lock vctllock;
 static Vctl *vctl[Nplicsrc];
 static Plic *plic;
+static uint plicctxt = Suctxt;
+static uint plicnsrc = Nplicsrc;
+
+static void
+plicmask(uint id)
+{
+	/* Shared Maxion priorities must survive spurious/storm masking. */
+	if(!maxion)
+		plic->prio[id] = 0;
+	plic->enabits[plicctxt][id/32] &= ~(1u << (id & 31));
+}
 
 void
 plicinit(void)
 {
 	uint i;
-	uintptr base;
+	uintptr base, size;
 
 	/*
 	 * soc.plic was set by socidentify() to the SoC's PLIC physical base.
-	 * vmap is currently identity, but call it so the type / API survives a
-	 * future MMU rework.
+	 * Keep the physical address separate from its kernel mapping.
 	 */
 	base = (uintptr)soc.plic;
 	if(base == 0)
 		panic("intrinit: soc.plic not set");
-	plic = (Plic*)vmap(base, PLICSIZE);
+	size = PLICSIZE;
+	if(maxion){
+		if(m->hartid != 0 || m->machno != 0 || conf.nmach != 1)
+			panic("plicinit: Maxion requires hart 0 only");
+		if(base != 0x10000000)
+			panic("plicinit: unexpected Maxion PLIC base %#p", base);
+		plicctxt = Maxionctxt;
+		plicnsrc = Maxionnsrc;
+		size = Maxionplicsize;
+	}
+	plic = (Plic*)vmap(base, size);
 	if(plic == nil)
 		panic("intrinit: plic vmap");
 	soc.plic = (uchar*)plic;
 
-	/* mask every source */
-	for(i = Firstirq; i < Nplicsrc; i++){
-		plic->prio[i] = 0;
-		plic->enabits[Suctxt][i/32] &= ~(1u << (i & 31));
-	}
-	plic->context[Suctxt].priothresh = 0;
+	/*
+	 * Mask only our context.  On Maxion preserve all shared priorities,
+	 * including UART1 until it is explicitly enabled, and never visit
+	 * another hart, SP/MM context, or a source above 41.
+	 */
+	for(i = Firstirq; i < plicnsrc; i++)
+		plicmask(i);
+	plic->context[plicctxt].priothresh = 0;
 	coherence();
+	if(maxion)
+		print("plic: Maxion S0 context 0, UART1 irq 15 only; shared priorities preserved\n");
 
 	/* enable S-mode external interrupts in SIE CSR */
 	setsie(Seie);
@@ -85,14 +115,27 @@ int
 plicirq(Ureg *ureg)
 {
 	Vctl *v;
-	uint id;
+	uint id, i;
 	int trips;
 
 	m->intr++;
 	trips = 64;
-	while((id = plic->context[Suctxt].claimcompl) != 0){
-		if(id < Nplicsrc){
+	while((id = plic->context[plicctxt].claimcompl) != 0){
+		if(maxion && id >= plicnsrc){
+			/*
+			 * Do not index or complete an invalid source.  Fail
+			 * closed using only implemented enables in our context.
+			 */
+			for(i = Firstirq; i < plicnsrc; i++)
+				plicmask(i);
+			coherence();
+			iprint("plic: invalid Maxion irq %ud, masking S0 enables\n", id);
+			break;
+		}
+		if(id < plicnsrc){
 			v = vctl[id];
+			if(maxion && id != Maxionuart)
+				v = nil;
 			if(v == nil){
 				/*
 				 * Spurious: a source asserted with no handler.  If
@@ -100,15 +143,14 @@ plicirq(Ureg *ureg)
 				 * forward it forever.  Mask the source so the cpu
 				 * can keep running and the report below is visible.
 				 */
-				plic->prio[id] = 0;
-				plic->enabits[Suctxt][id/32] &= ~(1u << (id & 31));
+				plicmask(id);
 				coherence();
 				iprint("plic: spurious irq %ud, masking\n", id);
 			} else
 				for(; v != nil; v = v->next)
 					v->f(ureg, v->a);
 		}
-		plic->context[Suctxt].claimcompl = id;
+		plic->context[plicctxt].claimcompl = id;
 		coherence();
 		if(--trips <= 0){
 			/*
@@ -117,9 +159,8 @@ plicirq(Ureg *ureg)
 			 * the rest of the system can keep running long enough to
 			 * print and reboot.
 			 */
-			if(id < Nplicsrc){
-				plic->prio[id] = 0;
-				plic->enabits[Suctxt][id/32] &= ~(1u << (id & 31));
+			if(id < plicnsrc){
+				plicmask(id);
 				coherence();
 			}
 			iprint("plic: irq %ud storm, masking source\n", id);
@@ -139,6 +180,12 @@ plicintrenable(int irq, void (*f)(Ureg*, void*), void *a, int tbdf, char *name)
 {
 	Vctl *v;
 
+	/* Reject before the PCI path: Maxion mailbox space is not ECAM. */
+	if(maxion && (tbdf != BUSUNKNOWN || irq != Maxionuart)){
+		print("plic: refusing Maxion irq %d tbdf %#ux for %s\n", irq, tbdf, name);
+		return;
+	}
+
 	if(BUSTYPE(tbdf) == BusPCI){
 		pciintrenable(tbdf, f, a);
 		return;
@@ -146,7 +193,7 @@ plicintrenable(int irq, void (*f)(Ureg*, void*), void *a, int tbdf, char *name)
 
 	if(tbdf != BUSUNKNOWN)
 		return;
-	if((uint)irq < Firstirq || (uint)irq >= Nplicsrc)
+	if((uint)irq < Firstirq || (uint)irq >= plicnsrc)
 		return;
 
 	v = mallocz(sizeof(Vctl), 1);
@@ -166,14 +213,37 @@ plicintrenable(int irq, void (*f)(Ureg*, void*), void *a, int tbdf, char *name)
 	vctl[irq] = v;
 
 	plic->prio[irq] = Defprio;
-	plic->enabits[Suctxt][irq/32] |= 1u << (irq & 31);
+	plic->enabits[plicctxt][irq/32] |= 1u << (irq & 31);
 	coherence();
 	unlock(&vctllock);
 }
 
 void
-plicintrdisable(int, void (*f)(Ureg*, void*), void *a, int tbdf, char*)
+plicintrdisable(int irq, void (*f)(Ureg*, void*), void *a, int tbdf, char*)
 {
+	Vctl *v, **l;
+	Mpl pl;
+
+	if(maxion){
+		if(tbdf != BUSUNKNOWN || irq != Maxionuart)
+			return;
+		/* UP: exclude dispatch while unlinking and freeing a handler. */
+		pl = splhi();
+		lock(&vctllock);
+		for(l = &vctl[irq]; (v = *l) != nil; l = &v->next)
+			if(v->f == f && v->a == a){
+				*l = v->next;
+				break;
+			}
+		if(vctl[irq] == nil){
+			plicmask(irq);
+			coherence();
+		}
+		unlock(&vctllock);
+		free(v);
+		splx(pl);
+		return;
+	}
 	if(BUSTYPE(tbdf) == BusPCI){
 		pciintrdisable(tbdf, f, a);
 		return;

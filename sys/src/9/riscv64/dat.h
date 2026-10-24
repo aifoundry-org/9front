@@ -161,6 +161,7 @@ struct Clint {
 struct MMMU
 {
 	PTE*	mmutop;		/* first level user page table */
+	PTE*	mmuroot;	/* hardware root; extra Sv48 level on Maxion */
 };
 
 /*
@@ -247,6 +248,8 @@ struct
 #define MACHP(n)	((Mach*)MACHADDR(n))
 
 extern uintptr ktzero, vdram;		/* runtime memory layout; set in relocfixup */
+extern uintptr klimit;
+extern int maxion;			/* ET-SoC-1, initial uniprocessor port */
 
 extern register Mach* m;			/* R7 */
 extern register Proc* up;			/* R6 */

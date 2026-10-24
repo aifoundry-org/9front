@@ -442,7 +442,6 @@ static void
 i8250kick(Uart* uart)
 {
 	Ctlr *ctlr = uart->regs;
-	int i;
 
 	if(ctlr->io == nil){
 		/* Fall back to SBI legacy putchar for the boot placeholder
@@ -452,7 +451,7 @@ i8250kick(Uart* uart)
 		return;
 	}
 	while(uart->op < uart->oe || uartstageoutput(uart) > 0){
-		for(i = 0; !(csr8r(ctlr, Lsr) & Thre) && i < 1000; i++)
+		while(!(csr8r(ctlr, Lsr) & Thre))
 			;
 		csr8o(ctlr, Thr, (uchar)*uart->op++);
 	}
@@ -589,7 +588,7 @@ i8250enable(Uart* uart, int ie)
 	 */
 	csr8o(ctlr, Fcr, FIFOena);
 	csr8o(ctlr, Fcr, FIFOena|FIFOrclr|FIFOtclr);
-	csr8o(ctlr, Fcr, ctlr->ispxa ? Pxafcr : 0);
+	csr8o(ctlr, Fcr, ctlr->ispxa ? Pxafcr : (maxion? FIFOena: 0));
 
 	/* Drain any stale state. */
 	csr8r(ctlr, Lsr);
@@ -642,7 +641,7 @@ i8250enable(Uart* uart, int ie)
 			/* No IRQ from the DTB — fall back to 100-tick clock callback polling */
 			ctlr->poll = 1;
 			pollctlr = ctlr;
-			addclock0link(i8250poll, 100);
+			addclock0link(i8250poll, maxion? 10: 100);
 			ctlr->iena = 1;
 			print("uarti8250: input polling enabled on %s\n", uart->name);
 		}
@@ -846,13 +845,12 @@ static void
 i8250putc(Uart *uart, int c)
 {
 	Ctlr *ctlr = uart->regs;
-	int i;
 
 	if(ctlr->io == nil){
 		sbiputc((uchar)c);
 		return;
 	}
-	for(i = 0; !(csr8r(ctlr, Lsr) & Thre) && i < 1000; i++)
+	while(!(csr8r(ctlr, Lsr) & Thre))
 		;
 	csr8o(ctlr, Thr, (uchar)c);
 }

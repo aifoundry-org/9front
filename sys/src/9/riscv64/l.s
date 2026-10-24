@@ -536,6 +536,7 @@ TEXT cboinval(SB), 1, $-4			/* void cboinval(uintptr) */
 
 // laterz
 TEXT	cacheiinvse(SB), 1, $-4
+	FENCE_I
 	RET
 
 TEXT clockenable(SB), 1, $-4
