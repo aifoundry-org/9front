@@ -5,9 +5,21 @@
 #include "fns.h"
 
 /*
- * Board device setup for the SpacemiT K1/K3 boards and QEMU virt, run
- * from archinit.  A SoC directory with other devices supplies its own.
+ * Board hooks for the SpacemiT K1/K3 boards and QEMU virt.  A SoC
+ * directory (../ainekko) supplies its own: boardearly runs after the
+ * DT and bootargs are parsed, before meminit; boarddtprop sees every
+ * DT property; boardinit runs from archinit.
  */
+void
+boardearly(void)
+{
+}
+
+void
+boarddtprop(char*, char*, uchar*, int)
+{
+}
+
 void
 boardinit(void)
 {

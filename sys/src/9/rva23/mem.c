@@ -57,10 +57,11 @@ meminit(void)
 
 	// leave a big hole after end, for now. We need it for this and that.
 	conf.mem[0].base = ROUND(PGROUND((uintptr)end - KTZERO) + (uintptr)(VDRAM+0x2fffff), 0x200000);
-	conf.mem[0].limit = l;
-
 	if(l > KLIMIT)
 		l = KLIMIT;
+	conf.mem[0].limit = l;
+	if(l <= conf.mem[0].base)
+		panic("meminit: kernel does not fit in RAM");
 	sv57 = (void *)PGROUND((uintptr)end);
 	sv48 = (void *)PGROUND((uintptr)sv57 + 1);
 	sv39 = (void *)PGROUND((uintptr)sv48 + 1);

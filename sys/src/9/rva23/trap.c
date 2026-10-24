@@ -622,7 +622,7 @@ faultriscv64(Ureg* ureg, Cause *)
 	/* page fault on a kernel address is never okay. */
 	if (0)while (block != 1024);
 	if (TrapSpew)print("fault %p read pc %p %d < uzero(%p) %d\n", addr, ureg->pc ,read, UZERO, addr < UZERO);
-	if(addr < UZERO || fault(addr, ureg->pc, read) < 0)
+	if(addr < UZERO || addr >= USTKTOP || fault(addr, ureg->pc, read) < 0)
 		badpagefault(ureg, addr, read, insyscall);
 	if (0) if (up->pid == 5) soft();
 	up->insyscall = insyscall;
