@@ -468,7 +468,7 @@ Proto chap = {
 .read=	chapread,
 .close=	chapclose,
 .addkey= replacekey,
-.keyprompt= "!password?"
+.keyprompt= "user? !password?"
 };
 
 Proto mschap = {
