@@ -13,6 +13,7 @@
 //#include "rebootcode.i"
 
 Conf conf;
+int maxion;
 
 int
 isaconfig(char *, int, ISAConf *)
@@ -92,6 +93,10 @@ confinit(void)
 		conf.nmach = MAXMACH;
 	if(conf.nmach < 1)
 		conf.nmach = 1;
+	if(maxion && conf.nmach != 1){
+		print("maxion: uniprocessor bring-up; parking other harts\n");
+		conf.nmach = 1;
+	}
 
 	if(p = getconf("service")){
 		if(strcmp(p, "cpu") == 0)
@@ -187,7 +192,10 @@ mpinit(void)
 void
 cpuidprint(void)
 {
-	iprint("cpu%d: 1000MHz QEMU\n", m->machno);
+	if(maxion)
+		iprint("cpu%d: ET-SoC-1 Maxion, SBI timer, uniprocessor\n", m->machno);
+	else
+		iprint("cpu%d: 1000MHz QEMU\n", m->machno);
 }
 
 static void
@@ -282,6 +290,9 @@ main(u64int hartid, uintptr dtb)
 	uartconsinit();
 	quotefmtinstall();
 	bootargsinit();
+	maxion = dtbsocmatch("esperanto,et-soc-1") || getconf("*maxion") != nil;
+	if(maxion)
+		print("maxion: physical entry %#p, embedded RAM-root kernel\n", (uintptr)_start);
 	meminit();
 	print("meminit done\n");
 	confinit();
@@ -327,7 +338,7 @@ main(u64int hartid, uintptr dtb)
 	}
 	mpinit();
 	u64int tm = rdtime();
-	u64int cm = rdstimecmp();
+	u64int cm = maxion? m->timecmp: rdstimecmp();
 	print("tm %#llx cm %#llx\n", tm, cm);
 	mmu1init();
 	cpuinit(0);

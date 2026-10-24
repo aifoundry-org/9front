@@ -62,12 +62,13 @@
 #define	KZERO		(0x0000000000000000ULL)	/* 0x00000000 - kernel address space */
 #define KLIMIT 		klimit
 //#define KLIMIT			(0x800000000000ULL) // half of the hole.
-#define iskern(v) (((uintptr)v)<=UZERO)
+#define iskern(v) iskaddr(v)
 /*
  * the kernel is identity-mapped low memory with user space above it,
  * so the usual "above KZERO" test for kernel addresses is inverted.
  */
-#define iskaddr(a) (((uintptr)(a)) < UZERO)
+#define iskaddr(a) ((!maxion && (uintptr)(a) < UZERO) || \
+	((uintptr)(a) >= VDRAM && (uintptr)(a) < KLIMIT))
 
 /* shared kernel page table for TTBR1 */
 #define L1		(L1TOP-L1SIZE)

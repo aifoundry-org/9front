@@ -13,6 +13,7 @@ enum {
 // kmax will be computed dynamically in future; for now it is
 // UZERO.
 uintptr klimit = UZERO;
+u64int mmumode;
 
 void
 mmu1init(void)
@@ -23,13 +24,21 @@ mmu1init(void)
 		panic("mmu1init: no memory for mmutop");
 	memset(m->mmutop, 0, L1TOPSIZE);
 	memmove(m->mmutop, sv39, L1TOPSIZE);
+	m->mmuroot = m->mmutop;
+	if(maxion){
+		m->mmuroot = mallocalign(BY2PG, BY2PG, 0, 0);
+		if(m->mmuroot == nil)
+			panic("mmu1init: no memory for Sv48 root");
+		memmove(m->mmuroot, sv48, BY2PG);
+		m->mmuroot[0] = PA2PTE((uintptr)m->mmutop) | PTEVALID;
+	}
 	mmuswitch(nil);
 }
 
 uintptr
 paddr(void *va)
 {
-	if((uintptr)va < KLIMIT)
+	if((!maxion || (uintptr)va >= VDRAM) && (uintptr)va < KLIMIT)
 		return (uintptr)va;
 	panic("paddr: va=%#p pc=%#p", va, getcallerpc(&va));
 }
@@ -38,7 +47,7 @@ uintptr
 cankaddr(uintptr pa)
 {
 //	print("cankaddr %p, -KZ %p\n", pa,(uintptr)-KZERO );
-	if(pa < (uintptr)KLIMIT)
+	if((!maxion || pa >= VDRAM) && pa < KLIMIT)
 		return KLIMIT - pa;
 	return 0;
 }
@@ -46,7 +55,7 @@ cankaddr(uintptr pa)
 void*
 kaddr(uintptr pa)
 {
-	if(pa < (uintptr)KLIMIT)
+	if((!maxion || pa >= VDRAM) && pa < KLIMIT)
 		return (void*)(pa);
 	panic("kaddr: pa=%#p pc=%#p", pa, getcallerpc(&pa));
 }
@@ -98,7 +107,6 @@ l1map(uintptr va, uintptr pa, uintptr pe, uintptr attr)
 }
 
 u64int *sv57, *sv48, *sv39, *pGiB;
-u64int mmumode;
 
 /*
  * Carve one page-table page out of the front of the physical pool at boot,
@@ -112,9 +120,82 @@ bootptpage(void)
 
 	pa = conf.mem[0].base;
 	assert((pa & (BY2PG-1)) == 0);
+	if(pa + BY2PG > conf.mem[0].limit)
+		panic("bootptpage: out of RAM");
 	conf.mem[0].base += BY2PG;
 	memset((void*)pa, 0, BY2PG);
 	return (u64int*)pa;
+}
+
+/* Hardware Sv48 indices, unlike PTLX's three-level user-subtree indices. */
+static void
+maxionleaf(uintptr pa, int level, uintptr attr)
+{
+	u64int *table, pte;
+	int l, x;
+
+	table = sv48;
+	for(l = 3; l > level; l--){
+		x = (pa >> (PGSHIFT + l*PTSHIFT)) & 511;
+		pte = table[x];
+		if(pte == 0){
+			pte = PA2PTE((uintptr)bootptpage()) | PTEVALID;
+			table[x] = pte;
+		}
+		if(pte & (PTEREAD|PTEWRITE|PTEEXEC))
+			panic("maxionleaf: overlapping mapping");
+		table = (u64int*)PTE2PA(pte);
+	}
+	x = (pa >> (PGSHIFT + level*PTSHIFT)) & 511;
+	table[x] = PA2PTE(pa) | attr;
+}
+
+/*
+ * Keep the existing 64..128 GiB user ABI and three-level user tables.
+ * Each Mach owns the low sv39 table; high kernel mappings are shared.
+ * Map only the owned RAM, PLIC and console UART.  The DT is parsed in Bare
+ * mode; its firmware-owned relocated copy need not remain mapped.
+ */
+static void
+maxionmap(uintptr limit)
+{
+	uintptr pa, base, attr, satp;
+	volatile uvlong *probe;
+	uvlong saved;
+	Dtbuart *du;
+	int i;
+
+	sv48[0] = PA2PTE((uintptr)sv39) | PTEVALID;
+	attr = PTEVALID|PTEREAD|PTEWRITE|PTEACCESSED|PTEDIRTY;
+	maxionleaf(VDRAM, 2, attr|PTEEXEC);
+	base = (uintptr)soc.plic;
+	if(base != 0){
+		if((base & (PGLSZ(1)-1)) != 0)
+			panic("maxion: unaligned PLIC");
+		for(pa = base; pa < base + 32*MiB; pa += PGLSZ(1))
+			maxionleaf(pa, 1, attr);
+	}
+	for(i = 0; i < dtbnuart(); i++){
+		du = dtbuart(i);
+		if(du != nil && du->ok && du->isconsole)
+			maxionleaf(du->base & ~(BY2PG-1), 0, attr);
+	}
+	mmumode = 9ULL<<60;
+	satp = ((uintptr)sv48>>12) | mmumode;
+	coherence();
+	wsatp(satp);
+	if(rsatp() != satp)
+		panic("maxion: Sv48 root rejected; refusing userspace");
+	probe = (volatile uvlong*)(limit - BY2PG);
+	saved = *probe;
+	*probe = 0x4d4158494f4e3950ULL;
+	coherence();
+	if(*probe != 0x4d4158494f4e3950ULL)
+		panic("maxion: top-of-RAM mapping failed");
+	*probe = saved;
+	coherence();
+	print("maxion: Sv48 active, satp %#p, RAM %#p..%#p\n", satp, VDRAM, limit);
+	print("maxion: top-of-RAM write/read/restore passed at %#p\n", (uintptr)probe);
 }
 
 void
@@ -123,6 +204,11 @@ kmapram(uintptr, uintptr limit)
 	u64int i, j, n, pa;
 	u64int *l2;
 
+	if(maxion){
+		maxionmap(limit);
+		return;
+	}
+	mmumode = 8ULL<<60;
 	sv57[0] = ((((u64int)sv48)>>2)) | 1;
 	if (Spew)print("%p is %p\n", sv57, sv57[0]);
 	sv48[0] = ((((u64int)sv39)>>2)) | 1;
@@ -169,7 +255,7 @@ kmapram(uintptr, uintptr limit)
 		if (Spew)print("sv39:%p is %p\n", &sv39[i], sv39[i]);
 	}
 
-	wsatp(((uintptr)sv39>>12)|(8ULL<<60));
+	wsatp(((uintptr)sv39>>12)|mmumode);
 
 }
 
@@ -197,9 +283,29 @@ mmukmap(uintptr va, uintptr pa, usize size)
 }
 
 void*
-vmap(uvlong pa, vlong)
+vmap(uvlong pa, vlong size)
 {
-	return (void *)pa;
+	Dtbuart *du;
+	uvlong e, base;
+	int i;
+
+	if(!maxion)
+		return (void*)pa;
+	if(size <= 0 || pa + size < pa)
+		return nil;
+	e = pa + size;
+	if(pa >= VDRAM && e <= KLIMIT)
+		return (void*)pa;
+	base = (uintptr)soc.plic;
+	if(base != 0 && pa >= base && e <= base + 32*MiB)
+		return (void*)pa;
+	for(i = 0; i < dtbnuart(); i++){
+		du = dtbuart(i);
+		if(du != nil && du->ok && du->isconsole &&
+		   pa >= du->base && e <= du->base + BY2PG)
+			return (void*)pa;
+	}
+	return nil;
 }
 
 void
@@ -242,6 +348,9 @@ mmuuncache(void *v, usize size)
 	u64int *l2, *l3, l2e;
 	int j, l1x, l2x;
 
+	/* No Svpbmt or cache-block instructions; DMA allocation fails closed. */
+	if(maxion)
+		return nil;
 	va = (uintptr)v;
 	e = va + size;
 	if((va & (BY2PG-1)) != 0 || size == 0)
@@ -307,6 +416,8 @@ mmuwalk(uintptr va, int level)
 	uintptr *table, pte;
 	Page *pg;
 	int i, x;
+	if(va < UZERO || va >= USTKTOP)
+		panic("mmuwalk: non-user address %#p", va);
 // In future, PTLEVELS will be dynamic.
 	if (0)print("mmuwalk: va %p, walk to level %d starting from %d,", va, level, PTLEVELS);
 	x = vpn(va, PTLEVELS-1);
@@ -512,7 +623,7 @@ if (0)	print("p %p for setting tbr?\n", p);
 	if(p == nil){
 		// maybe flush the user mode entries? probably
 		if(Spew)print("mmuswitch p is nil what to do?\n");
-		wsatp(((uintptr)m->mmutop>>12)|(8ULL<<60));
+		wsatp(((uintptr)m->mmuroot>>12)|mmumode);
 		return;
 	}
 
@@ -535,7 +646,7 @@ if (0)	print("allocasid(p) %d\n", allocasid(p));
 if (0)		print("Set mmutop[%llxx] to %llx\n", PTLX(va, PTLEVELS-1), pte );
 		m->mmutop[PTLX(va, PTLEVELS-1)] = pte;
 	}
-	wsatp(((uintptr)m->mmutop>>12)|(8ULL<<60));
+	wsatp(((uintptr)m->mmuroot>>12)|mmumode);
 }
 
 void

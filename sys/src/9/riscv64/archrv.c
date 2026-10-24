@@ -241,6 +241,13 @@ nol2cache(void)
 void
 l2init(void)
 {
+	if(maxion){
+		soc.havecbo = 0;
+		if(m->machno == 0)
+			print("l2init: Maxion has no Zicbom; fences only, not DMA-safe\n");
+		return;
+	}
+
 	/*
 	 * this kernel targets the RVA23 profile, which mandates Zicbom
 	 * (cache-block management: cbo.clean/cbo.flush/cbo.inval) as a
@@ -342,9 +349,8 @@ USED(len);
  * which need physical addresses), so no translation is needed here.
  *
  * if we don't have Zicbom, we can't do anything useful per-line, so just
- * make sure earlier stores are visible (coherence()) and return; this is
- * the right thing on (risc-v conforming) coherent-dma systems, which is
- * all we currently support.
+ * order earlier stores (coherence()) and return.  This does not clean or
+ * invalidate caches, and does not make Maxion's noncoherent DMA safe.
  */
 static void
 cacheop(void (*op)(void *), void *vaddr, int len)
@@ -564,11 +570,10 @@ clockoff(void)
  *  set next timer interrupt for time next, in fastticks (clint ticks).
  *  as a special case, next==0 requests a small interval.
  *
- * On RISC-V the supervisor timer pending bit (sip.STIP) is asserted by hardware
- * whenever mtime ≥ stimecmp, and can only be cleared by advancing stimecmp
- * past mtime: csr writes to sip have no effect on it. So we must unconditionally
- * write stimecmp to a strictly-future deadline; otherwise the trap returns,
- * STIP is still set, and we immediately re-trap.
+ * With Sstc the supervisor timer pending bit (sip.STIP) follows stimecmp;
+ * on Maxion firmware manages it through SBI TIME instead.  In either case
+ * program a strictly-future deadline so the pending interrupt is cleared
+ * before returning from the trap.
  */
 void
 timerset(uvlong next)
@@ -592,7 +597,10 @@ timerset(uvlong next)
 			fticks = sys->clintsperhz;
 	}
 	m->timecmp = now + (uvlong)fticks;	/* published for idlewake() */
-	wrstimecmp(m->timecmp);
+	if(maxion)
+		sbisettimer(m->timecmp);
+	else
+		wrstimecmp(m->timecmp);
 	clockenable();
 	splx(pl);
 }
@@ -611,7 +619,11 @@ clocksanity(void)
 
 	omtime = now = rdtime();
 	clockenable();
-	wrstimecmp(omtime + 20*(timebase/1000000));
+	if(maxion){
+		m->timecmp = omtime + 20*(timebase/1000000);
+		sbisettimer(m->timecmp);
+	}else
+		wrstimecmp(omtime + 20*(timebase/1000000));
 
 	for (i = 0; i < 1000 && (now = rdtime()) == omtime; i++)
 		delay(1);
@@ -687,7 +699,7 @@ idlenowakehands(void)
 	coherence();		/* make our changes visible to other harts */
 	if ((getsie() & Superie) == 0)
 		panic("sie csr has no S intrs enabled: %#p\n", getsie());
-	while (((ip = getsip()) & Superie) == 0)
+	while (((ip = getsip() & getsie()) & Superie) == 0)
 		halt();
 	coherence();		/* make other harts' changes visible to us */
 	/* service any pending external interrupt directly; irq() tolerates

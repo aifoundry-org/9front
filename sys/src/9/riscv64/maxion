@@ -1,0 +1,27 @@
+dev
+	arch
+	root
+	cons
+	swap
+	env
+	pipe
+	proc
+	mnt
+	srv
+	shr
+	dup
+	cap
+	uart
+
+misc
+	uarti8250
+	maxionboard
+
+port
+	int cpuserver = 0;
+
+bootdir
+	/$objtype/bin/paqfs
+	/$objtype/bin/rc
+	bootfs.paq
+	boot

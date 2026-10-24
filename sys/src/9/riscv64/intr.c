@@ -5,6 +5,7 @@
 #include "fns.h"
 #include "io.h"
 #include "ureg.h"
+#include "riscv64.h"
 
 /*
  * bootargsinit/socidentify figure out whether the external interrupt controller is
@@ -42,7 +43,13 @@ nonedisable(int, void (*)(Ureg*, void*), void*, int, char*)
 void
 intrinit(void)
 {
-	if(soc.plic != nil){
+	if(maxion && getconf("*uartpoll") != nil){
+		clrsie(Seie);
+		irqfn = noneirq;
+		enablefn = noneenable;
+		disablefn = nonedisable;
+		print("maxion: polling console; external controller untouched\n");
+	}else if(soc.plic != nil){
 		irqfn = plicirq;
 		enablefn = plicintrenable;
 		disablefn = plicintrdisable;
