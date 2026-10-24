@@ -1,5 +1,5 @@
 CONF=rv64
-CONFLIST=rv64 bpif3
+CONFLIST=rv64 bpif3 maxion
 
 # loadaddr is the link address (-T), but the kernel runs in place
 # wherever kexec/booti put it, fixing up its data pointers from the
@@ -50,7 +50,28 @@ PORT=\
 	xalloc.$O\
 	userinit.$O\
 
-# don't forget: l.$O must always be first
+BOARDOBJ=\
+	boardrv.$O\
+	ethersmte.$O\
+	etherdwqe.$O\
+	k1reset.$O\
+	fan.$O\
+	k1thermal.$O\
+	i2ck3.$O\
+	k3thermal.$O\
+	gpiok3.$O\
+	espik3.$O\
+	espik3fan.$O\
+	usbxhcibpif3.$O\
+	usbxhcipicoitx.$O\
+	screenpicoitx.$O\
+	usbxhcicom260.$O\
+	screencom260.$O\
+	sdscsi.$O\
+	sdufs.$O\
+
+# Maxion has no QEMU PCI bus or SpacemiT peripheral blocks.
+# l.$O must always be first.
 OBJ=\
 	l.$O\
 	reloc.$O\
@@ -70,23 +91,7 @@ OBJ=\
 	sbi.$O\
 	sbicall.$O\
 	sbiecall.$O\
-	ethersmte.$O\
-	etherdwqe.$O\
-	k1reset.$O\
-	fan.$O\
-	k1thermal.$O\
-	i2ck3.$O\
-	k3thermal.$O\
-	gpiok3.$O\
-	espik3.$O\
-	espik3fan.$O\
-	usbxhcibpif3.$O\
-	usbxhcipicoitx.$O\
-	screenpicoitx.$O\
-	usbxhcicom260.$O\
-	screencom260.$O\
-	sdscsi.$O\
-	sdufs.$O\
+	`{if(! ~ $CONF maxion) echo $BOARDOBJ}\
 	$CONF.root.$O\
 	$CONF.rootc.$O\
 	$DEVS\
