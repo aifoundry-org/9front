@@ -2288,17 +2288,21 @@ ufspnp(void)
 	 * then walk the "ufs"-class nodes bootargs.c now tracks
 	 * (isufsnode()/Dtbufs, added alongside the existing Dtbether
 	 * infrastructure), falling back to the manual's hardcoded
-	 * addresses if there's no matching DTB entry or no DTB at all.
+	 * addresses if there's no matching DTB entry.  Like etherpnp(),
+	 * skip other SoCs: the K3 addresses are RAM or unmapped there.
 	 */
+	if(!dtbsocmatch("spacemit,k3")){
+		if(debug)
+			print("ufs: not a K3, skipping\n");
+		return nil;
+	}
 	du = nil;
-	if(dtbsocmatch("spacemit,k3")){
-		n = dtbnufs();
-		for(i = 0; i < n; i++){
-			Dtbufs *d = dtbufs(i);
-			if(d != nil && d->ok){
-				du = d;
-				break;
-			}
+	n = dtbnufs();
+	for(i = 0; i < n; i++){
+		Dtbufs *d = dtbufs(i);
+		if(d != nil && d->ok){
+			du = d;
+			break;
 		}
 	}
 	if(du != nil){
