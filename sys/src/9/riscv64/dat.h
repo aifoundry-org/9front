@@ -161,6 +161,7 @@ struct Clint {
 struct MMMU
 {
 	PTE*	mmutop;		/* first level user page table */
+	PTE*	mmuroot;	/* hardware root: mmutop, or a board's extra level above it */
 };
 
 /*
@@ -247,6 +248,8 @@ struct
 #define MACHP(n)	((Mach*)MACHADDR(n))
 
 extern uintptr ktzero, vdram;		/* runtime memory layout; set in relocfixup */
+extern uintptr kbase, klimit;		/* kernel identity map covers [kbase, klimit) */
+extern u64int mmumode;			/* satp MODE, set by kmapram */
 
 extern register Mach* m;			/* R7 */
 extern register Proc* up;			/* R6 */
@@ -422,6 +425,14 @@ struct Soc {
 	uchar	allintrs;	/* flag: enable all interrupts */
 	uchar	poll;		/* flag: continual polling for i/o done */
 	uchar	newmach;	/* flag: do new-machine tests & prints */
+
+	/* board choices, set by boardearly */
+	uchar	sbitimer;	/* flag: no Sstc; set the timer with SBI TIME */
+	uchar	nocbo;		/* flag: no Zicbom; cache ops only order */
+	uchar	uartfifo;	/* flag: leave the 16550 FIFOs enabled */
+	uchar	uartpollms;	/* console input poll period; 0 means 100 */
+	uchar	maxmach;	/* use at most this many harts; 0 means all */
+	char	*cpuname;	/* for cpuidprint; nil means QEMU's */
 };
 
 Soc soc;

@@ -1,0 +1,145 @@
+CONF=maxion
+CONFLIST=maxion
+
+# Esperanto ET-SoC-1 Maxion: the generic kernel in ../riscv64 with this
+# SoC's memory map (memmap.c), interrupt controller (plic.c, intr.c),
+# and board hooks (maxionboard.c).  OpenSBI starts it in place in the
+# RAM window at 0x8600000000.
+loadaddr=0x8600200000
+
+objtype=riscv64
+</$objtype/mkfile
+
+CFLAGS=-I. -I../riscv64 $CFLAGS
+
+p=9
+
+DEVS=`{rc ../port/mkdevlist $CONF}
+
+PORT=\
+	alarm.$O\
+	alloc.$O\
+	allocb.$O\
+	auth.$O\
+	cache.$O\
+	chan.$O\
+	dev.$O\
+	edf.$O\
+	fault.$O\
+	mul64fract.$O\
+	page.$O\
+	parse.$O\
+	pgrp.$O\
+	portclock.$O\
+	print.$O\
+	proc.$O\
+	qio.$O\
+	qlock.$O\
+	random.$O\
+	rdb.$O\
+	rebootcmd.$O\
+	segment.$O\
+	syscallfmt.$O\
+	sysfile.$O\
+	sysproc.$O\
+	taslock.$O\
+	tod.$O\
+	ucalloc.$O\
+	xalloc.$O\
+	userinit.$O\
+
+# no QEMU PCI bus, APLIC or SpacemiT peripheral blocks.
+# l.$O must always be first.
+OBJ=\
+	l.$O\
+	reloc.$O\
+	archrv.$O\
+	bootargs.$O\
+	strap.$O\
+	main.$O\
+	mmu.$O\
+	mem.$O\
+	memmap.$O\
+	plic.$O\
+	intr.$O\
+	trap.$O\
+	clock.$O\
+	fp.$O\
+	fpu.$O\
+	sbi.$O\
+	sbicall.$O\
+	sbiecall.$O\
+	$CONF.root.$O\
+	$CONF.rootc.$O\
+	$DEVS\
+	$PORT\
+
+HFILES=\
+	../riscv64/mem.h\
+	../riscv64/dat.h\
+	../riscv64/fns.h\
+	../riscv64/io.h\
+	../riscv64/riscv64.h\
+
+LIB=\
+	/$objtype/lib/libmemlayer.a\
+	/$objtype/lib/libmemdraw.a\
+	/$objtype/lib/libdraw.a\
+	/$objtype/lib/libip.a\
+	/$objtype/lib/libsec.a\
+	/$objtype/lib/libmp.a\
+	/$objtype/lib/libc.a\
+	/$objtype/lib/libdtracy.a\
+
+9:V:	$p$CONF s$p$CONF
+
+$p$CONF:D:	$OBJ $CONF.$O $LIB
+	$LD -s -l -u -o $target -H6 -R0x1000 -T$loadaddr $prereq
+	# ELF for kexec
+	$LD -s -l -u -o $target.elf -H5 -R4 -T$loadaddr $prereq
+	# ELF with symbols, for source-level gdb-on-qemu
+	$LD -l -u -o $target.elf.sym -H5 -R4 -T$loadaddr $prereq
+
+s$p$CONF:D:	$OBJ $CONF.$O $LIB
+	$LD -l -o $target -R0x1000 -T$loadaddr $prereq
+	size $target
+
+$OBJ: $HFILES
+
+install:V: /$objtype/$p$CONF
+
+/$objtype/$p$CONF:D: $p$CONF s$p$CONF
+	cp -x $p$CONF s$p$CONF /$objtype/
+
+# the generic riscv64 files this directory does not replace
+RISCV64FILES=`{../port/mkfilelist ../riscv64}
+^($RISCV64FILES)\.$O:R:	'../riscv64/\1.c'
+	$CC $CFLAGS -. ../riscv64/$stem1.c
+
+l.$O:	../riscv64/l.s
+	$AS $AFLAGS -I. -I../riscv64 -. ../riscv64/l.s
+strap.$O:	../riscv64/strap.s
+	$AS $AFLAGS -I. -I../riscv64 -. ../riscv64/strap.s
+fp.$O:	../riscv64/fp.s
+	$AS $AFLAGS -I. -I../riscv64 -. ../riscv64/fp.s
+sbiecall.$O:	../riscv64/sbiecall.s
+	$AS $AFLAGS -I. -I../riscv64 -. ../riscv64/sbiecall.s
+init9.$O:	../riscv64/init9.s
+	$AS $AFLAGS -I. -I../riscv64 -. ../riscv64/init9.s
+
+<../boot/bootmkfile
+<../port/portmkfile
+<|../port/mkbootrules $CONF
+
+initcode.out:		init9.$O initcode.$O /$objtype/lib/libc.a
+	$LD -l -R1  -o $target $prereq
+
+# the smoke test that maxion.bootrc runs, embedded by maxion.bootfs.proto
+SMOKE=`{if(~ $CONF maxion) echo maxionsmoke}
+bootfs.paq:	$SMOKE
+
+maxionsmoke:	maxionsmoke.$O
+	$LD -o $target $prereq
+
+$CONF.clean:
+	rm -rf $p$CONF $p$CONF.elf $p$CONF.elf.sym s$p$CONF errstr.h $CONF.c boot$CONF.c maxionsmoke

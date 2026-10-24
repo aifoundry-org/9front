@@ -92,6 +92,10 @@ confinit(void)
 		conf.nmach = MAXMACH;
 	if(conf.nmach < 1)
 		conf.nmach = 1;
+	if(soc.maxmach != 0 && conf.nmach > soc.maxmach){
+		print("confinit: using %d of %lud harts; parking the rest\n", soc.maxmach, conf.nmach);
+		conf.nmach = soc.maxmach;
+	}
 
 	if(p = getconf("service")){
 		if(strcmp(p, "cpu") == 0)
@@ -187,7 +191,10 @@ mpinit(void)
 void
 cpuidprint(void)
 {
-	iprint("cpu%d: 1000MHz QEMU\n", m->machno);
+	if(soc.cpuname != nil)
+		iprint("cpu%d: %s\n", m->machno, soc.cpuname);
+	else
+		iprint("cpu%d: 1000MHz QEMU\n", m->machno);
 }
 
 static void
@@ -282,6 +289,7 @@ main(u64int hartid, uintptr dtb)
 	uartconsinit();
 	quotefmtinstall();
 	bootargsinit();
+	boardearly();		/* board memory window and quirks, before meminit */
 	meminit();
 	print("meminit done\n");
 	confinit();
@@ -327,7 +335,7 @@ main(u64int hartid, uintptr dtb)
 	}
 	mpinit();
 	u64int tm = rdtime();
-	u64int cm = rdstimecmp();
+	u64int cm = soc.sbitimer? m->timecmp: rdstimecmp();
 	print("tm %#llx cm %#llx\n", tm, cm);
 	mmu1init();
 	cpuinit(0);

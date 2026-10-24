@@ -250,6 +250,7 @@ enum {
 	DtBeginNode	= 1,
 	DtEndNode	= 2,
 	DtProp		= 3,
+	DtNop		= 4,
 	DtEnd		= 9,
 };
 
@@ -473,6 +474,7 @@ devtreeprop(char *path, char *key, void *val, int len)
 	if(strcmp(path, "/cpus") == 0
 	   && strcmp(key, "timebase-frequency") == 0 && len >= 4)
 		timebase = beget4(p);
+	boarddtprop(path, key, p, len);	/* board-specific nodes and /chosen properties */
 	if(strncmp(path, "/chosen", 7) == 0){
 		if(strcmp(key, "bootargs") == 0){
 			if(preloadedini)	/* don't clobber a plan9.ini */
@@ -736,26 +738,39 @@ devtreenode(Devtree *t, uchar *p, char *cp)
 	memmove(cp - n, (char*)p, n);
 	*cp = 0;
 	p += (n + 4) & ~3;
-	while(p+12 <= e && beget4(p) == DtProp){
-		n = beget4(p+4);
-		if(p + 12 + n > e)
+	while(p+4 <= e){
+		switch(beget4(p)){
+		case DtNop:
+			/* OpenSBI removes its /chosen config node with NOPs. */
+			p += 4;
+			break;
+		case DtProp:
+			if(p+12 > e)
+				return nil;
+			n = beget4(p+4);
+			if(n < 0 || n > e - p - 12)
+				return nil;
+			s = t->stab + beget4(p+8);
+			if(s < t->stab || s >= (char*)t->end
+			|| memchr(s, 0, (char*)t->end - s) == nil)
+				return nil;
+			devtreeprop(t->path, s, p+12, n);
+			p += 12 + ((n + 3) & ~3);
+			break;
+		case DtBeginNode:
+			*cp = '/';
+			p = devtreenode(t, p, cp+1);
+			*cp = 0;
+			if(p == nil)
+				return nil;
+			break;
+		case DtEndNode:
+			return p+4;
+		default:
 			return nil;
-		s = t->stab + beget4(p+8);
-		if(s < t->stab || s >= (char*)t->end
-		|| memchr(s, 0, (char*)t->end - s) == nil)
-			return nil;
-		devtreeprop(t->path, s, p+12, n);
-		p += 12 + ((n + 3) & ~3);
+		}
 	}
-	while(p+4 <= e && beget4(p) == DtBeginNode){
-		*cp = '/';
-		p = devtreenode(t, p, cp+1);
-		if(p == nil)
-			return nil;
-	}
-	if(p+4 > e || beget4(p) != DtEndNode)
-		return nil;
-	return p+4;
+	return nil;
 }
 
 /*
@@ -898,6 +913,7 @@ parsedevtree(uchar *base)
 {
 	Devtree t[1];
 	u32int total;
+	uchar *p;
 
 	if(base == nil || beget4(base) != DtHeader)
 		return -1;
@@ -909,7 +925,13 @@ parsedevtree(uchar *base)
 	t->stab = (char*)base + beget4(base+12);
 	if(t->stab >= (char*)t->end)
 		return -1;
-	devtreenode(t, base + beget4(base+8), t->path);
+	p = devtreenode(t, base + beget4(base+8), t->path);
+	if(p == nil)
+		return -1;
+	while(p+4 <= (uchar*)t->stab && beget4(p) == DtNop)
+		p += 4;
+	if(p+4 > (uchar*)t->stab || beget4(p) != DtEnd)
+		return -1;
 	finishdtbintc();
 	finishdtbuarts();
 	if(preloadedini)

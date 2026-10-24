@@ -345,6 +345,8 @@ int peekl(void *addr, u32int *dst, int numwords);
 
 /* archrv */
 void calibrate(void);
+void boardearly(void);
+void boarddtprop(char*, char*, uchar*, int);
 void boardinit(void);
 u64int *bootptpage(void);
 uint mach2context(Mach *);

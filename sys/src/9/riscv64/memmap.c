@@ -24,6 +24,7 @@ mmu1init(void)
 		panic("mmu1init: no memory for mmutop");
 	memset(m->mmutop, 0, L1TOPSIZE);
 	memmove(m->mmutop, sv39, L1TOPSIZE);
+	m->mmuroot = m->mmutop;
 	mmuswitch(nil);
 }
 
@@ -33,6 +34,7 @@ kmapram(uintptr, uintptr limit)
 	u64int i, j, n, pa;
 	u64int *l2;
 
+	mmumode = 8ULL<<60;
 	sv57[0] = ((((u64int)sv48)>>2)) | 1;
 	if (Spew)print("%p is %p\n", sv57, sv57[0]);
 	sv48[0] = ((((u64int)sv39)>>2)) | 1;
@@ -79,7 +81,7 @@ kmapram(uintptr, uintptr limit)
 		if (Spew)print("sv39:%p is %p\n", &sv39[i], sv39[i]);
 	}
 
-	wsatp(((uintptr)sv39>>12)|(8ULL<<60));
+	wsatp(((uintptr)sv39>>12)|mmumode);
 
 }
 

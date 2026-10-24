@@ -13,11 +13,13 @@ enum {
 // kmax will be computed dynamically in future; for now it is
 // UZERO.
 uintptr klimit = UZERO;
+uintptr kbase;		/* a board may raise it to the start of its RAM */
+u64int mmumode;		/* satp MODE, set by kmapram */
 
 uintptr
 paddr(void *va)
 {
-	if((uintptr)va < KLIMIT)
+	if((uintptr)va >= kbase && (uintptr)va < KLIMIT)
 		return (uintptr)va;
 	panic("paddr: va=%#p pc=%#p", va, getcallerpc(&va));
 }
@@ -26,7 +28,7 @@ uintptr
 cankaddr(uintptr pa)
 {
 //	print("cankaddr %p, -KZ %p\n", pa,(uintptr)-KZERO );
-	if(pa < (uintptr)KLIMIT)
+	if(pa >= kbase && pa < KLIMIT)
 		return KLIMIT - pa;
 	return 0;
 }
@@ -34,7 +36,7 @@ cankaddr(uintptr pa)
 void*
 kaddr(uintptr pa)
 {
-	if(pa < (uintptr)KLIMIT)
+	if(pa >= kbase && pa < KLIMIT)
 		return (void*)(pa);
 	panic("kaddr: pa=%#p pc=%#p", pa, getcallerpc(&pa));
 }
@@ -86,7 +88,6 @@ l1map(uintptr va, uintptr pa, uintptr pe, uintptr attr)
 }
 
 u64int *sv57, *sv48, *sv39, *pGiB;
-u64int mmumode;
 
 /*
  * Carve one page-table page out of the front of the physical pool at boot,
@@ -100,6 +101,8 @@ bootptpage(void)
 
 	pa = conf.mem[0].base;
 	assert((pa & (BY2PG-1)) == 0);
+	if(pa + BY2PG > conf.mem[0].limit)
+		panic("bootptpage: out of RAM");
 	conf.mem[0].base += BY2PG;
 	memset((void*)pa, 0, BY2PG);
 	return (u64int*)pa;
@@ -159,6 +162,8 @@ mmuwalk(uintptr va, int level)
 	uintptr *table, pte;
 	Page *pg;
 	int i, x;
+	if(va < UZERO || va >= USTKTOP)
+		panic("mmuwalk: non-user address %#p", va);
 // In future, PTLEVELS will be dynamic.
 	if (0)print("mmuwalk: va %p, walk to level %d starting from %d,", va, level, PTLEVELS);
 	x = vpn(va, PTLEVELS-1);
@@ -364,7 +369,7 @@ if (0)	print("p %p for setting tbr?\n", p);
 	if(p == nil){
 		// maybe flush the user mode entries? probably
 		if(Spew)print("mmuswitch p is nil what to do?\n");
-		wsatp(((uintptr)m->mmutop>>12)|(8ULL<<60));
+		wsatp(((uintptr)m->mmuroot>>12)|mmumode);
 		return;
 	}
 
@@ -387,7 +392,7 @@ if (0)	print("allocasid(p) %d\n", allocasid(p));
 if (0)		print("Set mmutop[%llxx] to %llx\n", PTLX(va, PTLEVELS-1), pte );
 		m->mmutop[PTLX(va, PTLEVELS-1)] = pte;
 	}
-	wsatp(((uintptr)m->mmutop>>12)|(8ULL<<60));
+	wsatp(((uintptr)m->mmuroot>>12)|mmumode);
 }
 
 void
