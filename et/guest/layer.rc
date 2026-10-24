@@ -1,0 +1,50 @@
+#!/bin/rc
+# Layer the exported source tree and writable outputs over the immutable
+# 9P root. The base image is never modified: Plan 9 union binds add files,
+# they cannot overwrite, so everything that is written lives under /rw.
+#   /rw/src   committed source export (git archive, without et/)
+#   /rw/host  rebuilt host tools and all /riscv64 outputs
+#   /rw/log and /rw/exports are written by build.rc
+fn must {
+	$* || { echo FAIL $* $status >[1=2]; exit layer }
+}
+trees=(sys/src sys/include sys/lib sys/man sys/doc amd64/include rc lib acme)
+# Plan 9 unions are not recursive: once /rw/src/rc/bin exists, /rc/bin is that
+# directory alone, hiding base-only subdirectories such as the empty install
+# target /rc/bin/postscript, which Git cannot record. The build guest recreates
+# exactly those hidden directories (never files) in the export. Base-only
+# children of a bind point stay visible through the union and are left alone.
+hidden='$1 == "S" { s[$2] = 1; next } { p = $2; sub("/[^/]*$", "", p); if(p != top && (p in s) && !($2 in s)){ s[$2] = 1; print "/rw/src" $2 } }'
+must mkdir -p /rw/top/riscv64 /rw/host/riscv64/lib/ape /rw/host/acme/bin/riscv64 /rw/host/usr/glenda/bin/riscv64
+if(~ $cputype amd64){
+	must mkdir -p /rw/host/amd64/bin /rw/host/amd64/lib
+	for(d in `{walk -d /amd64/bin | sed 's,^/amd64,/rw/host/riscv64,'})
+		must mkdir -p $d
+	for(d in $trees){
+		if(test -d /rw/src/$d){
+			dirs=`{{walk -d /rw/src/$d | sed 's,^/rw/src,S ,'; walk -d /$d | sort | sed 's,^,B ,'} | awk -v 'top=/'^$d $hidden}
+			if(! ~ $#dirs 0)
+				must mkdir -p $dirs
+		}
+	}
+}
+# New top-level names such as /riscv64 need a union over / itself.
+must bind -a /rw/top /
+for(d in $trees){
+	if(test -d /rw/src/$d)
+		must bind -bc /rw/src/$d /$d
+}
+# Host tools that read RISC-V objects are rebuilt into an amd64-only shadow
+# in front of the base; nothing in the base /amd64 tree is touched.
+if(~ $cputype amd64){
+	must bind -bc /rw/host/amd64/lib /amd64/lib
+	must bind -bc /rw/host/amd64/bin /amd64/bin
+	must bind -b /rw/host/amd64/bin /bin
+}
+must bind -bc /rw/host/riscv64 /riscv64
+must bind -b /rw/src/riscv64 /riscv64
+must bind -bc /rw/host/acme/bin /acme/bin
+must bind -bc /rw/host/usr/glenda/bin /usr/glenda/bin
+# Scratch is local RAM: rc here-documents use ORCLOSE, which does not work
+# reliably on a root-owned 9P directory. Persistent output goes under /rw.
+must ramfs -m /tmp

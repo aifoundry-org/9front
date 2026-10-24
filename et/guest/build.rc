@@ -1,0 +1,81 @@
+#!/bin/rc
+# Build the RISC-V port from /rw/src: cross tools, libraries, commands and
+# the generic and Maxion kernels. `rc /rw/build.rc kernel` rebuilds only the
+# kernels on top of a previous full build in the same workspace.
+rfork en
+. /rw/layer.rc
+NPROC=4
+fn must {
+	$* || { echo FAIL $* $status; exit build }
+}
+must test -r /rw/source-commit
+must test -r /rw/support-id
+commit=`{cat /rw/source-commit}
+must test -n $commit
+echo STAGE-source $commit
+if(! ~ $1 kernel){
+	echo STAGE-host-tools
+	objtype=amd64
+	must cd /sys/src/cmd/cc
+	must mk clean
+	must mk install
+	must cd /sys/src/libmach
+	must mk clean
+	must mk install 'LIB=/rw/host/amd64/lib/libmach.a'
+	for(d in ja jc jl){
+		must cd /sys/src/cmd/$d
+		must mk clean
+		must mk install
+	}
+	must cd /sys/src/cmd
+	must mk ar.install pcc.install nm.install size.install strip.install file.install 'BIN=/rw/host/amd64/bin'
+	echo STAGE-libraries
+	objtype=riscv64
+	must cd /sys/src
+	must mk libs
+	must cd /sys/src/ape
+	must mk lib.clean
+	must mk lib.install
+	echo STAGE-commands
+	must cd /sys/src/cmd
+	must mk cleancmds
+	# Clean every command subdirectory too; cleancmds alone is only the top.
+	for(i in `{echo */mkfile | sed 's,/mkfile *,\n,g' | grep -v '^test$' | grep -v '^vmx$'}) @{
+		must cd $i
+		mk clean
+	}
+	must cd /sys/src/cmd/cc
+	must mk install
+	must cd /sys/src/cmd
+	must mk install
+}
+objtype=riscv64
+must test -f /riscv64/lib/libc.a
+for(f in /riscv64/init /riscv64/bin/rc /riscv64/bin/hjfs /riscv64/bin/paqfs /riscv64/bin/jc /riscv64/bin/jl /riscv64/bin/pcc /riscv64/bin/auth/factotum /riscv64/bin/auth/secstore /riscv64/bin/auth/as /riscv64/bin/ip/ipconfig)
+	must test -x $f
+echo STAGE-kernel
+must cd /sys/src/9/riscv64
+must mk clean
+must mk
+must mk install
+# mk clean removes every CONFLIST kernel, so export 9rv64 before the Maxion
+# clean below deletes it. Exports without identity records are never accepted.
+must mkdir -p /rw/exports
+must cp 9rv64 9rv64.elf.sym /rw/exports
+must jc -o /tmp/maxion-smoke.j /rw/tests/maxion-smoke.c
+must jl -o /tmp/maxion-smoke /tmp/maxion-smoke.j
+must mk 'CONF=maxion' clean
+must mk 'CONF=maxion' 'loadaddr=0x8600200000'
+# Recursive mk can hide a child failure in its exit status; check the log.
+if(grep -s 'exit status=|can''t stat|undefined:|too many errors|syntax error|^FAIL |^mk:.*(don''t know|ambiguous)' /rw/log/build.log){
+	echo FAIL build-log
+	exit build
+}
+must cp 9maxion 9maxion.elf.sym /rw/exports
+must cd /rw/exports
+must sha1sum -2 256 9rv64 9rv64.elf.sym 9maxion 9maxion.elf.sym > SHA256SUMS
+must cp /rw/support-id support-id
+must echo $commit > source-commit
+if(! ~ $1 kernel)
+	must echo $commit >/rw/full-build
+echo BUILD-PASS

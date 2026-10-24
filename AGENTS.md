@@ -1,48 +1,102 @@
-# AGENTS.md — 9front on Banana Pi F3 (riscv64)
+# AGENTS.md — 9front RISC-V / Maxion
 
-## Build environment
+## Scope and workflow
 
-Builds run inside a 9front amd64 VM (`~/p9/run9.sh`: qemu, tmux session `p9`,
-serial console logged to `~/p9/console.log`). Commands are sent to it with:
+Kernel changes live in `sys/src/9/riscv64/`; shared kernel code is in
+`sys/src/9/port/`. Read `et/README.md` for prerequisites, exact container and
+bootstrap pins, and the build/test contract. The only host entry point is
+`et/scripts/run.py`; no `~/p9` launcher, prepared VM or host cross-compiler
+is required. Run host commands from the repository root.
 
-    ~/p9/p9cmd [-t seconds] 'rc command'
+Docker supplies the immutable amd64 Plan 9 root; host QEMU runs as a normal
+user. Python/QEMU/Docker are external prerequisites, not rebuilt by this tree.
+All runtime state belongs under ignored `et/tmp/`, default `et/tmp/work/`.
+An explicit `ET_WORK` may select another short absolute workspace without
+spaces, commas or colons; keep it identical across participating commands.
+Do not move a running workspace. Keep generated binaries, images and logs out
+of Git; retain source, recipes, tests and concise instructions only.
 
-`p9cmd` types the command into the console and polls `console.log` for a
-`MARK<pid><rand> $status` line. Default timeout 600 s.
+## Build and test
 
-### p9cmd rules
+Commit intended source changes before `up`: it exports committed `HEAD`
+excluding `et/`. Guest recipes and C tests are copied/fingerprinted separately.
+For a clean reproduction choose a fresh workspace, then run sequentially:
 
-- **The command is parsed by rc, not sh.** Use rc syntax only:
-  - Quotes are single quotes: `'error|mk:'`. `"` is not special in rc.
-  - No backslash escapes. Plan 9 `grep` alternation is plain `|`, not `\|`.
-  - Redirect stderr with `>[2=1]`; the exit status is `$status`, not `$?`.
-  - `^` is rc's concatenation operator and `=` is the assignment token, so an
-    unquoted regex like `grep ^== file` is a **syntax error** that kills the
-    whole line (and the `MARK`). Quote every regex: `grep '^==' file`.
-  - From bash, pass the rc command via a quoted heredoc so the single quotes
-    survive: `cmd=$(cat <<'EOF' ... EOF); p9cmd "$cmd"`. Do not try `''` tricks.
-- **Never let a command block on stdin.** `grep`, `cat`, `sed`, etc. with no
-  file argument read the console; the `MARK` line never prints and `p9cmd`
-  sits there until the timeout. Always give a filename.
-- Keep timeouts modest. Redirect long build output to a file in the VM
-  (`>/tmp/x.log >[2=1]`) and inspect it with a second, short `p9cmd`.
-- **Check progress non-disruptively** instead of waiting blindly:
-  - `tail -n 30 ~/p9/console.log` or `tail -f ~/p9/console.log`
-  - `tmux capture-pane -pt p9 | tail`
-  - `tmux attach -t p9 -r` (read-only)
-- If a `p9cmd` is stuck on stdin, `tmux send-keys -t p9 C-d` sends EOF and
-  lets it finish. To interrupt a running command send DEL (0x7f):
-  `tmux send-keys -t p9 BSpace`. **Never use `DC`** — it sends the escape
-  sequence `ESC [ 3 ~`, which lands in rc's input line and corrupts the next
-  command (`bad character in file name: './echo'`).
-- If a `p9cmd` is waiting on a `MARK` that will never come (e.g. the line was
-  a syntax error), release it by typing the mark yourself:
-  `tmux send-keys -t p9 -l 'echo MARK<id> reason'; tmux send-keys -t p9 Enter`.
-  The id is in `pgrep -af p9cmd` / the console log.
-- Long builds: run them in the background inside the VM
-  (`rc /tmp/build.rc >/tmp/build.log >[2=1] &`) and poll with short `p9cmd`s
-  (`tail -3 /tmp/build.log`), rather than one huge timeout.
-- Cross-compile for the target with `objtype=riscv64 mk ...` in `/sys/src`.
+```sh
+python3 -m unittest discover -s et/tests -p 'test_*.py' -v
+python3 et/scripts/run.py up
+python3 et/scripts/run.py build
+python3 et/scripts/run.py test --generic
+python3 et/scripts/run.py down
+```
+
+The full build rebuilds cross-tools, libraries, APE, commands and both kernels.
+Require terminal `BUILD-PASS` and successful host exit; submission is not
+completion. Require `GENERIC-CHECK-PASS`, `MAXION-SMOKE-PASS` and `CHECK-PASS`
+from `test --generic`. Plain `test` checks only Maxion. Tests use QEMU generic
+firmware/virtual DT (`-bios default`), not hardware firmware; record QEMU's
+version. A test pass is not hardware qualification or byte reproducibility.
+
+After a successful full build, `build --kernel` reuses its tools/libraries and
+userland. After changing source/support: `down`, commit intended source, `up`,
+then rebuild. Use a full `build` after compiler, shared-library, header or
+userland changes, or whenever reuse is doubtful. Failed full builds invalidate
+the full-build record; never force reuse of partial results.
+
+Build log/status/lock: `$ET_WORK/rw/log/` (default `et/tmp/work/rw/log/`).
+Exports/hashes/source and support identities: `$ET_WORK/rw/exports/`.
+Each build replaces its log/status; preserve old results before resubmitting.
+Verify actual completion, artifact identities and shutdown before reporting
+success. Keep failed attempts separate; do not relabel previous build results
+with new commit IDs after squashing or rewriting history.
+
+## Locking and console
+
+The runner serializes workspace operations and serial clients. `down` refuses
+active builds. Host interruption or timeout does not prove a guest command
+stopped: inspect host-side logs and guest/process state before resubmitting,
+testing or dismantling. Never fabricate markers or bypass locks. Once a guest
+and its job are known dead, use `down` then `up` for stale-lock recovery.
+
+Use `run.py build` for recipes. For short commands at an idle shell, use
+`python3 et/scripts/run.py cmd 'rc command'` (default timeout 60 seconds).
+Monitor builds via the host log, not console input. Do not use tmux send-keys
+or type into an interactive foreground command.
+
+- Commands are parsed by **rc**, not sh. Quotes are single quotes; `"` is not
+  special. No backslash escapes. Redirect stderr with `>[2=1]`; use `$status`.
+- Quote regexes: `grep '^==' file` and `grep 'FAIL|PASS' file`. `^` concatenates
+  and `=` assigns in rc; unquoted regexes can kill the completion command.
+- From bash preserve rc quotes with a quoted heredoc, then pass the variable:
+
+  ```sh
+  cmd=$(cat <<'RC'
+  grep 'STAGE-|BUILD-PASS|FAIL' /rw/log/build.log
+  RC
+  )
+  python3 et/scripts/run.py cmd "$cmd"
+  ```
+
+- Never let `cat`, `grep`, etc. read console stdin: supply a file or explicit
+  input/pipe. A timeout does not mean the command did not execute.
+- Do not source `/rw/layer.rc` into the amd64 console shell. Use a child
+  namespace: `@{rfork n; . /rw/layer.rc; ...}`. Guest `/tmp` is RAM-backed;
+  persistent logs/exports stay in `/rw`.
+- Plan 9 unions are not recursive: `layer.rc` recreates only hidden base
+  directories. Do not copy a whole base skeleton over the source export.
+
+## Safety and commits
+
+Loopback 9P is unauthenticated and writable by local clients: use a trusted
+single-user host/VM. Do not expose it publicly or run QEMU as root. Local QEMU
+validation does not authorize hardware/card/UART access, flashing, resets,
+driver changes or deployment.
+
+Never push, publish releases or trigger remote workflows without explicit
+approval for the action and target. Local commit preparation is not approval
+to publish. Downstream commits use Roman V Shaposhnik <rvs@apache.org> as author
+and committer, with `Co-authored-by: Shelley <shelley@exe.dev>`. Preserve
+upstream history and authorship.
 
 ## C coding standard
 
