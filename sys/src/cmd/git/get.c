@@ -347,7 +347,7 @@ skip:;
 	 */
 	for(i = 0; i < nheads; i++){
 		if((o = readobject(heads[i])) == nil)
-			sysfatal("missing exected object: %H", have[i]);
+			sysfatal("missing exected object: %H", heads[i]);
 		if(fmtpkt(c, "have %H", o->hash) == -1)
 			sysfatal("write: %r");
 		enqueueparent(&haveq, o);
