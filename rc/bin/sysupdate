@@ -19,3 +19,4 @@ if(test -d /sys/lib/news){
 	bind /sys/lib/news /lib/news
 	news -t /dist/9front/.git/newstime
 }
+exit ''
