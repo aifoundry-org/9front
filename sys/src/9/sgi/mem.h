@@ -272,4 +272,5 @@
 #define	USTKTOP	(KZERO-BY2PG)		/* byte just beyond user stack */
 #define	USTKSIZE (8*1024*1024)		/* size of user stack */
 #define	KZERO	KSEG0			/* base of kernel address space */
+#define iskern(v) 	(((uintptr)v)>KZERO)
 #define	KTZERO	(KZERO+0x08020000)	/* first address in kernel text */

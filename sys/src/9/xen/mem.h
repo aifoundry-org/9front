@@ -55,6 +55,7 @@
 #define	UTZERO		(UZERO+BY2PG)		/* first address in user text */
 #define UTROUND(t)	ROUNDUP((t), BY2PG)
 #define	KZERO		0x80000000		/* base of kernel address space */
+#define iskern(v) 	(((uintptr)v)>KZERO)
 #define	KTZERO		0x80010000		/* first address in kernel text */
 #define	USTKTOP		(KZERO-BY2PG)		/* byte just beyond user stack */
 #define	USTKSIZE	(16*1024*1024)		/* size of user stack */
