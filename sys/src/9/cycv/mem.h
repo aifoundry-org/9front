@@ -29,6 +29,7 @@
 #define TK2SEC(t) ((t)/HZ)
 
 #define KZERO 0xF0000000
+#define iskern(v) 	(((uintptr)v)>KZERO)
 #define KTZERO (KZERO+0x100000)
 #define TMAPSZ SECSZ
 #define TMAP (KZERO - TMAPSZ)
