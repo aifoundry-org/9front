@@ -206,6 +206,7 @@
  */
 
 #define	KZERO		0x80000000		/* base of kernel address space */
+#define iskern(v) 	(((uintptr)v)>KZERO)
 #define	KTZERO		0x80100000		/* first address in kernel text */
 #define	UZERO		0			/* base of user address space */
 #define	UTZERO		(UZERO+BY2PG)		/* first address in user text */

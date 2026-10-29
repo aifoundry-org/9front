@@ -41,6 +41,7 @@
 /* mask to check segment; good for 1GB dram */
 #define	KSEGM		0xC0000000
 #define	KZERO		KSEG0			/* kernel address space */
+#define iskern(v) 	(((uintptr)v)>KZERO)
 #define CONFADDR	(KZERO+0x100)		/* unparsed plan9.ini */
 #define	REBOOTADDR	(0x1c00)		/* reboot code - physical address */
 #define	MACHADDR	(KZERO+0x2000)		/* Mach structure */
