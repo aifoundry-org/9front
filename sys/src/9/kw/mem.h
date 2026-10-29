@@ -60,6 +60,7 @@
 /* mask to check segment; good for 512MB dram */
 #define	KSEGM		0xE0000000
 #define	KZERO		KSEG0			/* kernel address space */
+#define iskern(v) 	(((uintptr)v)>KZERO)
 #define CONFADDR	(KZERO+4*KiB)		/* unparsed plan9.ini */
 #define L1		(KZERO+64*KiB)		/* tt ptes: 16KiB aligned */
 #define	KTZERO		(KZERO+0x800000)	/* kernel text start */
