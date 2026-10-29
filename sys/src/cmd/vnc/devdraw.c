@@ -1836,8 +1836,6 @@ drawmesg(Client *client, void *av, int n)
 			printmesg(fmt="LslllLPP", a, 0);
 			m = drawunpack(a, n, "_lsllllP", &dstid, &ni, &e0, &e1, &c, &ci, &sp);
 			dst = drawimage(client, dstid);
-			if(ni < 0)
-				error("negative count in polygon");
 			j = 0;
 			if(*a == 'p' && (j = c) < 0)
 				error("negative polygon line width");
@@ -1931,6 +1929,12 @@ drawmesg(Client *client, void *av, int n)
 			printmesg(fmt="LLLPRPsLP", a, 0);
 			m = drawunpack(a, n, "_lllPRPslP", &dstid, &ci, &c, &p, &r, &sp, &ni, &j, &q);
 			}
+			if(ni == 0)
+				continue;
+			u = a+m;
+			m += ni*2;
+			if(n < m)
+				error(Eshortdraw);
 			dst = drawimage(client, dstid);
 			src = drawimage(client, ci);
 			font = drawlookup(client, c, 1);
@@ -1938,10 +1942,6 @@ drawmesg(Client *client, void *av, int n)
 				error(Enodrawimage);
 			if(font->nfchar == 0)
 				error(Enotfont);
-			u = a+m;
-			m += ni*2;
-			if(n < m)
-				error(Eshortdraw);
 			clipr = dst->clipr;
 			dst->clipr = r;
 			op = drawclientop(client);
@@ -2000,8 +2000,6 @@ drawmesg(Client *client, void *av, int n)
 		case 't':
 			printmesg(fmt="bsL", a, 0);
 			m = drawunpack(a, n, "_bs", &c, &nw);
-			if(nw < 0)
-				error(Ebadarg);
 			if(nw == 0)
 				continue;
 			u = a+m;
