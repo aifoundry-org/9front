@@ -20,7 +20,7 @@ riscv64
 		test
 		unmount
 		xd
-		smoke 555 sys sys /tmp/maxion-smoke
+		smoke 555 sys sys /sys/src/9/riscv64/maxionsmoke
 rc
 	lib
 		rcmain
