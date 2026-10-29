@@ -1944,6 +1944,10 @@ drawmesg(Client *client, void *av, int n)
 				error(Enotfont);
 			clipr = dst->clipr;
 			dst->clipr = r;
+			if(waserror()){
+				dst->clipr = clipr;
+				nexterror();
+			}
 			op = drawclientop(client);
 			bg = dst;
 			if(*a == 'x'){
@@ -1956,10 +1960,8 @@ drawmesg(Client *client, void *av, int n)
 				j = ni;
 				while(--j >= 0){
 					ci = BGSHORT(u);
-					if(ci<0 || ci>=font->nfchar){
-						dst->clipr = clipr;
+					if(ci<0 || ci>=font->nfchar)
 						error(Eindex);
-					}
 					r.max.x += font->fchar[ci].width;
 					u += 2;
 				}
@@ -1969,14 +1971,13 @@ drawmesg(Client *client, void *av, int n)
 			q = p;
 			while(--ni >= 0){
 				ci = BGSHORT(u);
-				if(ci<0 || ci>=font->nfchar){
-					dst->clipr = clipr;
+				if(ci<0 || ci>=font->nfchar)
 					error(Eindex);
-				}
 				q = drawchar(dst, bg, q, src, &sp, font, ci, op);
 				u += 2;
 			}
 			dst->clipr = clipr;
+			poperror();
 			p.y -= font->ascent;
 			dstflush(dstid, dst, Rect(p.x, p.y, q.x, p.y+Dy(font->image->r)));
 			continue;
