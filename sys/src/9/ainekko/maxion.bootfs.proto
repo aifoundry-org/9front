@@ -2,6 +2,7 @@ riscv64
 	bin
 		aux
 			kbdfs
+			listen1
 		bind
 		cat
 		chmod
@@ -9,9 +10,12 @@ riscv64
 		dd
 		echo
 		grep
+		ip
+			ping
 		ls
 		mkdir
 		mount
+		mxpsvc 555 sys sys maxion.mxpsvc
 		ps
 		ramfs
 		rc

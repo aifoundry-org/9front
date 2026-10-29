@@ -3,9 +3,10 @@ CONFLIST=maxion
 
 # Esperanto ET-SoC-1 Maxion: the generic kernel in ../rva23 with this
 # SoC's memory map (memmap.c), interrupt controller (plic.c, intr.c),
-# timer without Sstc (timecmp.c), cache ops without Zicbom (cbo.c) and
-# board hooks (maxionboard.c).  OpenSBI starts it in place in the RAM
-# window at 0x8600000000.
+# timer without Sstc (timecmp.c), cache ops without Zicbom (cbo.c),
+# board hooks (maxionboard.c) and PC<->MX packet mailbox (devmxp.c,
+# mxpcore.c).  OpenSBI starts it in place in the RAM window at
+# 0x8600000000.
 loadaddr=0x8600200000
 
 objtype=riscv64
@@ -84,6 +85,7 @@ HFILES=\
 	../rva23/fns.h\
 	../rva23/io.h\
 	../rva23/riscv64.h\
+	maxion.h\
 
 LIB=\
 	/$objtype/lib/libmemlayer.a\

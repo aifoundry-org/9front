@@ -4,14 +4,15 @@
  * run in Sv48 with this kernel's existing 64..128 GiB user ABI and
  * three-level user tables: each Mach's low sv39 table hangs from slot 0
  * of a four-level root whose other slots are shared kernel mappings.
- * Only the owned RAM window, the PLIC and the console UART are mapped,
- * and vmap refuses anything else.
+ * Only the owned RAM window, the PLIC, the console UART and the packet
+ * mailbox page are mapped, and vmap refuses anything else.
  */
 #include "u.h"
 #include "../port/lib.h"
 #include "mem.h"
 #include "dat.h"
 #include "fns.h"
+#include "maxion.h"
 
 extern u64int *sv57, *sv48, *sv39, *pGiB;
 
@@ -56,7 +57,7 @@ maxionleaf(uintptr pa, int level, uintptr attr)
 }
 
 /*
- * Map only the owned RAM, PLIC and console UART, switch
+ * Map only the owned RAM, PLIC, console UART and packet page, switch
  * to Sv48 and prove the top of RAM is reachable.  The DT is parsed in
  * Bare mode; its firmware-owned relocated copy need not remain mapped.
  */
@@ -67,6 +68,7 @@ kmapram(uintptr, uintptr limit)
 	volatile uvlong *probe;
 	uvlong saved;
 	Dtbuart *du;
+	Dtbmxp *dm;
 	int i;
 
 	sv48[0] = PA2PTE((uintptr)sv39) | PTEVALID;
@@ -83,6 +85,19 @@ kmapram(uintptr, uintptr limit)
 		du = dtbuart(i);
 		if(du != nil && du->ok && du->isconsole)
 			maxionleaf(du->base & ~(BY2PG-1), 0, attr);
+	}
+	/*
+	 * The packet mailbox is one page of SP SRAM, uncached by PMA.
+	 * Map it only when the bootstrap described it; never the ROM
+	 * boot marker page below it, and never owned RAM.
+	 */
+	dm = dtbmxp();
+	if(dm != nil){
+		if(dm->base < limit && dm->base + BY2PG > VDRAM){
+			print("maxion: packet page %#llux overlaps RAM; disabled\n", dm->base);
+			dm->ok = 0;
+		}else
+			maxionleaf(dm->base, 0, attr);
 	}
 	mmumode = 9ULL<<60;
 	satp = ((uintptr)sv48>>12) | mmumode;
