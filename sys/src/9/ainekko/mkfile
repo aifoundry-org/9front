@@ -3,8 +3,9 @@ CONFLIST=maxion
 
 # Esperanto ET-SoC-1 Maxion: the generic kernel in ../riscv64 with this
 # SoC's memory map (memmap.c), interrupt controller (plic.c, intr.c),
-# and board hooks (maxionboard.c).  OpenSBI starts it in place in the
-# RAM window at 0x8600000000.
+# board hooks (maxionboard.c) and PC<->MX packet mailbox (devmxp.c,
+# mxpcore.c).  OpenSBI starts it in place in the RAM window at
+# 0x8600000000.
 loadaddr=0x8600200000
 
 objtype=riscv64
@@ -80,6 +81,7 @@ HFILES=\
 	../riscv64/fns.h\
 	../riscv64/io.h\
 	../riscv64/riscv64.h\
+	maxion.h\
 
 LIB=\
 	/$objtype/lib/libmemlayer.a\

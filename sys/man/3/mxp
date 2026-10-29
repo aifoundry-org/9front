@@ -1,0 +1,122 @@
+.TH MXP 3
+.SH NAME
+mxp \- ET-SoC-1 Maxion packet mailbox link to the PCIe host
+.SH SYNOPSIS
+.nf
+.B bind -a #E /dev
+
+.B /dev/mxp
+.B /dev/mxpctl
+.fi
+.SH DESCRIPTION
+On the
+.I maxion
+kernel of an Esperanto ET-SoC-1,
+.B #E
+is a raw IP point-to-point link to the PCIe host through one 4096-byte
+page of service-processor mailbox SRAM.
+It is the guest side of the
+.B mxpacket
+transport (ABI 1) of
+.IR et-platform ;
+the host side is the
+.B et-soc1
+driver loaded with
+.BR "mx_packet=1 mx_packet_netdev=1" ,
+whose
+.B etmx
+interface is the other end.
+The page has no interrupt: a kernel process polls it,
+every millisecond while there has been traffic in the last two seconds
+or a packet is waiting, and every 10 ms otherwise.
+.PP
+The device exists only when the device tree describes a usable session,
+as the host's
+.B "mxpctl bootstrap"
+writes it: exactly one enabled
+.B packet@
+node, compatible
+.BR esperanto,maxion-packet-v1 ,
+whose
+.B reg
+is one aligned page, and in
+.BR /chosen ,
+.BR esperanto,mxpacket-page-initialized ,
+.B esperanto,mxpacket-abi
+of 1,
+a nonzero
+.B esperanto,mxpacket-fw-id
+and normally an
+.BR rng-seed .
+Otherwise the directory is empty and the page is never touched.
+The guest boot identity is drawn from the kernel's random pool mixed
+with the
+.BR rng-seed .
+After attaching, the page's firmware identity must equal the bootstrap's
+.BR esperanto,mxpacket-fw-id .
+.PP
+Each read of
+.B mxp
+returns one received IPv4 or IPv6 packet; each write sends one,
+of at most 1500 bytes.
+Only whole packets whose IP header length agrees with the record
+length are accepted, in either direction; others are counted and
+dropped.
+.B mxp
+may be open only once; normally the IP stack holds it:
+.IP
+.EX
+<>/net/ipifc/clone {
+	echo bind netdev /dev/mxp >[1=0]
+	echo add 192.0.2.2 255.255.255.255 192.0.2.1 1500 >[1=0]
+}
+.EE
+.PP
+which is what the
+.I maxion
+boot script does when
+.B /dev/mxpctl
+exists, with
+.B $mxpip
+and
+.B $mxppeer
+overriding the addresses.
+.PP
+Reading
+.B mxpctl
+returns the driver phase
+.RB ( absent ,
+.BR entropy ,
+.BR attach ,
+.BR run ,
+.BR stopped ),
+why it stopped, and the endpoint status: local and peer states,
+fault reason, readiness, ring credit, sequence numbers, the
+firmware, host and guest identities, the core's counters, and the
+driver's own
+.RB ( rxbad ,
+.BR rxdrop ,
+.BR txbad ,
+.BR txdrop ,
+.BR txexpired ).
+Messages written to it:
+.TP
+.B quiesce
+Publish QUIESCING and stop.
+This is terminal, as is any fault: the session cannot be resumed or
+re-attached until the card is cold-booted and armed again.
+The host must still hold its device open to fence its own side.
+.TP
+.BI poll " active idle"
+Set the two poll periods in milliseconds.
+.SH SOURCE
+.B /sys/src/9/ainekko/devmxp.c
+.br
+.B /sys/src/9/ainekko/mxpcore.c
+.SH SEE ALSO
+.IR ip (3)
+.SH BUGS
+The mailbox holds one full-size record each way, so every packet waits
+for the peer's poll to return credit; throughput is a few megabits per
+second.
+There is no heartbeat: a peer that silently stops is not detected.

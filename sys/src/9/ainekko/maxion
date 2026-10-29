@@ -12,6 +12,19 @@ dev
 	dup
 	cap
 	uart
+	ip	arp chandial ip ipv6 ipaux iproute netlog nullmedium pktmedium inferno
+	mxp	mxpcore
+
+link
+	netdevmedium
+	loopbackmedium
+
+ip
+	tcp
+	udp
+	ipifc
+	icmp
+	icmp6
 
 misc
 	uarti8250
