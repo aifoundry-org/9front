@@ -9,7 +9,9 @@ CONFLIST=rv64 bpif3 maxion
 # BPI-F3 2/4GB  0x40000000; some lower RAM reserved for firmware
 # BPI-F3 > 4GB	ditto, plus second block at 0x100000000
 # K3 (all)		0x100000000, all available
+# Maxion		0x8600000000
 loadaddr=0x102202000 # could probably be 0x100200000: maybe skip reloc on K3
+loadaddr=`{if(~ $CONF maxion) echo 0x8600200000; if not echo $loadaddr}
 
 objtype=riscv64
 </$objtype/mkfile
@@ -152,5 +154,12 @@ initcode.out:		init9.$O initcode.$O /$objtype/lib/libc.a
 #rebootcode.out:		rebootcode.$O cache.v8.$O
 #	$LD -l -H6 -R1 -T0x40020000 -s -o $target $prereq
 
+# the smoke test that maxion.bootrc runs, embedded by maxion.bootfs.proto
+SMOKE=`{if(~ $CONF maxion) echo maxionsmoke}
+bootfs.paq:	$SMOKE
+
+maxionsmoke:	maxionsmoke.$O
+	$LD -o $target $prereq
+
 $CONF.clean:
-	rm -rf $p$CONF $p$CONF.elf $p$CONF.elf.sym s$p$CONF errstr.h $CONF.c boot$CONF.c
+	rm -rf $p$CONF $p$CONF.elf $p$CONF.elf.sym s$p$CONF errstr.h $CONF.c boot$CONF.c maxionsmoke

@@ -1,0 +1,98 @@
+# Build the riscv64 kernels from this commit's sys/src/9 with p9cloud's
+# rebuild.sh, on the riscv64 userland of ghcr.io/rvs/9front-riscv64:
+# 9rv64 (generic), 9rv64cpuwait (generic, cpuwait boot file system)
+# and 9maxion.  Boot-test 9rv64cpuwait with p9cloud's boot-test.sh and
+# 9maxion's embedded smoke test, both in qemu-system-riscv64.
+name: Build and test RISC-V kernels
+
+on:
+  push:
+
+permissions:
+  contents: read
+
+jobs:
+  kernel:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    env:
+      FS: p9cloud/src/docker/fs
+      IMAGE: 9front-riscv64-ci
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          path: 9front
+          persist-credentials: false
+
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          repository: rvs/p9cloud
+          path: p9cloud
+          persist-credentials: false
+
+      - name: KVM and qemu
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' |
+            sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+          sudo apt-get update -q
+          sudo apt-get install -qy --no-install-recommends qemu-system-x86 qemu-system-misc opensbi
+          test -w /dev/kvm
+
+      # the published riscv64 tree, with this commit's kernel sources
+      # over its own, owned by sys like the rest of the tree
+      - name: Image
+        run: |
+          docker build -t "$IMAGE" -f - 9front/sys/src/9 <<'END'
+          FROM ghcr.io/rvs/9front-riscv64:latest
+          COPY --chown=110000:110000 . /9front/sys/src/9/
+          END
+
+      - name: Build 9rv64, 9rv64cpuwait and 9maxion
+        run: |
+          for conf in rv64 rv64cpuwait maxion; do
+            "$FS/rebuild.sh" -c $conf kernel out/9$conf
+          done
+          (cd out && sha256sum * >SHA256SUMS)
+
+      - name: Boot test 9rv64cpuwait
+        run: $FS/boot-test.sh out/9rv64cpuwait
+
+      # the Maxion hart has no Svpbmt, Zicbom or Sstc: neither may qemu's;
+      # maxion.bootrc runs the smoke test before its shell
+      - name: Boot test 9maxion
+        run: |
+          qemu-system-riscv64 -nodefaults -M virt -bios default \
+            -cpu rv64,svpbmt=false,zicbom=false,sstc=false -m 1G -smp 1 \
+            -kernel out/9maxion -nic none -display none -monitor none \
+            -append 'console=0 user=glenda *maxion=1 *ncpu=1 *uartpoll=1' \
+            -serial file:maxion.console -daemonize -pidfile maxion.pid
+          trap 'kill $(cat maxion.pid)' EXIT
+          for i in $(seq 120); do
+            grep -qa MAXION-SMOKE-PASS maxion.console && break
+            sleep 1
+          done
+          tr -d '\r' <maxion.console
+          grep -qa MAXION-SMOKE-PASS maxion.console
+
+      - name: Upload kernels
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: riscv64-kernels-${{ github.sha }}
+          path: out/
+          if-no-files-found: error
+          retention-days: 14
+
+      # rebuild.sh and boot-test.sh keep their VM's console when they fail
+      - name: Upload consoles
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: riscv64-consoles-${{ github.sha }}
+          path: |
+            /tmp/tmp.*/console
+            /tmp/tmp.*/log
+            maxion.console
+          if-no-files-found: ignore
+          retention-days: 14
