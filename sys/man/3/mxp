@@ -82,6 +82,31 @@ and
 .B $mxppeer
 overriding the addresses.
 .PP
+The
+.I maxioncpuwait
+kernel is
+.I maxion
+with the cpuwait boot file system: a diskless cpu server whose rcpu
+clients (drawterm
+.BR -r )
+supply the root of their sessions.
+Its boot method
+.B mxpcpuwait
+.RI [ local
+.RI [ peer ]]
+configures this link as above (ipconfig cannot bind a netdev medium)
+and then waits for clients on
+.BR tcp!*!17019 ,
+as the
+.B cpuwait
+method does.
+Booted with
+.BR "service=cpu nvram=/lib/nvram nobootprompt=mxpcpuwait" ,
+it takes its keys from the well-known nvram of the cpuwait
+servers (host owner glenda, authdom cpuwait, password
+.BR glen||glenda ),
+so the link must reach only trusted hosts.
+.PP
 Reading
 .B mxpctl
 returns the driver phase

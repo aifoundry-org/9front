@@ -1,0 +1,39 @@
+#!/bin/rc
+# mxpcpuwait boot method: cpuwait's cpu server (/rc/lib/cpuwait.rc)
+# on the Maxion's packet mailbox link to the PCIe host (mxp(3)):
+#
+#	nobootprompt='mxpcpuwait [local [peer]]'
+#
+# local and peer default to 192.0.2.2 and 192.0.2.1, the host end
+# (its etmx interface).  ipconfig cannot bind a netdev medium, so
+# this configures the point-to-point link itself; the rcpu listener,
+# its service and the clients' name space are cpuwait's.  The keys
+# come from nvram, as for cpuwait: maxioncpuwait.bootfs.proto puts
+# the well-known one (glenda, cpuwait, glen||glenda) in /lib/nvram.
+
+fn configmxpcpuwait{
+	bind -qa '#E' /dev
+	if(! test -f /dev/mxpctl)
+		fatal 'mxpcpuwait: no packet mailbox session in the device tree'
+	local=192.0.2.2
+	peer=192.0.2.1
+	if(! ~ $#* 0)
+		local=$1
+	if(! ~ $#* 0 1)
+		peer=$2
+	<>/net/ipifc/clone {
+		echo bind netdev /dev/mxp >[1=0] &&
+		echo add $local 255.255.255.255 $peer 1500 >[1=0]
+	} || fatal 'mxpcpuwait: cannot configure the packet mailbox link'
+	echo 'mxpcpuwait: '^$local^' <-> '^$peer^' over the host packet mailbox'
+
+	if(~ $#sysname 0)
+		sysname=maxion
+	echo -n $sysname >/dev/sysname
+
+	# keys come from nvram; without $auth bootrc skips secstore
+	auth=()
+}
+
+mmxpcpuwait=(configmxpcpuwait connectcpuwait)
+mt=(mmxpcpuwait $mt)

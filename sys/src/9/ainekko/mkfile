@@ -5,7 +5,8 @@ CONFLIST=maxion
 # SoC's memory map (memmap.c), interrupt controller (plic.c, intr.c),
 # board hooks (maxionboard.c) and PC<->MX packet mailbox (devmxp.c,
 # mxpcore.c).  OpenSBI starts it in place in the RAM window at
-# 0x8600000000.
+# 0x8600000000.  maxioncpuwait is maxion with the cpuwait boot file
+# system (kernel.rc).
 loadaddr=0x8600200000
 
 objtype=riscv64
