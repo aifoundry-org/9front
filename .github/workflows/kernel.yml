@@ -1,8 +1,9 @@
 # Build the riscv64 kernels from this commit's sys/src/9 with p9cloud's
 # rebuild.sh, on the riscv64 userland of ghcr.io/rvs/9front-riscv64:
-# 9rva23 (K1 and K3), 9rva23cpuwait (K1/K3, cpuwait boot file system)
-# and 9maxion.  Boot-test 9rva23cpuwait with p9cloud's boot-test.sh and
-# 9maxion's embedded smoke test, both in qemu-system-riscv64.
+# 9rva23 (K1 and K3), 9rva23cpuwait (K1/K3, cpuwait boot file system),
+# 9maxion and 9maxioncpuwait (cpuwait over its host packet mailbox).
+# Boot-test 9rva23cpuwait with p9cloud's boot-test.sh and 9maxion's
+# embedded smoke test, both in qemu-system-riscv64.
 name: Build and test RISC-V kernels
 
 on:
@@ -53,9 +54,9 @@ jobs:
           COPY --chown=110000:110000 . /9front/sys/src/9/
           END
 
-      - name: Build 9rva23, 9rva23cpuwait and 9maxion
+      - name: Build 9rva23, 9rva23cpuwait, 9maxion and 9maxioncpuwait
         run: |
-          for conf in rva23 rva23cpuwait maxion; do
+          for conf in rva23 rva23cpuwait maxion maxioncpuwait; do
             "$FS/rebuild.sh" -c $conf kernel out/9$conf
           done
           (cd out && sha256sum * >SHA256SUMS)

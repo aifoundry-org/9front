@@ -1,0 +1,58 @@
+$objtype
+	bin
+		awk
+		auth
+			secstore
+		aux
+			kbdfs
+			wpa
+			listen1
+		bind
+		cat
+		cfs
+		chmod
+		dd
+		echo
+		grep
+		ip
+			ipconfig
+		ls
+		mkdir
+		mntgen
+		mount
+		mv
+		ns
+		ndb
+			dnsgetip
+		rc
+		read
+		rm
+		sed
+		sleep
+		srv
+		test
+		tlsclient
+		tlssrv
+		unmount
+		xd
+rc
+	lib
+		rcmain
+		reboot.rc 555 sys sys ../boot/reboot.rc
+		net.rc 555 sys sys ../boot/net.rc
+		cpuwait.rc 555 sys sys ../boot/cpuwait.rc
+		mxpcpuwait.rc 555 sys sys maxion.mxpcpuwait.rc
+	bin
+		ethermultilink
+		cpuwait.service 555 sys sys ../boot/cpuwait.service
+		srvtls
+		bootrc 555 sys sys ../boot/bootrc
+tmp
+sys
+	lib
+		kbmap
+			+
+lib
+	namespace 444 sys sys ../boot/cpuwait.ns
+	nvram 444 sys sys maxioncpuwait.nvram
+	firmware
