@@ -61,6 +61,7 @@
 /* mask to check segment; good for 512MB dram */
 #define	KSEGM		0xE0000000
 #define	KZERO		KSEG0			/* kernel address space */
+#define iskern(v) 	(((uintptr)v)>KZERO)
 #define L1		(KZERO+16*KiB)		/* tt ptes: 16KiB aligned */
 #define CONFADDR	(KZERO+0x300000)	/* unparsed plan9.ini */
 /* KTZERO must match loadaddr in mkfile */
