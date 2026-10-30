@@ -16,6 +16,7 @@
 #include "maxion.h"
 
 static Dtbmxp mxpdt = { .abi = -1 };
+static Dtbrtc rtcdt;
 
 /*
  * Called once DT and bootargs are parsed, before meminit.  Fail
@@ -94,7 +95,23 @@ dtbmxp(void)
 	return d;
 }
 
-/* every DT property, from bootargsinit's walk; collect the mailbox's */
+/*
+ * The host time sample, or nil.  Requires exactly one well-formed
+ * sample after 2001; whether the counter has since been reset is
+ * devrtc's check, once the clock runs.
+ */
+Dtbrtc*
+dtbrtc(void)
+{
+	Dtbrtc *r;
+
+	r = &rtcdt;
+	if(r->nsample != 1 || !r->ok || r->ns < 1000000000LL*1000000000LL)
+		return nil;
+	return r;
+}
+
+/* every DT property, from bootargsinit's walk; collect the mailbox's and the clock's */
 void
 boarddtprop(char *path, char *key, uchar *p, int len)
 {
@@ -117,6 +134,16 @@ boarddtprop(char *path, char *key, uchar *p, int len)
 				n = sizeof(d->seed);
 			memmove(d->seed, p, n);
 			d->nseed = n;
+		}else if(strcmp(key, "ainekko,rtc-sample") == 0){
+			rtcdt.nsample++;
+			rtcdt.ok = len == 16;
+			if(rtcdt.ok){
+				rtcdt.mtime = (uvlong)beget4(p)<<32 | beget4(p+4);
+				rtcdt.ns = (uvlong)beget4(p+8)<<32 | beget4(p+12);
+			}
+		}else if(strcmp(key, "ainekko,rtc-error-ns") == 0 && len == 4){
+			rtcdt.err = beget4(p);
+			rtcdt.haserr = 1;
 		}
 		return;
 	}

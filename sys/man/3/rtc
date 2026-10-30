@@ -33,8 +33,57 @@ reads the machine's key
 from there
 (see
 .IR auth (8)).
+.SS ET-SoC-1 Maxion
+The Maxion has neither a calendar clock nor non-volatile RAM, so it has no
+.BR nvram .
+Its
+.B rtc
+is the free-running CLINT
+.B mtime
+counter (the device-tree timebase, about 9.33 MHz),
+which only a cold reset of the card restarts,
+plus an epoch.
+The epoch comes from one sample taken by the PCIe host:
+the counter value and the Unix time at which the host read it,
+in the device tree as
+.B /chosen
+.B ainekko,rtc-sample
+(four cells: counter high and low, nanoseconds high and low),
+with its uncertainty in nanoseconds in
+.BR ainekko,rtc-error-ns .
+The sample remains valid across guest reboots until the next cold reset;
+a sample ahead of the counter is ignored.
+At boot the kernel sets the time of day from the clock,
+to the nanosecond;
+without a sample the clock counts from the epoch at the last cold reset.
+Writing
+.B rtc
+moves only the epoch, and only until the next boot.
+.PP
+The
+.B rtcctl
+file reads as the clock's state:
+the source of the epoch
+.RB ( host ,
+.B write
+or
+.BR "cold reset" ),
+the epoch and its counter value,
+the uncertainty, the timebase, the counter, the clock in nanoseconds,
+and the time of day set at boot.
+Writing
+.B tod
+to it sets the time of day from the clock to the nanosecond,
+where copying
+.B rtc
+to
+.B /dev/time
+truncates it to the second.
 .SH SEE ALSO
+.IR cons (3),
+.IR mxp (3),
 .IR auth (8),
-.IR boot (8)
+.IR boot (8),
+.IR timesync (8)
 .SH SOURCE
 .B /sys/src/9/*/devrtc.c

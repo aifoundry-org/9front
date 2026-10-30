@@ -24,3 +24,23 @@ struct Dtbmxp {
 };
 
 Dtbmxp	*dtbmxp(void);
+
+/*
+ * One host sample of the CLINT mtime counter against Unix time, from
+ * /chosen ainekko,rtc-sample = <mtime-hi mtime-lo ns-hi ns-lo> and the
+ * optional ainekko,rtc-error-ns = <ns> (half the host's bracketing
+ * round trip).  It stays valid until an uncore (cold) reset restarts
+ * mtime; devrtc.c refuses it if the counter is behind it.
+ */
+typedef struct Dtbrtc Dtbrtc;
+
+struct Dtbrtc {
+	int	nsample;	/* ainekko,rtc-sample properties seen */
+	int	ok;		/* the last was 16 bytes */
+	uvlong	mtime;		/* counter value at ns */
+	vlong	ns;		/* Unix ns when the counter read mtime */
+	int	haserr;
+	uvlong	err;		/* ainekko,rtc-error-ns */
+};
+
+Dtbrtc	*dtbrtc(void);

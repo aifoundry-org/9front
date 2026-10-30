@@ -3,6 +3,7 @@ riscv64
 		aux
 			kbdfs
 			listen1
+			timesync
 		bind
 		cat
 		chmod

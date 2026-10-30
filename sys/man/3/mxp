@@ -107,6 +107,15 @@ servers (host owner glenda, authdom cpuwait, password
 .BR glen||glenda ),
 so the link must reach only trusted hosts.
 .PP
+With
+.BI ntp= addr
+among the boot parameters, both boot scripts also start
+.B aux/timesync -n
+against that NTP server across the link
+(see
+.IR rtc (3)
+for how the clock starts).
+.PP
 Reading
 .B mxpctl
 returns the driver phase
@@ -139,7 +148,9 @@ Set the two poll periods in milliseconds.
 .br
 .B /sys/src/9/ainekko/mxpcore.c
 .SH SEE ALSO
-.IR ip (3)
+.IR ip (3),
+.IR rtc (3),
+.IR timesync (8)
 .SH BUGS
 The mailbox holds one full-size record each way, so every packet waits
 for the peer's poll to return credit; throughput is a few megabits per
