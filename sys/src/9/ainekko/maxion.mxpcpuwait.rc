@@ -10,6 +10,8 @@
 # its service and the clients' name space are cpuwait's.  The keys
 # come from nvram, as for cpuwait: maxioncpuwait.bootfs.proto puts
 # the well-known one (glenda, cpuwait, glen||glenda) in /lib/nvram.
+# The kernel clock starts from the host's DT time sample (devrtc.c);
+# with ntp=addr, aux/timesync then disciplines it over the link.
 
 fn configmxpcpuwait{
 	bind -qa '#E' /dev
@@ -26,6 +28,12 @@ fn configmxpcpuwait{
 		echo add $local 255.255.255.255 $peer 1500 >[1=0]
 	} || fatal 'mxpcpuwait: cannot configure the packet mailbox link'
 	echo 'mxpcpuwait: '^$local^' <-> '^$peer^' over the host packet mailbox'
+	# bootrc set the time of day from the whole-second rtc
+	echo tod >'#r/rtcctl' >[2]/dev/null
+	if(! ~ $#ntp 0){
+		aux/timesync -n 'udp!'^$ntp^'!123' &
+		echo 'mxpcpuwait: timesync ntp udp!'^$ntp^'!123'
+	}
 
 	if(~ $#sysname 0)
 		sysname=maxion

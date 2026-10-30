@@ -13,6 +13,7 @@ dev
 	tls
 	cap
 	uart
+	rtc
 	ip	arp chandial ip ipv6 ipaux iproute netlog nullmedium pktmedium inferno
 	mxp	mxpcore
 

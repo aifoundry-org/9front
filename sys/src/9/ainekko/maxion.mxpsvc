@@ -1,6 +1,7 @@
 #!/bin/rc
 # Test services, bound to the packet link address only:
-# tcp 7 echo, tcp 9 discard, tcp 19 source (4 MiB of zeros).
+# tcp 7 echo, tcp 9 discard, tcp 19 source (4 MiB of zeros),
+# tcp 13 the kernel clock (/dev/time: seconds, ns, ticks, tick rate, uptime).
 rfork e
 if(! test -e /dev/mxpctl){
 	echo 'mxpsvc: no packet mailbox' >[1=2]
@@ -11,4 +12,5 @@ if(~ $#mxpip 0)
 aux/listen1 -t 'tcp!'^$mxpip^'!7' /bin/cat &
 aux/listen1 -t 'tcp!'^$mxpip^'!9' /bin/rc -c 'cat >/dev/null' &
 aux/listen1 -t 'tcp!'^$mxpip^'!19' /bin/dd -if /dev/zero -bs 8192 -count 512 &
-echo 'mxpsvc: echo 7, discard 9, source 19 on '^$mxpip
+aux/listen1 -t 'tcp!'^$mxpip^'!13' /bin/cat /dev/time &
+echo 'mxpsvc: echo 7, discard 9, source 19, time 13 on '^$mxpip

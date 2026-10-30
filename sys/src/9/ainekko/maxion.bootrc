@@ -6,6 +6,10 @@ echo -n $user >/dev/hostowner
 bind -qa '#t' /dev
 bind -qa '#P' /dev
 bind '#p' /proc
+bind -a '#r' /dev
+# the clock is UTC (devrtc.c); there is no /adm/timezone
+if(! test -e /env/timezone)
+	echo 'GMT 0 GMT 0' >/env/timezone
 aux/kbdfs -q -s cons /dev/eia0
 ramfs -m /tmp
 prompt=('maxion9% ' '	')
@@ -24,6 +28,11 @@ if(test -e /dev/mxpctl){
 		echo bind netdev /dev/mxp >[1=0] &&
 		echo add $mxpip 255.255.255.255 $mxppeer 1500 >[1=0] &&
 		echo 'mxp: '^$mxpip^' <-> '^$mxppeer^' over the host packet mailbox'
+	}
+	# ntp=addr: discipline the clock against an NTP server across the link
+	if(! ~ $#ntp 0){
+		aux/timesync -n 'udp!'^$ntp^'!123' &
+		echo 'timesync: ntp udp!'^$ntp^'!123'
 	}
 }
 if not
