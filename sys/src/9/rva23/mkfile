@@ -60,6 +60,7 @@ OBJ=\
 	main.$O\
 	mmu.$O\
 	mem.$O\
+	memmap.$O\
 	plic.$O\
 	aplic.$O\
 	intr.$O\
