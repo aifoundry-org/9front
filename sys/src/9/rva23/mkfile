@@ -71,6 +71,7 @@ OBJ=\
 	sbi.$O\
 	sbicall.$O\
 	sbiecall.$O\
+	boardrv.$O\
 	ethersmte.$O\
 	etherdwqe.$O\
 	k1reset.$O\
