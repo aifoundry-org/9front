@@ -13,7 +13,15 @@ CAUSE=12
 MMODE=13
 EXCPC=14
 
-/* side-effect: patches Ureg with regsave's R2 */
+/*
+ * PUSHALLS pushes a Ureg onto the stack.  strap's CSRRW has just exchanged
+ * R7 and SSCRATCH: R(MACH) is this hart's Mach, and SSCRATCH holds
+ * whatever was in R7 when the trap was taken.  So pushr2_31 saves our
+ * Mach as R7; replaces it with the trapped value (which also goes in
+ * the sscratch slot, as before), and puts the Mach pointer back in
+ * SSCRATCH, where a trap taken while in trap() expects to find it.
+ * side-effect: patches Ureg with regsave's R2
+ */
 #define PUSHALLS \
 	SUB	$UREGSIZE, R2;		/* room for pc, regs, csrs */\
 	S(1);\
@@ -28,7 +36,9 @@ EXCPC=14
 	MOV	CSR(SCAUSE), R9;	MOV R9, (34*XLEN)(R2);\
 	MOV	CSR(STVAL), R9;		MOV R9, (35*XLEN)(R2);\
 	MOV	$Mppsuper, R9;		MOV R9, (36*XLEN)(R2); /* curmode */ \
-	MOV	CSR(SSCRATCH), R9;	MOV R9, (37*XLEN)(R2)
+	MOV	CSR(SSCRATCH), R9;	MOV R9, (37*XLEN)(R2); \
+	MOV	R9, (7*XLEN)(R2);	/* R7 as it was when we trapped */\
+	MOV	R(MACH), CSR(SSCRATCH)	/* Mach again, for nested traps */
 
 
 TEXT softsoft(SB), 1, $-4
@@ -104,7 +114,7 @@ TEXT strap(SB), 1, $-4
 
 	/* MACH, SB are still correct; USER might not be after resched. */
 	MOV	MACHPROC(R(MACH)), R(USER)	/* up = m->proc */
-	JMP	return			/* to kernel */
+	JMP	return			/* to kernel, R7 still this hart's Mach */
 
 	/*
 	 * trapped from user mode: SB, MACH, R2, USER all need(ed) reloading.
@@ -150,16 +160,21 @@ syscallret:
 	 * ureg->pc and ureg->sp back into user registers.
 	 *
 	 * Of course, other user traps need to have all registers restored.
+	 *
+	 * R7 is MACH to us but an ordinary register to the user: return the
+	 * user's R7 from the Ureg, where PUSHALLS saved it (fork and noted
+	 * may have rewritten the Ureg since), and leave this hart's Mach in
+	 * SSCRATCH for the next trap.
 	 */
 	MOV	R(USER), R2
 	SUB $UREGSIZE, R2
 	POPCSR_MOSTREGS(SEPC, SSTATUS)
 	MOV	(3*XLEN)(R2), R3	/* restore user's SB */
 	MOV	(6*XLEN)(R2), R6
+	MOV	(7*XLEN)(R2), R7	/* may have changed via fork or noted */
 return:
 	MOV	(2*XLEN)(R2), R2	/* restore SP */
 	FENCE
-	CSRRW	CSR(SSCRATCH), R(MACH), R(MACH) /* restore R7, reload saved m */
 	SRET				/* to CSR(SEPC) address */
 
 /* rfork return for child processes */
