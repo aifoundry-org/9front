@@ -56,7 +56,7 @@ init0(void)
 
 	splhi();
 	fpukexit(nil, nil);
-	mmuswitch(up);
+	mmuswitch(up, 0);
 	print("fault %d sp %d\n", fault(UTZERO, UTZERO, 1), fault(p->va, UTZERO, 0));
 	u64int* pte = userpte((void *)UTZERO);
 	print("pte is %p *pte %llx\n", pte, *pte);
@@ -323,7 +323,6 @@ main(u64int hartid, uintptr dtb)
 	l2init();		/* detect Zicbom / configure l2 cache before any dma-capable device (xhci, etc.) resets */
 	pageinit();
 	procinit0();
-	initseg();
 	links();
 	chandevreset();
 	userinit();
