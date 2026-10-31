@@ -23,7 +23,7 @@ mmu1init(void)
 		panic("mmu1init: no memory for mmutop");
 	memset(m->mmutop, 0, L1TOPSIZE);
 	memmove(m->mmutop, sv39, L1TOPSIZE);
-	mmuswitch(nil);
+	mmuswitch(nil, 0);
 }
 
 uintptr
@@ -437,7 +437,7 @@ putasid(Proc *p)
 	 * resetting of the core clock at 0x4000001C which confuses local timers.
 	 */
 	if(conf.nmach > 1)
-		mmuswitch(nil);
+		mmuswitch(nil, 0);
 
 	if(p->asid > 0)
 		p->asid = -p->asid;
@@ -500,7 +500,7 @@ mmufree(Proc *p)
 }
 
 void
-mmuswitch(Proc *p)
+mmuswitch(Proc *p, int newtlb)
 {
 	uintptr va;
 	Page *t;
@@ -516,10 +516,8 @@ if (0)	print("p %p for setting tbr?\n", p);
 		return;
 	}
 
-	if(p->newtlb){
+	if(newtlb)
 		mmufree(p);
-		p->newtlb = 0;
-	}
 if (0)	print("allocasid(p) %d\n", allocasid(p));
 	if(allocasid(p)){
 		if (Spew)print("NOT messing with ASID\n");
@@ -541,21 +539,10 @@ if (0)		print("Set mmutop[%llxx] to %llx\n", PTLX(va, PTLEVELS-1), pte );
 void
 mmurelease(Proc *p)
 {
-	mmuswitch(nil);
+	mmuswitch(nil, 0);
 	mmufree(p);
 	freepages(p->mmufree, nil, 0);
 	p->mmufree = nil;
-}
-
-void
-flushmmu(void)
-{
-	int x;
-
-	x = splhi();
-	up->newtlb = 1;
-	mmuswitch(up);
-	splx(x);
 }
 
 void
