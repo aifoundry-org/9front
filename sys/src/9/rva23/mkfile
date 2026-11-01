@@ -53,8 +53,11 @@ PORT=\
 # don't forget: l.$O must always be first
 OBJ=\
 	l.$O\
+	cas.$O\
+	timecmp.$O\
 	reloc.$O\
 	archrv.$O\
+	cbo.$O\
 	bootargs.$O\
 	strap.$O\
 	main.$O\

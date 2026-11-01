@@ -3,7 +3,7 @@
 /* l.s */
 extern void sev(void);
 extern int tas(void *);
-extern int cmpswap(long*, long, long);
+extern int cmpswap(long*, long, long);		/* cas.s */
 extern void coherence(void);
 extern void idlehands(void);
 extern uvlong vcycles(void);
@@ -285,7 +285,7 @@ void	clrstie(void);
 void	cboinval(void *);
 void	cboflush(void *);
 void	cboclean(void *);
-void	l2init(void);
+void	l2init(void);		/* cbo.c */
 
 // more good 9k stuff: m mode bits.
 // Let's keep them until we're sure we don't want them.
@@ -360,7 +360,7 @@ void wfi(void);
 void cpustart(int);
 extern void cpumain(void);
 
-/* rva23 */
+/* rva23: timecmp.s */
 void wrstimecmp(u64int);
 u64int rdstimecmp(void);
 
