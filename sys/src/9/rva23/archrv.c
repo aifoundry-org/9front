@@ -687,7 +687,7 @@ idlenowakehands(void)
 	coherence();		/* make our changes visible to other harts */
 	if ((getsie() & Superie) == 0)
 		panic("sie csr has no S intrs enabled: %#p\n", getsie());
-	while (((ip = getsip()) & Superie) == 0)
+	while (((ip = getsip() & getsie()) & Superie) == 0)
 		halt();
 	coherence();		/* make other harts' changes visible to us */
 	/* service any pending external interrupt directly; irq() tolerates
