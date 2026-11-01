@@ -9,7 +9,7 @@
 #
 # *maxmem can be different if you've got a 4/8/16 GB board.
 # k1plicmask/k1ier/k1fcr/console are needed to make UART RX work on the K1;
-# see sys/src/9/riscv64/uarti8250.c for the per-knob explanation.
+# see sys/src/9/rva23/uarti8250.c for the per-knob explanation.
 
 CFLAGS := -Wall -O2
 

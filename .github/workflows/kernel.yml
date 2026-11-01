@@ -1,7 +1,7 @@
 # Build the riscv64 kernels from this commit's sys/src/9 with p9cloud's
 # rebuild.sh, on the riscv64 userland of ghcr.io/rvs/9front-riscv64:
-# 9rv64 (generic), 9rv64cpuwait (generic, cpuwait boot file system)
-# and 9maxion.  Boot-test 9rv64cpuwait with p9cloud's boot-test.sh and
+# 9rva23 (K1 and K3), 9rva23cpuwait (K1/K3, cpuwait boot file system)
+# and 9maxion.  Boot-test 9rva23cpuwait with p9cloud's boot-test.sh and
 # 9maxion's embedded smoke test, both in qemu-system-riscv64.
 name: Build and test RISC-V kernels
 

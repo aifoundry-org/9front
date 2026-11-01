@@ -1,4 +1,4 @@
-# AGENTS.md — 9front on Banana Pi F3 (riscv64)
+# AGENTS.md — 9front on riscv64 rva23-compliant boards
 
 ## Build environment
 

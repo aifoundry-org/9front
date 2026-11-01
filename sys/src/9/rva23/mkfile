@@ -1,5 +1,5 @@
-CONF=rv64
-CONFLIST=rv64 bpif3 maxion
+CONF=rva23
+CONFLIST=rva23 maxion
 
 # loadaddr is the link address (-T), but the kernel runs in place
 # wherever kexec/booti put it, fixing up its data pointers from the
@@ -131,7 +131,7 @@ install:V: /$objtype/$p$CONF
 /$objtype/$p$CONF:D: $p$CONF s$p$CONF
 	cp -x $p$CONF s$p$CONF /$objtype/
 
-# mk install.9fat: copy 9rv64 to 9fat partition for u-boot; backup to 9rv64.o
+# mk install.9fat: copy 9rva23 to 9fat partition for u-boot; backup to 9rva23.o
 install.%:V:	$p$CONF
 	@{
 	rfork n
