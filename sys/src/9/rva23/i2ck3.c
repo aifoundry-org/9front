@@ -1,134 +1,34 @@
 /*
- * i2ck3.c -- I2C master controller driver for the SpacemiT K3 SoC
- * ("spacemit,k1-i2c" IP), for 9front.
+ * i2ck3.c -- I2C master driver for the SpacemiT K3
+ * ("spacemit,k1-i2c" block), polled master mode.
  *
- * STATUS: working, validated on real k3-pico-itx hardware. i2c1's
- * FUSB301 @0x25, i2c2's EEPROM @0x50, and i2c3's ES8326B codec @0x19
- * all show up correctly under #J, and every bus/address with no
- * hardware on it stays correctly empty (no false positives). Getting
- * here needed two hardware-specific fixes beyond the register-level
- * cross-checks below:
+ * The K1 has the same controller at the same addresses; the only difference is
+ * the K1 also has an i2c7 (0xD401D000, irq 18, apbc 0x68), unused on the BPI-F3.
  *
- *   1. Clock gating (see k3i2cclkenable()): every AP i2c controller
- *      sits behind its own gate in the "apbc"/"apbc2" syscon blocks
- *      and reads back all-zero registers until that gate is enabled
- *      -- confirmed empirically (a write to ICR read back as 0x0)
- *      before this was added.
+ * Buses, SoC properties (k3-pico-itx.dtb and com260.dtb, clock 400000 in both):
  *
- *   2. This IP cannot combine START and STOP in the same TB pulse
- *      (see the "quick" case in k3i2cio()): a zero-data probe has to
- *      be split into two separate pulses, confirmed empirically.
+ *	label   base        irq   pico-itx                     com260-ifx
+ *	------  ----------  ----  ---------------------------  ---------------------------
+ *	i2c0    0xD4010800   36   disabled                     FUSB301 CC @0x25
+ *	i2c1    0xD4011000   37   FUSB301 CC @0x25             EEPROM @0x50
+ *	i2c2    0xD4012000   38   EEPROM GT24C02B @0x50        (no devices)
+ *	i2c3    0xF0614000   39   ES8326B audio @0x19          panel @0x45, touch ft5426 @0x38
+ *	i2c4    0xD4012800   40   disabled                     disabled
+ *	i2c5    0xD4013800   41   disabled                     CSI cameras imx219@10, ov5647@36, ov5640@3c, imx415@37
+ *	i2c6    0xD4018800   70   disabled                     ctf2301 @0x4c
+ *	i2c8    0xD401D800   19   PMIC P1 @0x41 (node disabled) disabled
  *
- * NOT implemented: ri2c0/ri2c1, pending confirmation of their domain.
- * These live in the RCPU (real-time companion core) address range and
- * their DT-listed device (VR AU4562 @0x75, per the schematic) looks
- * like RCPU-side power-sequencing hardware, not something the AP
- * should be sharing a bus with as a second, uncoordinated I2C master.
- * See the longer note near k3i2cclkenable() below.
+ * ri2c0/ri2c1 (0xC0886000/100, irqs 272/273) are deliberately not inited:
+ * their clock/reset syscon ("spacemit,k3-syscon-rcpu-i2cctrl" @0xC0886F00) is
+ * in the RCPU (real-time core) address range, and the only documented device
+ * (VR AU4562 @0x75 on ri2c1, per the schematic) is power-sequencing hardware
+ * the RCPU should own. The AP becoming a second, uncoordinated master on that
+ * bus risks corrupting the regulator; check whether an AP<->RCPU mailbox path
+ * is intended before touching these.
  *
- * REVISION NOTE: an earlier version of this file assumed a Synopsys
- * DesignWare APB I2C register layout.  That was WRONG.  Both boards'
- * device trees say:
- *
- *	compatible = "spacemit,k1-i2c";
- *
- * which is a different, byte-at-a-time controller (closer in spirit
- * to the old Marvell PXA i2c block than to DesignWare's FIFO-based
- * IP).  The register map is eight registers four bytes apart -- icr,
- * isr, isar, idbr, ilcr, iwcr, irst_cyc, ibmr -- and every bit
- * position used below was corroborated twice before any of this was
- * written.  Two things that turned up on the second pass: general-call
- * disable (Icrgcd, bit 21) has to be set at init, and every
- * transaction should confirm the bus is idle (Sribb clear) before
- * pulsing the first byte.
- *
- * This file has been checked against device trees from two different
- * carrier boards built around the same K3 SoC:
- *
- *	k3-pico-itx.dtb   model "SpacemiT K3 Pico ITX"
- *	                  compatible "spacemit,k3-pico-itx"
- *	com260.dtb        model "SpacemiT K3 Com260 IFX"
- *	                  compatible "spacemit,k3-com260-ifx"
- *
- * Every controller's physical base address, register block size
- * (0x38), interrupt number and clock-frequency (400000, fast mode)
- * are byte-for-byte identical between the two -- expected, since
- * those live in the SoC, not the carrier board.  What differs
- * per-board is only which buses are wired out (dt status) and which
- * peripheral hangs off each one.  Bus table, combining both:
- *
- *	label   phys base    irq   pico-itx status/device        com260-ifx status/device
- *	------  -----------  ----  --------------------------    ----------------------------
- *	i2c0    0xD4010800    36   disabled                      okay: FUSB301 (CC) @0x25
- *	i2c1    0xD4011000    37   okay: FUSB301 (CC) @0x25       okay: EEPROM @0x50
- *	i2c2    0xD4012000    38   okay: EEPROM GT24C02B @0x50    okay, no devices declared
- *	i2c3    0xF0614000    39   okay: ES8326B audio @0x19      okay: raspits-panel@45,
- *	                                                           raspits-touch-ft5426@38
- *	i2c4    0xD4012800    40   disabled                       disabled
- *	i2c5    0xD4013800    41   disabled                       okay: CSI cameras
- *	                                                           (imx219@10, ov5647@36,
- *	                                                           ov5640@3c, imx415@37)
- *	i2c6    0xD4018800    70   disabled                       okay: ctf2301@4c
- *	i2c8    0xD401D800    19   okay: PWR_I2C, PMIC P1 @0x41    disabled
- *	                           (p1@41 node itself disabled
- *	                           in this board's dts)
- *	ri2c0   0xC0886000   272   NOT IMPL (see below)           NOT IMPL (see below)
- *	ri2c1   0xC0886100   273   NOT IMPL (schematic: R_I2C0/1  NOT IMPL (see below)
- *	                           RCPU domain, VR AU4562 @0x75
- *	                           on ri2c1)
- *
- * Note the same physical bus can carry a different peripheral on
- * each board (e.g. the CC-logic FUSB301 sits on i2c1 on Pico-ITX but
- * on i2c0 on Com260-IFX) -- this driver only registers the buses by
- * their generic i2cN/ri2cN name; which device is expected on which
- * bus is a board/config matter for whatever calls i2cbus(), not for
- * this file.
- *
- * All of the above use clock-frequency = 400000 (fast mode) in both
- * device trees.
- *
- * NOT handled by this driver:
- *
- *   - ri2c0/ri2c1: NOT IMPLEMENTED, pending confirmation of their
- *     domain. reg/clocks/resets all point into the RCPU (real-time
- *     companion core) address range (0xC0886xxx, syscon
- *     "spacemit,k3-syscon-rcpu-i2cctrl" @ 0xC0886F00), and the
- *     schematic's only documented device on this bus is a VR
- *     (AU4562 @0x75 on ri2c1) -- power-sequencing hardware, the kind
- *     of thing an RTOS running on the RCPU would own and manage on
- *     its own timing. If that's right, the AP (this driver) has no
- *     business becoming a second, uncoordinated I2C master on that
- *     bus -- two masters without arbitration can corrupt each other's
- *     transactions, and one of them would be a voltage regulator.
- *     Before writing anything here, that ownership question needs an
- *     actual answer (ideally: is there an ACPU<->RCPU IPC/mailbox
- *     path meant to be used instead of touching these registers
- *     directly?), not just a register offset. c->rdomain deliberately
- *     always fails k3i2cinit() until that's resolved -- see the note
- *     at k3i2cclkenable().
- *
- *   - The two "google,cros-ec-i2c-tunnel" buses (remote-bus 1 and 4)
- *     seen under the cros-ec node are NOT memory-mapped controllers
- *     at all -- they're virtual buses proxied through the EC over
- *     eSPI (the same EC/cros_ec path behind the fan's hwmon7 node).
- *     A real implementation needs a client riding the cros_ec eSPI
- *     transport, not this MMIO driver.
- *
- *   - clocks/resets/power-domains: this driver assumes the buses
- *     marked "okay" already have their clock enabled and reset
- *     deasserted by firmware/bootloader (typical for status=okay
- *     nodes at kernel boot). If that's not the case on your build,
- *     the SoC clock/reset controller (dtb phandle target of the
- *     "clocks"/"resets" properties) needs to be driven first.
- *
- * Board matching: i2ck3link() runs on the K3 and on the K1, and on
- * nothing else -- no point mapping and poking these registers if the
- * controllers aren't there. The K1 carries the same IP at the same
- * addresses behind the same apbc/apbc2 gates: the K1's own device
- * trees agree with the table below on i2c0-i2c6 and i2c8, including i2c3's
- * odd base in the apbc2 block. The K1 also has an i2c7 at 0xd401d000
- * (irq 18, apbc 0x68) that the K3 doesn't; nothing hangs off it on
- * the BPI-F3, so it isn't in the table.
+ * The two "google,cros-ec-i2c-tunnel" buses (remote-bus 1 and 4) are proxied
+ * through the EC over eSPI, not memory-mapped controllers; they need a client
+ * on the cros_ec transport, not this driver.
  */
 #include "u.h"
 #include "../port/lib.h"
@@ -139,119 +39,101 @@
 #include "../port/i2c.h"
 
 /*
- * spacemit,k1-i2c registers: icr, isr, isar, idbr, ilcr, iwcr,
- * irst_cyc, ibmr, in that order, four bytes apart.
+ * spacemit,k1-i2c registers: icr, isr, isar, idbr, ilcr, iwcr, irst_cyc, ibmr,
+ * four bytes apart.
+ *
+ * This is a byte-at-a-time controller, not a Synopsys DesignWare APB layout.
+ * The ILCR/IWCR timing values are left at their power-on-reset defaults for
+ * standard and fast mode.
  */
 enum {
-	Icr		= 0x00,		/* control register */
-	Isr		= 0x04,		/* status register */
-	Isar		= 0x08,		/* slave address register (slave mode; unused) */
-	Idbr		= 0x0C,		/* data buffer register */
-	Ilcr		= 0x10,		/* load count register (clock timing) */
-	Iwcr		= 0x14,		/* wait count register */
+	Icr			= 0x00,		/* control register */
+	Isr			= 0x04,		/* status register */
+	Isar		= 0x08,		/* slave address (slave mode, unused) */
+	Idbr		= 0x0C,		/* data buffer */
+	Ilcr		= 0x10,		/* load count (clock timing) */
+	Iwcr		= 0x14,		/* wait count */
 	Irstcyc		= 0x18,		/* bus reset cycle counter */
-	Ibmr		= 0x1C,		/* bus monitor register (raw SCL/SDA state) */
-	Iwfifo		= 0x20,		/* write fifo -- unused: we run byte-at-a-time */
+	Ibmr		= 0x1C,		/* bus monitor (raw SCL/SDA) */
+	Iwfifo		= 0x20,		/* write fifo, unused: byte-at-a-time */
 };
 
-/* ICR bits -- every position below corroborated bit-for-bit. */
+/* ICR bits. The *IE bits only gate the IRQ line; the driver is polled. */
 enum {
 	Crstart		= 1<<0,		/* start condition */
 	Crstop		= 1<<1,		/* stop condition */
 	Cracknak	= 1<<2,		/* 1 = send/expect NAK, 0 = ACK */
-	Crtb		= 1<<3,		/* transfer byte: kick one byte across the wire */
-	Crmodefast	= 1<<8,		/* 1 = fast mode (400kHz), 0 = standard (100kHz) */
-	Crmodemask	= 3<<8,		/* mode field is 2 bits wide (room for hs mode) */
+	Crtb		= 1<<3,		/* transfer byte */
+	Crmodefast	= 1<<8,		/* 1 = fast mode (400kHz), 0 = standard */
+	Crmodemask	= 3<<8,		/* mode is a 2-bit field (room for hs) */
 	Crur		= 1<<10,	/* unit reset */
 	Crma		= 1<<12,	/* master abort */
-	Crscle		= 1<<13,	/* master SCL clock output enable */
+	Crscle		= 1<<13,	/* master SCL output enable */
 	Criue		= 1<<14,	/* I2C unit enable */
 	Craldie		= 1<<18,	/* arbitration-loss interrupt enable */
 	Critie		= 1<<19,	/* tx-empty interrupt enable */
 	Crirfie		= 1<<20,	/* rx-full interrupt enable */
-	Crgcd		= 1<<21,	/* general call disable -- always set: we
-					 * don't want to ack the general-call address */
+	Crgcd		= 1<<21,	/* general call disable; set at init so we
+				 * never ack the general-call address */
 	Crbeie		= 1<<22,	/* bus-error interrupt enable */
-	Crsadie		= 1<<23,	/* slave-address-detected interrupt enable */
-	Crssdie		= 1<<24,	/* slave-stop-detected interrupt enable */
-	/*
-	 * Craldie/Critie/Crirfie/Crbeie/Crsadie/Crssdie mirror the ISR
-	 * bit positions below and gate the IRQ line; since this driver
-	 * is fully polled (no interrupt controller wired up) they're
-	 * defined for completeness but never set -- status bits latch
-	 * in ISR regardless of whether the matching *IE bit is enabled.
-	 */
-};
-
-/* ISR bits -- Srrwm..Srssd corroborated bit-for-bit.  Srebb, Srmsd and
- * Srtxdone appear in only one description of this block; nothing
- * contradicts them, and this driver does not rely on them. */
-enum {
-	Srrwm		= 1<<13,	/* read/write mode (of the last addressed transfer) */
-	Sracknak	= 1<<14,	/* ACK/NAK status of the last byte: 1 = NAK */
-	Srub		= 1<<15,	/* unit busy */
-	Sribb		= 1<<16,	/* i2c bus busy */
-	Srebb		= 1<<17,	/* early bus busy (single-sourced, see above) */
-	Srald		= 1<<18,	/* arbitration loss detected */
-	Srite		= 1<<19,	/* tx buffer empty -- byte accepted, ready for next */
-	Srirf		= 1<<20,	/* rx buffer full -- byte received */
-	Srgcad		= 1<<21,	/* general call address detected */
-	Srbed		= 1<<22,	/* bus error (e.g. no ACK/NAK seen) */
-	Srsad		= 1<<23,	/* slave address detected */
-	Srssd		= 1<<24,	/* slave stop detected */
-	Srmsd		= 1<<26,	/* master stop detected (single-sourced, see above) */
-	Srtxdone	= 1<<27,	/* transaction done (single-sourced, see above) */
+	Crsadie		= 1<<23,	/* slave-address interrupt enable */
+	Crssdie		= 1<<24,	/* slave-stop interrupt enable */
 };
 
 /*
- * Peripheral clock/reset gates ("APBC"/"APBC2" syscon blocks).
+ * ISR bits. Srebb, Srmsd and Srtxdone appear in only one description
+ * of this block; this driver does not rely on them.
+ */
+enum {
+	Srrwm		= 1<<13,	/* read/write mode of last transfer */
+	Sracknak	= 1<<14,	/* ACK/NAK of last byte: 1 = NAK */
+	Srub		= 1<<15,	/* unit busy */
+	Sribb		= 1<<16,	/* bus busy */
+	Srebb		= 1<<17,	/* early bus busy (single-sourced) */
+	Srald		= 1<<18,	/* arbitration loss */
+	Srite		= 1<<19,	/* tx buffer empty, ready for next byte */
+	Srirf		= 1<<20,	/* rx buffer full, byte received */
+	Srgcad		= 1<<21,	/* general call address detected */
+	Srbed		= 1<<22,	/* bus error (e.g. no ACK/NAK) */
+	Srsad		= 1<<23,	/* slave address detected */
+	Srssd		= 1<<24,	/* slave stop detected */
+	Srmsd		= 1<<26,	/* master stop detected (single-sourced) */
+	Srtxdone	= 1<<27,	/* transaction done (single-sourced) */
+};
+
+/*
+ * AP i2c clock/reset gates in the "apbc"/"apbc2" syscon blocks.
  *
- * This is the piece that was missing and caused every AP i2c bus to
- * read back all-zero registers (see the big comment further down,
- * at k3i2cclkenable()): each i2c controller instance sits behind its
- * own clock+reset gate in one of two SoC syscon blocks, and nothing
- * enables those gates before this driver touches the controller's
- * own registers.
+ * Each AP i2c controller sits behind its own gate; until enabled the
+ * registers read back all zero, so the gate must be opened before
+ * touching the controller.
  *
- * The offsets below are the K1's, not the K3's, but K3's apbc block
- * cross-validates them: ApbcTsen (0x6C) is the exact same offset
- * k3thermal.c already uses successfully for the real TSEN sensor on
- * this board, so the K1 layout transfers directly to K3's
- * "spacemit,k3-syscon-apbc" (same vendor, same block, likely the same
- * register map or a superset of it).
+ * The offsets below are the K1's; ApbcTsen (0x6C) is the same offset
+ * k3thermal.c uses for the TSEN sensor, which cross-validates the K1
+ * layout for K3's "spacemit,k3-syscon-apbc".
  *
- * The bit layout is the vendor's TRM: "bit[1] - FNCLK... bit[0] -
- * APBCLK... 2 RST ... resets both the APB and functional domain",
- * i.e. bit0 = bus/APB clock, bit1 = functional clock, bit2 = reset.
+ * Bit layout per the vendor TRM: bit0 = APB/bus clock, bit1 =
+ * functional clock, bit2 = reset (1 = held in reset).
  *
- * i2c0/1/2/4/5/6/8 live in the main "apbc" block (same physical base
- * as k3thermal.c's ApbcPhys, 0xD4015000). i2c3 lives in a *different*
- * block, "apbc2" (0xF0610000, "spacemit,k3-syscon-apbc2" in the dtb,
- * phandle target of i2c3's "clocks" property) -- confirmed directly
- * from k3-pico-itx.dtb, not inferred.
- *
- * i2c8 (TWSI8) is a known special case: its gate register always
- * reads back zero.  A read-modify-write on it would write back a
- * bogus all-zero base value, clobbering the mux-select bits the
- * register also contains, instead of preserving them.  So TWSI8 is
- * written blindly with a literal value -- bus+func enable, reset
- * deasserted, mux forced to 0 -- rather than read-modify-written like
- * every other gate here.
+ * i2c0/1/2/4/5/6/8 are in the apbc block; i2c3 is in apbc2.
+ * TWSI8 (i2c8) is special: its gate always reads back zero, so it
+ * must be written with a literal value, not read-modify-written, to
+ * avoid clobbering the mux-select bits.
  */
 enum {
 	ApbcPhys	= 0xD4015000ull,
 	Apbc2Phys	= 0xF0610000ull,
 
-	ApbcTwsi8	= 0x20,		/* i2c8 -- SPECIAL, see above: write-only */
+	ApbcTwsi8	= 0x20,		/* i2c8 -- special, write-only */
 	ApbcTwsi0	= 0x2C,		/* i2c0 */
 	ApbcTwsi1	= 0x30,		/* i2c1 */
 	ApbcTwsi2	= 0x38,		/* i2c2 */
 	ApbcTwsi4	= 0x40,		/* i2c4 */
 	ApbcTwsi5	= 0x4C,		/* i2c5 */
 	ApbcTwsi6	= 0x60,		/* i2c6 */
-	ApbcTsen	= 0x6C,		/* not used here -- cross-check reference, see comment above */
+	ApbcTsen	= 0x6C,		/* not i2c; cross-check reference */
 
-	Apbc2Twsi3	= 0x08,		/* i2c3, in the apbc2 block, not apbc */
+	Apbc2Twsi3	= 0x08,		/* i2c3, in apbc2 */
 
 	ApbcBusEn	= 1<<0,		/* APB/bus clock enable */
 	ApbcFuncEn	= 1<<1,		/* functional clock enable */
@@ -260,17 +142,17 @@ enum {
 
 typedef struct Ctlr Ctlr;
 struct Ctlr {
-	I2Cbus	i2c;		/* generic bus struct handed to addi2cbus() */
+	I2Cbus	i2c;		/* bus struct handed to addi2cbus() */
 	char	*name;
-	uintptr	pa;		/* physical MMIO base */
-	uintptr	base;		/* mapped virtual base, set on first init */
-	ulong	irq;		/* informational only; driver runs polled */
+	uintptr	pa;			/* physical MMIO base */
+	uintptr	base;		/* mapped virtual base */
+	ulong	irq;		/* informational; driver is polled */
 	ulong	speed;		/* 100000 or 400000 */
-	int	rdomain;	/* 1 if this bus lives in the RCPU/"R" domain */
+	int	rdomain;		/* 1 if bus is in the RCPU domain */
 	int	glitchnofix;	/* 1 if dt has "spacemit,sda-glitch-nofix" */
-	uintptr	clkphys;	/* apbc/apbc2 physical base for this bus's gate, 0 if none known */
-	ulong	clkoff;		/* gate register offset within that block */
-	int	clkwriteonly;	/* 1 for i2c8/TWSI8: never read-modify-write the gate */
+	uintptr	clkphys;	/* apbc/apbc2 base for this bus's gate, 0 if none */
+	ulong	clkoff;		/* gate register offset in that block */
+	int	clkwriteonly;	/* 1 for i2c8: never read-modify-write the gate */
 };
 
 typedef struct Cfg Cfg;
@@ -287,16 +169,9 @@ struct Cfg {
 };
 
 /*
- * Bus table.  Physical addresses/irqs/speed are SoC properties and
- * are identical on k3-pico-itx.dtb and com260.dtb (Com260 IFX) -- see
- * header comment for the combined per-board device mapping.  This
- * table registers every controller instance regardless of a given
- * board's dt status; probebus() harmlessly finds nothing on a bus
- * that has no devices wired to it on a particular board.
- *
- * glitchnofix mirrors the dt property "spacemit,sda-glitch-nofix",
- * which is only present on i2c8 in k3-pico-itx.dtb (com260.dtb doesn't
- * have it anywhere, and its i2c8 is disabled anyway).
+ * Registers all controller instances regardless of a board's dt status;
+ * probebus() finds nothing on buses with no wired devices.
+ * glitchnofix is only set for i2c8 (k3-pico-itx.dtb).
  */
 static Cfg cfg[] = {
 	{ "i2c0",	0xD4010800,	36,	400000,	0,	0,	ApbcPhys,	ApbcTwsi0,	0, },	/* pico-itx: unused; com260-ifx: FUSB301 CC @0x25 */
@@ -327,14 +202,10 @@ csr32w(Ctlr *c, ulong r, ulong v)
 }
 
 /*
- * Wait for one of (bit | Srbed); returns the status word via
- * *statusp.  Only clears (bit|Srbed) on the way out -- NOT the
- * whole snapshot -- so any other bit that happened to be set in
- * the same read (notably Sracknak, which can settle in the same
- * poll iteration as Srite) survives for a caller to check
- * separately. Clearing the full snapshot here was a real bug in an
- * earlier version of this file: it could silently wipe a NAK before
- * k3i2cputc()'s dedicated ACK/NAK check ever saw it.
+ * Wait for (bit|Srbed); return the status word in *statusp.
+ * Only clear the bits we waited for, not the full snapshot:
+ * a concurrent bit that settled in the same read (notably Sracknak)
+ * must survive for the caller to check.
  */
 static int
 k3i2cwait(Ctlr *c, ulong bit, ulong *statusp)
@@ -354,21 +225,10 @@ k3i2cwait(Ctlr *c, ulong bit, ulong *statusp)
 }
 
 /*
- * Poll until (bit) is clear in ISR, or Srbed fires, or we time out.
- * Used only to settle ISR_ACKNAK right after ITE.
- *
- * TEMPORARILY WIDENED from 1000 to 50000 iterations: with the clock
- * gates now enabled, every AP bus reads a healthy ICR/IBMR but the
- * address probe still finds zero devices even on buses with known
- * hardware (i2c1/FUSB301, i2c2/EEPROM on pico-itx). One live
- * hypothesis is that this bound, sized for "ACKNAK lags ITE by about
- * one cycle", was too tight for this IP/interconnect and was cutting
- * off real ACKs before they settled, not just correctly timing out
- * on genuine NAKs. If devices start showing up with this widened,
- * dial it back down to whatever's the smallest value that still
- * works, to keep bus probing (which does this for every one of ~1136
- * addresses per bus) reasonably fast. If it *doesn't* help, the
- * timeout wasn't the problem and this should be reverted.
+ * Poll until (bit) is clear in ISR or Srbed fires or timeout.
+ * Used to settle Sracknak after Srite. The 50000 bound is deliberately wide;
+ * dial it down to the smallest value that still probes correctly, since
+ * bus probing calls this for every address.
  */
 static int
 k3i2cwaitclear(Ctlr *c, ulong bit)
@@ -388,12 +248,7 @@ k3i2cwaitclear(Ctlr *c, ulong bit)
 	return -1;
 }
 
-/*
- * Wait for the bus to go idle (ISR IBB clear) before starting a
- * transaction.  The block wants this before every byte it pulses; we
- * only need it once, before the address byte, since we then own the
- * bus for the whole transaction until our own STOP.
- */
+/* wait for the bus to be idle before starting a transaction */
 static int
 k3i2cidle(Ctlr *c)
 {
@@ -434,12 +289,7 @@ k3i2cputc(Ctlr *c, int byte, int start, int stop)
 		return -1;
 	if(s & Srbed)
 		return -1;
-	/*
-	 * ACK/NAK is checked as a second, separate poll after ITE: wait
-	 * for Sracknak to clear (0 = ACK) rather than trusting the bit's
-	 * value in the same snapshot as ITE, since sampling can lag by a
-	 * cycle.
-	 */
+	/* ACK/NAK settles after Srite; wait for Sracknak clear (ACK) */
 	return k3i2cwaitclear(c, Sracknak);
 }
 
@@ -457,30 +307,16 @@ k3i2cgetc(Ctlr *c, int start, int stop, int nak)
 }
 
 /*
- * bus->io.  pkt[] is built by devi2c.c's putaddr(): pkt[0] encodes
- * the 7 bit device address and the *final* transfer direction; any
- * bytes after it are subaddress/register bytes that must always be
- * written first.  If ilen>0 we then need a repeated start back to
- * the address byte (this IP has no separate target-address register
- * like DesignWare -- the address is just the first byte on the wire,
- * same as manual bit-banging) followed by ilen bytes read.
+ * bus->io. pkt[0] carries the 7-bit device address and the final transfer
+ * direction (putaddr()); following bytes are subaddress bytes, always written.
+ * If ilen>0, repeat start back to the address (the address is just the first
+ * byte on the wire; there's no target-address register) and read ilen bytes.
  *
- * 10 bit addressing is not implemented: none of this board's devices
- * use it.
+ * 10-bit addressing is not implemented.
  */
 static int
 k3i2cio(I2Cdev *dev, uchar *pkt, int olen, int ilen)
 {
-	/*
-	 * dev->bus->ctlr is the intended back-pointer -- confirmed
-	 * against the real port/i2c.h: I2Cbus has "void *ctlr;" for
-	 * exactly this. An earlier version of this file assumed a
-	 * field named "aux" instead (it doesn't exist -- that build
-	 * failed with "not a member of struct/union: aux") and then,
-	 * before seeing the real header, worked around it with a
-	 * first-member pointer cast. That cast wasn't wrong, just an
-	 * unnecessary hack now that the real, intended field is known.
-	 */
 	Ctlr *c = dev->bus->ctlr;
 	int addrlen, i, nwrite, quick;
 	uchar addrbyte;
@@ -500,30 +336,13 @@ k3i2cio(I2Cdev *dev, uchar *pkt, int olen, int ilen)
 
 	addrbyte = pkt[0];
 	if(nwrite > 0)
-		addrbyte &= ~1;		/* subaddress bytes must be written, regardless of final direction */
+		addrbyte &= ~1;		/* subaddress bytes must be written */
 
 	if(quick){
 		/*
-		 * This IP cannot combine START and STOP in the same TB
-		 * pulse. CONFIRMED two ways, and validated against real
-		 * hardware: (1) empirically -- combining them produced
-		 * zero bus activity (ISR stayed 0x0 through the entire
-		 * wait, not even a NAK) on every address tried; splitting
-		 * into two pulses as done below made FUSB301 @0x25 on
-		 * i2c1, the EEPROM @0x50 on i2c2, and the ES8326B codec
-		 * @0x19 on i2c3 all show up correctly, with every unused
-		 * bus/address still correctly empty -- no false positives
-		 * introduced. (2) the Icr condition field has no combined
-		 * START+STOP encoding at all -- only NORMAL, START and
-		 * STOP -- so the split is what the register layout
-		 * allows, not a workaround. The sequence is START +
-		 * write(addr|R), then a dummy STOP + read + NAK: the
-		 * closing pulse is a READ, not a repeat WRITE, so
-		 * probing never risks putting meaningful data on the bus,
-		 * regardless of the direction bit devi2c.c's
-		 * putaddr() put in pkt[0], since a zero-data "quick"
-		 * request only exists to test presence, so direction
-		 * doesn't matter to the caller either way.
+		 * This controller cannot combine START and STOP in one TB pulse.
+		 * Split into START+write(addr|R), then  a closing STOP+read+NAK
+		 * (a read, so probing never puts real data on the bus).
 		 */
 		if(k3i2cputc(c, addrbyte | 1, 1, 0) < 0)
 			return -1;
@@ -541,9 +360,7 @@ k3i2cio(I2Cdev *dev, uchar *pkt, int olen, int ilen)
 
 	if(ilen > 0){
 		if(nwrite > 0){
-			/* repeated start, re-send address -- pkt[0] already
-			 * has the read bit set whenever ilen>0 (devi2c.c's
-			 * putaddr() guarantees this) */
+			/* repeated start; pkt[0] already has the read bit set */
 			if(k3i2cputc(c, pkt[0], 1, 0) < 0)
 				return -1;
 		}
@@ -559,28 +376,12 @@ k3i2cio(I2Cdev *dev, uchar *pkt, int olen, int ilen)
 }
 
 /*
- * k3i2cclkenable -- enable this bus's clock gate and release its
- * reset in the appropriate apbc/apbc2 syscon block, before touching
- * the i2c controller's own registers.
+ * Enable this bus's clock gate and release its reset in the
+ * apbc/apbc2 syscon block. apbc/apbc2 are mapped once and shared
+ * by every bus whose gate lives in the same block.
  *
- * THIS WAS THE ROOT CAUSE of every AP bus reading back all-zero
- * registers (confirmed empirically: after writing a nonzero value to
- * ICR, reading it straight back gave 0x0, on every bus tested,
- * uniformly -- the classic signature of an unclocked/gated
- * peripheral, not a protocol bug). See the big comment above the
- * apbc/apbc2 enum for where these offsets came from.
- *
- * apbc and apbc2 are mapped once and shared across every bus that
- * needs them (multiple i2c controllers' gates live in the same
- * physical block), rather than re-mapping the same range per bus.
- *
- * ri2c0/ri2c1 (c->clkphys == 0, c->rdomain == 1) always return -1
- * here, on purpose: their clock/reset syscon ("spacemit,k3-syscon-
- * rcpu-i2cctrl" @ 0xC0886F00) belongs to the RCPU domain, and it's
- * not yet confirmed whether the AP is even meant to touch these two
- * buses directly. See the "NOT handled by this driver" note near the
- * top of this file for why that's an open ownership question, not
- * just a missing register offset.
+ * Buses with clkphys == 0 (ri2c0/ri2c1) always fail: their syscon
+ * is in the RCPU domain; see the header note.
  */
 static uintptr apbcbase, apbc2base;
 
@@ -604,11 +405,8 @@ k3i2cclkenable(Ctlr *c)
 
 	if(c->clkwriteonly){
 		/*
-		 * TWSI8 (i2c8): the gate register always reads back
-		 * zero, so a read-modify-write would silently write
-		 * zero for the mux-select bits the register also has.
-		 * Write a known-good literal instead: bus+func enabled,
-		 * reset deasserted, mux forced to 0.
+		 * TWSI8: gate always reads back zero, so write a known'good literal:
+		 * bus+func enabled, reset released, mux forced to 0.
 		 */
 		*(ulong*)(base + c->clkoff) = ApbcBusEn | ApbcFuncEn;
 		coherence();
@@ -622,85 +420,42 @@ k3i2cclkenable(Ctlr *c)
 }
 
 /*
- * bus->init.
- *
- * IMPORTANT: failures here MUST be signaled with error(), not a
- * plain "return -1". Confirmed against devi2c.c's probebus():
- *
- *	if(user && waserror()
- *	|| (*bus->init)(bus)){
- *		leavebus(bus);
- *		if(user) nexterror();
- *		return;
- *	}
- *
- * When called interactively (e.g. via ls, "user" is true), a plain
- * nonzero return from bus->init() takes the "(*bus->init)(bus)"
- * side of that ||, which never actually unwound through waserror()
- * -- so nexterror() is called with no real exception in flight. On
- * this kernel that manifests as "qunlock called with qlock not
- * held" and the bus never appears (confirmed empirically: this
- * function used to "return -1" for the rdomain stub below, and
- * ls /dev/ri2c0 crashed with exactly that message every time; the
- * AP buses, whose init() never hit a "return -1" path, didn't). The
- * probe loop further down in probebus() is fine with a plain -1
- * return from bus->io() -- only bus->init() has this requirement.
+ * Failures here must go through error(), not a plain return -1:
+ * probebus()'s "user && waserror() || (*bus->init)(bus)" takes the
+ * init side on a plain nonzero return, so nexterror() runs with no
+ * exception in flight -- a locked Q then panics the kernel
+ * ("qunlock called with qlock not held"). Only bus->init has this
+ * requirement; bus->io may return -1.
  */
 static int
 k3i2cinit(I2Cbus *bus)
 {
-	/* see k3i2cio()'s comment: bus->ctlr is the real back-pointer */
 	Ctlr *c = bus->ctlr;
 	ulong icr;
 
-	if(c->rdomain || k3i2cclkenable(c) < 0){
-		/*
-		 * ri2c0/ri2c1: NOT IMPLEMENTED, pending confirmation of
-		 * their domain (see k3i2cclkenable() and the header).
-		 * Any AP bus whose clkphys/clkoff isn't set (there
-		 * shouldn't be any left) falls into the same bucket.
-		 */
-		error(Eio);
-	}
+	if(c->rdomain || k3i2cclkenable(c) < 0)
+		error(Eio);	/* ri2c0/ri2c1: not implemented, see header */
 
 	if(c->base == 0){
-		/*
-		 * vmap() maps a device physical range for MMIO access.
-		 * If this port instead uses an identity-mapped kernel
-		 * (KADDR()), swap the line below accordingly.
-		 */
 		c->base = (uintptr)vmap(c->pa, 4096);
 		if(c->base == 0)
 			error(Eio);
 	}
 
-	/* soft reset the unit, then bring it up in polled master mode */
+	/* soft reset, then bring up in polled master mode */
 	csr32w(c, Icr, Crur);
 	delay(1);
 	csr32w(c, Icr, 0);
 
-	/* clear any status bits latched before our reset, e.g. left over
-	 * from the boot loader's own use of this bus.  Clearing by
-	 * snapshot rather than by a hardcoded mask. */
+	/* clear status latched before our reset, by snapshot rather than mask */
 	csr32w(c, Isr, csr32r(c, Isr));
 
 	icr = Crscle | Crgcd;
 	if(c->speed >= 400000)
-		icr |= Crmodefast;		/* mode field (Crmodemask) starts at 0 above */
-	/*
-	 * ILCR/IWCR (clock load/wait counts) are deliberately left at
-	 * their power-on-reset values: confirmed against the real
-	 * driver, which never touches them either and relies on the
-	 * POR defaults for standard/fast mode timing.
-	 */
+		icr |= Crmodefast;
 	csr32w(c, Icr, icr);
 
-	/*
-	 * Enable the unit as a separate, final write, matching the
-	 * confirmed reference sequence (config bits land and settle
-	 * before IUE goes high) rather than bundling it into the write
-	 * above.
-	 */
+	/* IUE goes high last, after the config bits settle */
 	csr32w(c, Icr, icr | Criue);
 	delay(1);
 
@@ -711,12 +466,7 @@ k3i2cinit(I2Cbus *bus)
 	return 0;
 }
 
-/*
- * i2clinkbuses -- does the actual work: registers one I2Cbus per
- * table entry.  Split out from i2ck3link() so the board-match gate
- * below reads the same way k3thermal.c's k3thermalinit()/thermalinit()
- * split does.
- */
+/* register one I2Cbus per table entry */
 static void
 i2clinkbuses(void)
 {
@@ -737,8 +487,8 @@ i2clinkbuses(void)
 		c->clkwriteonly = cfg[i].clkwriteonly;
 
 		c->i2c.name = c->name;
-		c->i2c.speed = c->speed;	/* I2Cbus has its own int speed; keep both in sync */
-		c->i2c.ctlr = c;		/* back-pointer, used by k3i2cio()/k3i2cinit() */
+		c->i2c.speed = c->speed;
+		c->i2c.ctlr = c;
 		c->i2c.init = k3i2cinit;
 		c->i2c.io = k3i2cio;
 
@@ -746,49 +496,11 @@ i2clinkbuses(void)
 	}
 }
 
-/*
- * i2ck3link -- call this once at boot, before any driver tries to
- * look up a bus by name via i2cbus().
- *
- * HOOK MECHANISM (migrated): this is no longer called explicitly from
- * devarch.c's archinit(). It's picked up by the config's generic
- * "link:" mechanism instead -- the rv64 config file (and any other
- * $CONFLIST entry that wants this driver) has a bare
- *
- *	i2ck3
- *
- * line under its "link" section, alongside sdspacemit, ethersmte,
- * etherdwqe, etc.
- *
- * CONFIRMED (the hard way, via an actual build failure): the link:
- * entry name has to match the SOURCE FILE name (i2ck3.c), not just
- * the function name. An earlier version of this driver used the
- * entry "k3i2c" on the theory that mkbootrules only cared about
- * generating a call to "<entry>link()" (which this function's name
- * already matched with zero renaming). That was wrong: building with
- * that entry failed with "mk: no recipe to make k3i2c.j"
- * (".j" being $O for riscv64) -- mkbootrules itself generates a
- * dependency on "<entry>.$O", compiled from "<entry>.c" via mk's
- * ordinary implicit rule, entirely separately from anything in this
- * file's own mkfile OBJ line. Since the real source file is i2ck3.c,
- * the link: entry has to be "i2ck3", which in turn means the function
- * it calls has to be named i2ck3link() (hence the rename from the
- * earlier k3i2clink) -- both the file and the function must match the
- * entry name, not just one of them.
- *
- * None of the *other* link: entries (ethersmtelink, sdspacemitlink,
- * usbxhcibpif3link, ...) have their own extern anywhere in fns.h
- * either, so the generated dispatch code (living in the build's
- * $CONF.c, not in this file) is expected to emit its own extern for
- * each entry -- no fns.h entry needed here either.
- *
- * Gated on dtbsocmatch("spacemit,k3"); confirmed working on real
- * hardware.
- */
+/* called at boot via config "link:" mechanism */
 void
 i2ck3link(void)
 {
 	if(!dtbsocmatch("spacemit,k3"))
-		return;
+		return; /* the K1 also has this hardware block */
 	i2clinkbuses();
 }
