@@ -766,10 +766,7 @@ i2clinkbuses(void)
  * entry "k3i2c" on the theory that mkbootrules only cared about
  * generating a call to "<entry>link()" (which this function's name
  * already matched with zero renaming). That was wrong: building with
- * that entry failed with
- *
- *	mk: no recipe to make 'k3i2c.j' in directory /sys/src/9/riscv64
- *
+ * that entry failed with "mk: no recipe to make k3i2c.j"
  * (".j" being $O for riscv64) -- mkbootrules itself generates a
  * dependency on "<entry>.$O", compiled from "<entry>.c" via mk's
  * ordinary implicit rule, entirely separately from anything in this
