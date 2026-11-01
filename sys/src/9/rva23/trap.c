@@ -7,7 +7,7 @@
 
 #include <tos.h>
 #include "ureg.h"
-#include "../riscv64/sysreg.h"
+#include "../rva23/sysreg.h"
 #include "riscv64.h"
 #include "/sys/src/libc/9syscall/sys.h"
 
