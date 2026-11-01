@@ -44,12 +44,21 @@ serial console logged to `~/p9/console.log`). Commands are sent to it with:
   (`tail -3 /tmp/build.log`), rather than one huge timeout.
 - Cross-compile for the target with `objtype=riscv64 mk ...` in `/sys/src`.
 
-## C coding standard
+## Coding standard
 
 All C written for 9front **must follow the Plan 9 C style** (`style(6)`,
 `/sys/doc/comp.ms`, and the surrounding kernel sources):
 
 - Tabs for indentation, never spaces; `/* */` comments only, no `//`.
+- Keep the code readable, understandable and simple on its own; 
+  add terse explanatory comments only where needed to help with understanding.
+- Do not explain history or attribution of code in comments; rather explain
+  the reasoning behind each change, and any other explanation that seems necessary,
+  in the git commit message.  
+- When comments are needed, keep them in the pre-2026 style: prefer short
+  comments which do not need to be complete sentences; otherwise, each
+  sentence in a multi-sentence comment must start with a capital letter and use
+  proper punctuation.
 - Function layout: return type on its own line, name at column 0, opening
   brace on its own line. `if`/`for`/`while` braces on the same line.
 - All declarations at the top of the block; no mixed declarations and code,
