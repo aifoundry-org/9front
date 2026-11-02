@@ -47,14 +47,14 @@
  * standard and fast mode.
  */
 enum {
-	Icr			= 0x00,		/* control register */
-	Isr			= 0x04,		/* status register */
+	Icr			= 0x00/4,		/* control register */
+	Isr			= 0x04/4,		/* status register */
 	Isar		= 0x08,		/* slave address (slave mode, unused) */
-	Idbr		= 0x0C,		/* data buffer */
-	Ilcr		= 0x10,		/* load count (clock timing) */
-	Iwcr		= 0x14,		/* wait count */
-	Irstcyc		= 0x18,		/* bus reset cycle counter */
-	Ibmr		= 0x1C,		/* bus monitor (raw SCL/SDA) */
+	Idbr		= 0x0C/4,		/* data buffer */
+	Ilcr		= 0x10/4,		/* load count (clock timing) */
+	Iwcr		= 0x14/4,		/* wait count */
+	Irstcyc		= 0x18/4,		/* bus reset cycle counter */
+	Ibmr		= 0x1C/4,		/* bus monitor (raw SCL/SDA) */
 	Iwfifo		= 0x20,		/* write fifo, unused: byte-at-a-time */
 };
 
@@ -124,16 +124,16 @@ enum {
 	ApbcPhys	= 0xD4015000ull,
 	Apbc2Phys	= 0xF0610000ull,
 
-	ApbcTwsi8	= 0x20,		/* i2c8 -- special, write-only */
-	ApbcTwsi0	= 0x2C,		/* i2c0 */
-	ApbcTwsi1	= 0x30,		/* i2c1 */
-	ApbcTwsi2	= 0x38,		/* i2c2 */
-	ApbcTwsi4	= 0x40,		/* i2c4 */
-	ApbcTwsi5	= 0x4C,		/* i2c5 */
-	ApbcTwsi6	= 0x60,		/* i2c6 */
-	ApbcTsen	= 0x6C,		/* not i2c; cross-check reference */
+	ApbcTwsi8	= 0x20/4,		/* i2c8 -- special, write-only */
+	ApbcTwsi0	= 0x2C/4,		/* i2c0 */
+	ApbcTwsi1	= 0x30/4,		/* i2c1 */
+	ApbcTwsi2	= 0x38/4,		/* i2c2 */
+	ApbcTwsi4	= 0x40/4,		/* i2c4 */
+	ApbcTwsi5	= 0x4C/4,		/* i2c5 */
+	ApbcTwsi6	= 0x60/4,		/* i2c6 */
+	ApbcTsen	= 0x6C/4,		/* not i2c; cross-check reference */
 
-	Apbc2Twsi3	= 0x08,		/* i2c3, in apbc2 */
+	Apbc2Twsi3	= 0x08/4,		/* i2c3, in apbc2 */
 
 	ApbcBusEn	= 1<<0,		/* APB/bus clock enable */
 	ApbcFuncEn	= 1<<1,		/* functional clock enable */
@@ -145,7 +145,7 @@ struct Ctlr {
 	I2Cbus	i2c;		/* bus struct handed to addi2cbus() */
 	char	*name;
 	uintptr	pa;			/* physical MMIO base */
-	uintptr	base;		/* mapped virtual base */
+	u32int	*base;		/* mapped virtual base */
 	ulong	irq;		/* informational; driver is polled */
 	ulong	speed;		/* 100000 or 400000 */
 	int	rdomain;		/* 1 if bus is in the RCPU domain */
@@ -188,16 +188,10 @@ static Cfg cfg[] = {
 
 static Ctlr ctlr[nelem(cfg)];
 
-static ulong
-csr32r(Ctlr *c, ulong r)
-{
-	return *(ulong*)(c->base + r);
-}
-
 static void
-csr32w(Ctlr *c, ulong r, ulong v)
+wreg(u32int *base, uintptr reg, u32int v)
 {
-	*(ulong*)(c->base + r) = v;
+	base[reg] = v;
 	coherence();
 }
 
@@ -214,10 +208,10 @@ k3i2cwait(Ctlr *c, ulong bit, ulong *statusp)
 	ulong s;
 
 	for(i = 0; i < 200000; i++){
-		s = csr32r(c, Isr);
+		s = c->base[Isr];
 		if(s & (bit|Srbed)){
 			*statusp = s;
-			csr32w(c, Isr, s & (bit|Srbed));	/* write-1-to-clear, only what we waited for */
+			wreg(c->base, Isr, s & (bit|Srbed));	/* write-1-to-clear, only what we waited for */
 			return 0;
 		}
 	}
@@ -237,9 +231,9 @@ k3i2cwaitclear(Ctlr *c, ulong bit)
 	ulong s;
 
 	for(i = 0; i < 50000; i++){
-		s = csr32r(c, Isr);
+		s = c->base[Isr];
 		if(s & Srbed){
-			csr32w(c, Isr, s);
+			wreg(c->base, Isr, s);
 			return -1;
 		}
 		if((s & bit) == 0)
@@ -255,7 +249,7 @@ k3i2cidle(Ctlr *c)
 	int i;
 
 	for(i = 0; i < 200000; i++)
-		if((csr32r(c, Isr) & Sribb) == 0)
+		if((c->base[Isr] & Sribb) == 0)
 			return 0;
 	return -1;
 }
@@ -266,7 +260,7 @@ k3i2cpulse(Ctlr *c, int start, int stop, int nak)
 {
 	ulong icr;
 
-	icr = csr32r(c, Icr);
+	icr = c->base[Icr];
 	icr &= ~(Crstart|Crstop|Cracknak);
 	icr |= Crtb;
 	if(start)
@@ -275,7 +269,7 @@ k3i2cpulse(Ctlr *c, int start, int stop, int nak)
 		icr |= Crstop;
 	if(nak)
 		icr |= Cracknak;
-	csr32w(c, Icr, icr);
+	wreg(c->base, Icr, icr);
 }
 
 static int
@@ -283,7 +277,7 @@ k3i2cputc(Ctlr *c, int byte, int start, int stop)
 {
 	ulong s;
 
-	csr32w(c, Idbr, byte & 0xFF);
+	wreg(c->base, Idbr, byte & 0xFF);
 	k3i2cpulse(c, start, stop, 0);
 	if(k3i2cwait(c, Srite, &s) < 0)
 		return -1;
@@ -303,7 +297,7 @@ k3i2cgetc(Ctlr *c, int start, int stop, int nak)
 		return -1;
 	if(s & Srbed)
 		return -1;
-	return csr32r(c, Idbr) & 0xFF;
+	return c->base[Idbr] & 0xFF;
 }
 
 /*
@@ -389,7 +383,7 @@ static int
 k3i2cclkenable(Ctlr *c)
 {
 	uintptr *basep;
-	uintptr base;
+	u32int *base;
 	ulong v;
 
 	if(c->clkphys == 0)
@@ -401,20 +395,20 @@ k3i2cclkenable(Ctlr *c)
 		if(*basep == 0)
 			return -1;
 	}
-	base = *basep;
+	base = (u32int*)*basep;
 
 	if(c->clkwriteonly){
 		/*
 		 * TWSI8: gate always reads back zero, so write a known'good literal:
 		 * bus+func enabled, reset released, mux forced to 0.
 		 */
-		*(ulong*)(base + c->clkoff) = ApbcBusEn | ApbcFuncEn;
+		base[c->clkoff] = ApbcBusEn | ApbcFuncEn;
 		coherence();
 		return 0;
 	}
 
-	v = *(ulong*)(base + c->clkoff);
-	*(ulong*)(base + c->clkoff) = (v & ~ApbcReset) | ApbcBusEn | ApbcFuncEn;
+	v = base[c->clkoff];
+	base[c->clkoff] = (v & ~ApbcReset) | ApbcBusEn | ApbcFuncEn;
 	coherence();
 	return 0;
 }
@@ -436,31 +430,31 @@ k3i2cinit(I2Cbus *bus)
 	if(c->rdomain || k3i2cclkenable(c) < 0)
 		error(Eio);	/* ri2c0/ri2c1: not implemented, see header */
 
-	if(c->base == 0){
-		c->base = (uintptr)vmap(c->pa, 4096);
-		if(c->base == 0)
+	if(c->base == nil){
+		c->base = vmap(c->pa, 4096);
+		if(c->base == nil)
 			error(Eio);
 	}
 
 	/* soft reset, then bring up in polled master mode */
-	csr32w(c, Icr, Crur);
+	wreg(c->base, Icr, Crur);
 	delay(1);
-	csr32w(c, Icr, 0);
+	wreg(c->base, Icr, 0);
 
 	/* clear status latched before our reset, by snapshot rather than mask */
-	csr32w(c, Isr, csr32r(c, Isr));
+	wreg(c->base, Isr, c->base[Isr]);
 
 	icr = Crscle | Crgcd;
 	if(c->speed >= 400000)
 		icr |= Crmodefast;
-	csr32w(c, Icr, icr);
+	wreg(c->base, Icr, icr);
 
 	/* IUE goes high last, after the config bits settle */
-	csr32w(c, Icr, icr | Criue);
+	wreg(c->base, Icr, icr | Criue);
 	delay(1);
 
 	if(c->glitchnofix)
-		csr32w(c, Irstcyc, csr32r(c, Irstcyc) | (1<<7));
+		wreg(c->base, Irstcyc, c->base[Irstcyc] | (1<<7));
 
 	bus->probed = 0;
 	return 0;

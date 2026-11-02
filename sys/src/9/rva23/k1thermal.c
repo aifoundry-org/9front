@@ -21,25 +21,25 @@
 #include "k1.h"
 
 enum {
-	ApbcTsen	= 0x6C,		/* bit0 bus clk, bit1 core clk, bit2 reset */
+	ApbcTsen	= 0x6C/4,		/* bit0 bus clk, bit1 core clk, bit2 reset */
 
 	/* thermal sensor block */
 	TsenPhys	= 0xD4018000ull,
 	TsenSize	= 0x100,
-	TsPctrl		= 0x00,
+	TsPctrl		= 0x00/4,
 	 PcEnable	= 1<<0,
 	 PcTempmode	= 1<<3,
 	 PcRawsel	= 1<<7,
 	 PcCtune	= 0xF<<8,
 	 PcSwctrl	= 0xF<<18,
 	 PcAutomode	= 1<<23,
-	TsEn		= 0x08,
+	TsEn		= 0x08/4,
 	 EnAll		= 0x1F,		/* five sensors */
-	TsTime		= 0x0C,
+	TsTime		= 0x0C/4,
 	 TimeMask	= 0xFFFFFF,
 	 TimeSet	= 0xF | 0xF0 | (3<<20),	/* ref cnt, adc rst, filter */
-	TsInten		= 0x14,
-	TsData		= 0x20,		/* + (id/2)*4; two 16-bit codes per word */
+	TsInten		= 0x14/4,
+	TsData		= 0x20/4,		/* + id/2; two 16-bit codes per word */
 	Tempoff		= 278,		/* code - 278 = deg C (K1 thermal chapter) */
 
 	Cluster0	= 3,		/* the two CPU-cluster channels */
@@ -49,14 +49,14 @@ enum {
 	/* RCPU2 syscon: fan PWM clock/reset gate */
 	RcpuPhys	= 0xC0888000ull,
 	RcpuSize	= 0x400,	/* covers gate (+0x08) and PWM (+0x300) */
-	RcpuPwm2	= 0x08,		/* bit0 reset-release, bit1 clk, bit2 reset */
+	RcpuPwm2	= 0x08/4,		/* bit0 reset-release, bit1 clk, bit2 reset */
 
 	/* fan PWM block (RCPU PWM2), PXA layout */
-	PwmOff		= 0x300,	/* from RcpuPhys */
-	Pwmcr		= 0x00,
+	PwmOff		= 0x300/4,	/* from RcpuPhys */
+	Pwmcr		= 0x00/4,
 	 PwmcrSd	= 1<<6,		/* stop counter when done */
-	Pwmdcr		= 0x04,		/* duty; bit10 = full duty (disabled here) */
-	Pwmpcr		= 0x08,		/* period value */
+	Pwmdcr		= 0x04/4,		/* duty; bit10 = full duty (disabled here) */
+	Pwmpcr		= 0x08/4,		/* period value */
 	Pwmpv		= 1023,		/* 1024-count period */
 	Pwmfull		= 1023,		/* cap duty below the full-duty bit */
 	Fanmin		= 51,		/* below this the fan only stalls; treat as off */
@@ -69,20 +69,15 @@ enum {
 	Gpio79Conf	= 0xC442,	/* EDGE_NONE|PULL_UP|PAD_3V_DS4|MUX_MODE2 */
 };
 
-static uchar *tsen;
-static uchar *rcpu;
+static u32int *tsen;
+static u32int *rcpu;
 static int fanpct = -1;
 
-static ulong
-rd(uchar *b, int off)
-{
-	return *(ulong*)(b + off);
-}
-
+/* a register write has to be ordered against what follows it */
 static void
-wr(uchar *b, int off, ulong v)
+wreg(u32int *base, uintptr reg, u32int v)
 {
-	*(ulong*)(b + off) = v;
+	base[reg] = v;
 	coherence();
 }
 
@@ -94,7 +89,7 @@ tempcode(int id)
 
 	if(tsen == nil)
 		return -1;
-	v = rd(tsen, TsData + (id/2)*4);
+	v = tsen[TsData + id/2];
 	if(id & 1)
 		v >>= 16;
 	return v & 0xFFFF;
@@ -133,9 +128,9 @@ setfan(int pct)
 		if(dc > Pwmfull)
 			dc = Pwmfull;
 	}
-	wr(rcpu, PwmOff + Pwmcr, PwmcrSd);
-	wr(rcpu, PwmOff + Pwmdcr, dc);
-	wr(rcpu, PwmOff + Pwmpcr, Pwmpv);
+	wreg(rcpu, PwmOff + Pwmcr, PwmcrSd);
+	wreg(rcpu, PwmOff + Pwmdcr, dc);
+	wreg(rcpu, PwmOff + Pwmpcr, Pwmpv);
 	fanpct = pct;
 }
 
@@ -170,8 +165,8 @@ fan0ctlwrite(Chan*, void *a, long n, vlong)
 static void
 thermalinit(void)
 {
-	uchar *apbc;
-	ulong v;
+	u32int *apbc;
+	u32int v;
 
 	apbc = vmap(ApbcPhys, ApbcSize);
 	tsen = vmap(TsenPhys, TsenSize);
@@ -181,18 +176,18 @@ thermalinit(void)
 	}
 
 	/* enable both clocks (bits 0,1), release reset (clear bit 2) */
-	v = rd(apbc, ApbcTsen);
-	wr(apbc, ApbcTsen, (v & ~0x4) | 0x3);
+	v = apbc[ApbcTsen];
+	wreg(apbc, ApbcTsen, (v & ~0x4) | 0x3);
 	vunmap(apbc, ApbcSize);
 
-	wr(tsen, TsInten, ~0);		/* mask all interrupts */
-	v = rd(tsen, TsTime);
-	wr(tsen, TsTime, (v & ~TimeMask) | TimeSet);
-	v = rd(tsen, TsPctrl);
+	wreg(tsen, TsInten, ~0);		/* mask all interrupts */
+	v = tsen[TsTime];
+	wreg(tsen, TsTime, (v & ~TimeMask) | TimeSet);
+	v = tsen[TsPctrl];
 	v &= ~(PcSwctrl | PcCtune);
 	v |= PcRawsel | PcTempmode | PcAutomode | PcEnable;
-	wr(tsen, TsPctrl, v);
-	wr(tsen, TsEn, rd(tsen, TsEn) | EnAll);
+	wreg(tsen, TsPctrl, v);
+	wreg(tsen, TsEn, tsen[TsEn] | EnAll);
 
 	addarchfile("cputemp", 0444, cputempread, nil);
 }
@@ -201,8 +196,8 @@ thermalinit(void)
 static void
 faninit(void)
 {
-	uchar *aib;
-	ulong v;
+	u32int *aib;
+	u32int v;
 
 	rcpu = vmap(RcpuPhys, RcpuSize);
 	aib = vmap(AibPhys, AibSize);
@@ -212,13 +207,12 @@ faninit(void)
 	}
 
 	/* enable clock (bit1), release reset (bit0 set, bit2 clear) */
-	v = rd(rcpu, RcpuPwm2);
-	wr(rcpu, RcpuPwm2, (v & ~0x4) | 0x3);
+	v = rcpu[RcpuPwm2];
+	wreg(rcpu, RcpuPwm2, (v & ~0x4) | 0x3);
 
 	/* GPIO_79 -> rcpu_pwm2: replace the low config half, keep the rest */
-	v = ((ulong*)aib)[Gpio79];
-	((ulong*)aib)[Gpio79] = (v & ~0xFFFFul) | Gpio79Conf;
-	coherence();
+	v = aib[Gpio79];
+	wreg(aib, Gpio79, (v & ~0xFFFFul) | Gpio79Conf);
 	vunmap(aib, AibSize);
 
 	setfan(Fandefault);

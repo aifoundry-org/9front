@@ -71,13 +71,13 @@ enum {
 
 /* DMA registers (byte offset) */
 enum {
-	DmaConfig		= 0x0000,
+	DmaConfig		= 0x0000/4,
 	DmaConfigSwreset	= (1U << 0),
 	DmaConfigBurst16	= (0x10 << 1),
 	DmaConfigStrictburst	= (1U << 17),
 	DmaConfig64bit		= (1U << 18),
 
-	DmaCtrl		= 0x0004,
+	DmaCtrl		= 0x0004/4,
 	DmaCtrlTxstart	= (1U << 0),
 	DmaCtrlRxstart	= (1U << 1),
 
@@ -87,7 +87,7 @@ enum {
 	 * its own and must be W1C'd individually.  Bit 8 is a separate
 	 * MAC-level interrupt that we never enable (MacIntrena = 0).
 	 */
-	DmaStatusIrq		= 0x0008,	/* W1C */
+	DmaStatusIrq		= 0x0008/4,	/* W1C */
 	DmaStatusIrqTxdone	= (1U << 0),
 	DmaStatusIrqTxdu	= (1U << 1),
 	DmaStatusIrqTxstop	= (1U << 2),
@@ -106,7 +106,7 @@ enum {
 	 * no storm in practice.  DmaIntrenaTxdu stays off — TX submit
 	 * already pokes DmaTxpolldemand and IRQ on dequeue is enough.
 	 */
-	DmaIntrena		= 0x000c,
+	DmaIntrena		= 0x000c/4,
 	DmaIntrenaTxdone	= (1U << 0),
 	DmaIntrenaTxdu		= (1U << 1),	/* not safe to enable */
 	DmaIntrenaTxstop	= (1U << 2),
@@ -115,61 +115,61 @@ enum {
 	DmaIntrenaRxstop	= (1U << 6),
 	DmaIntrenaRxmiss	= (1U << 7),
 
-	DmaTxautopoll	= 0x0010,
-	DmaTxpolldemand	= 0x0014,
-	DmaRxpolldemand	= 0x0018,
-	DmaTxbase	= 0x001c,
-	DmaRxbase	= 0x0020,
+	DmaTxautopoll	= 0x0010/4,
+	DmaTxpolldemand	= 0x0014/4,
+	DmaRxpolldemand	= 0x0018/4,
+	DmaTxbase	= 0x001c/4,
+	DmaRxbase	= 0x0020/4,
 
-	DmaRxmitigation		= 0x002c,
+	DmaRxmitigation		= 0x002c/4,
 	DmaRxmitigationEna	= (1U << 31),
 };
 
 /* MAC registers (byte offset) */
 enum {
-	MacGlobalctrl		= 0x0100,
+	MacGlobalctrl		= 0x0100/4,
 	MacGlobalctrlSpeedmask	= (0x3 << 0),
 	MacGlobalctrlSpeed10	= (0x0 << 0),
 	MacGlobalctrlSpeed100	= (0x1 << 0),
 	MacGlobalctrlSpeed1000	= (0x2 << 0),
 	MacGlobalctrlDuplex	= (1U << 2),
 
-	MacTxctrl		= 0x0104,
+	MacTxctrl		= 0x0104/4,
 	MacTxctrlEna		= (1U << 0),
 	MacTxctrlAutoretry	= (1U << 3),
 
-	MacRxctrl		= 0x0108,
+	MacRxctrl		= 0x0108/4,
 	MacRxctrlEna		= (1U << 0),
 	MacRxctrlStoreforward	= (1U << 3),
 
-	MacMaxframe	= 0x010c,
-	MacTxjabber	= 0x0110,
-	MacRxjabber	= 0x0114,
+	MacMaxframe	= 0x010c/4,
+	MacTxjabber	= 0x0110/4,
+	MacRxjabber	= 0x0114/4,
 
-	MacAddrctrl		= 0x0118,
+	MacAddrctrl		= 0x0118/4,
 	MacAddrctrlAddr1ena	= (1U << 0),
 
-	MacAddr1hi	= 0x0120,
-	MacAddr1me	= 0x0124,
-	MacAddr1lo	= 0x0128,
+	MacAddr1hi	= 0x0120/4,
+	MacAddr1me	= 0x0124/4,
+	MacAddr1lo	= 0x0128/4,
 
-	MacFcctrl		= 0x0160,	/* flow control */
+	MacFcctrl		= 0x0160/4,	/* flow control */
 	MacFcctrlDecodeena	= (1U << 0),	/* decode received pause frames */
 
-	MacMdioctrl		= 0x01a0,
+	MacMdioctrl		= 0x01a0/4,
 	MacMdioctrlStart	= (1U << 15),
 	MacMdioctrlRw		= (1U << 10),
 	MacMdioctrlRegshift	= 5,
 	MacMdioctrlPhyshift	= 0,
 
-	MacMdiodata	= 0x01a4,
+	MacMdiodata	= 0x01a4/4,
 
-	MacTxfifoalmostfull	= 0x01c0,
-	MacTxthresh		= 0x01c4,
-	MacRxthresh		= 0x01c8,
+	MacTxfifoalmostfull	= 0x01c0/4,
+	MacTxthresh		= 0x01c4/4,
+	MacRxthresh		= 0x01c8/4,
 
-	MacStatusirq	= 0x01e0,	/* W1C: underrun, jabber */
-	MacIntrena	= 0x01e4,
+	MacStatusirq	= 0x01e0/4,	/* W1C: underrun, jabber */
+	MacIntrena	= 0x01e4/4,
 
 	/*
 	 * IEEE-1588 / PTP timestamping block.  We don't use PTP, but the
@@ -178,8 +178,8 @@ enum {
 	 * Ptp1588Irqsts bits latched, and those will keep the chip's
 	 * IRQ line asserted regardless of what we do to DmaIntrena.
 	 */
-	Ptp1588Irqsts	= 0x0360,	/* W1C */
-	Ptp1588Irqena	= 0x0364,
+	Ptp1588Irqsts	= 0x0360/4,	/* W1C */
+	Ptp1588Irqena	= 0x0364/4,
 };
 
 /*
@@ -189,7 +189,7 @@ enum {
  *   EMAC0 dline-reg = 0x3e8   (RGMII delay line)
  */
 enum {
-	ApmuEmacClkrstctrl	= 0x03e4,
+	ApmuEmacClkrstctrl	= 0x03e4/4,
 	/*
 	 * EMAC0_CLK_RST_CTRL bit fields (from the K1 user manual,
 	 * "High-Speed Interface System / EMAC0_CLK_RST_CTRL"):
@@ -203,7 +203,7 @@ enum {
 	ApmuEmacAximstid	= (1U << 13),
 	ApmuEmacPtpena		= (1U << 15),
 
-	ApmuEmacRgmiidline		= 0x03e8,
+	ApmuEmacRgmiidline		= 0x03e8/4,
 	ApmuEmacRgmiidlineRxena		= (1U << 0),
 	ApmuEmacRgmiidlineRxstep15P6	= (0U << 4),
 	ApmuEmacRgmiidlineRxshift	= 8,
@@ -290,10 +290,10 @@ smtecacheinval(void *va, int len)
 
 typedef struct Ctlr Ctlr;
 struct Ctlr {
-	ulong	*regs;
-	ulong	*apmu;
-	u32int	apmuctrloff;	/* APMU offset for this EMAC's clk/reset */
-	u32int	apmudlineoff;	/* APMU offset for this EMAC's RGMII dlines */
+	u32int	*regs;
+	u32int	*apmu;
+	uintptr	apmuctrloff;	/* APMU offset for this EMAC's clk/reset */
+	uintptr	apmudlineoff;	/* APMU offset for this EMAC's RGMII dlines */
 	u32int	*rxr, *txr;
 	Block	**rxs, **txs;
 	int	rxprodi, rxconsi, txi;
@@ -324,7 +324,7 @@ gmacpins(uvlong base)
 {
 	static uchar pins0[] = {0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,45};
 	static uchar pins1[] = {29,30,31,32,33,34,35,36,37,38,39,40,41,42,43,46};
-	static ulong *aib;
+	static u32int *aib;
 	uchar *pins;
 	u32int v;
 	int i, n, fixed;
@@ -363,7 +363,7 @@ gmacpins(uvlong base)
 static void
 phyreset(Ctlr *c)
 {
-	static ulong *gpio;
+	static u32int *gpio;
 	uint bank, bit;
 
 	if(c->rstpin < 0 || c->rstpin >= 128)
@@ -372,28 +372,30 @@ phyreset(Ctlr *c)
 		gpio = vmap(GpioPhys, GpioSize);
 	if(gpio == nil)
 		return;
-	bank = c->rstpin >> 5 == 3? GpioBank3off: (c->rstpin >> 5)*4;
+	bank = c->rstpin >> 5 == 3? GpioBank3off: (c->rstpin >> 5);
 	bit = 1 << (c->rstpin & 31);
-	gpio[(bank + GpioGsdr)/4] = bit;	/* direction: output */
-	gpio[(bank + GpioGpcr)/4] = bit;	/* drive low: assert reset */
+	gpio[bank + GpioGsdr] = bit;	/* direction: output */
+	gpio[bank + GpioGpcr] = bit;	/* drive low: assert reset */
 	delay(10);
-	gpio[(bank + GpioGpsr)/4] = bit;	/* drive high: release */
+	gpio[bank + GpioGpsr] = bit;	/* drive high: release */
 	delay(100);
 }
 
 /* MMIO access ---------------------------------------------------------------- */
 
+/* a register read may only be used to drain a posted write */
 static u32int
-csr32r(ulong *base, uintptr off)
+rd32(u32int *base, uintptr reg)
 {
 	coherence();
-	return *(volatile u32int*)((uintptr)base + off);
+	return base[reg];
 }
 
+/* a register write has to be ordered against what follows it */
 static void
-csr32w(ulong *base, uintptr off, u32int v)
+wreg(u32int *base, uintptr reg, u32int v)
 {
-	*(volatile u32int*)((uintptr)base + off) = v;
+	base[reg] = v;
 	coherence();
 }
 
@@ -402,26 +404,26 @@ csr32w(ulong *base, uintptr off, u32int v)
 static void
 mdwrite(Ctlr *c, int reg, u16int v)
 {
-	csr32w(c->regs, MacMdiodata, v);
-	csr32w(c->regs, MacMdioctrl,
+	wreg(c->regs, MacMdiodata, v);
+	wreg(c->regs, MacMdioctrl,
 		MacMdioctrlStart
 		| (reg & 0x1f) << MacMdioctrlRegshift
 		| (Phyaddr & 0x1f) << MacMdioctrlPhyshift);
-	while(csr32r(c->regs, MacMdioctrl) & MacMdioctrlStart)
+	while(rd32(c->regs, MacMdioctrl) & MacMdioctrlStart)
 		tsleep(&up->sleep, return0, nil, 1);
 }
 
 static u16int
 mdread(Ctlr *c, int reg)
 {
-	csr32w(c->regs, MacMdiodata, 0);
-	csr32w(c->regs, MacMdioctrl,
+	wreg(c->regs, MacMdiodata, 0);
+	wreg(c->regs, MacMdioctrl,
 		MacMdioctrlStart | MacMdioctrlRw
 		| (reg & 0x1f) << MacMdioctrlRegshift
 		| (Phyaddr & 0x1f) << MacMdioctrlPhyshift);
-	while(csr32r(c->regs, MacMdioctrl) & MacMdioctrlStart)
+	while(rd32(c->regs, MacMdioctrl) & MacMdioctrlStart)
 		tsleep(&up->sleep, return0, nil, 1);
-	return csr32r(c->regs, MacMdiodata) & 0xffff;
+	return rd32(c->regs, MacMdiodata) & 0xffff;
 }
 
 /* PHY kproc ------------------------------------------------------------------ */
@@ -443,8 +445,8 @@ txreset(Ctlr *c)
 	u32int v;
 	int i;
 
-	v = csr32r(c->regs, DmaCtrl);
-	csr32w(c->regs, DmaCtrl, v & ~DmaCtrlTxstart);
+	v = rd32(c->regs, DmaCtrl);
+	wreg(c->regs, DmaCtrl, v & ~DmaCtrlTxstart);
 	ilock(&c->txlock);
 	for(i = 0; i < Txring; i++){
 		if(c->txs[i] != nil){
@@ -460,7 +462,7 @@ txreset(Ctlr *c)
 	c->txcons = 0;
 	smtecacheflush(c->txr, 4 * Txring * sizeof(u32int));
 	iunlock(&c->txlock);
-	csr32w(c->regs, DmaTxbase, PADDR(c->txr));
+	wreg(c->regs, DmaTxbase, PADDR(c->txr));
 }
 
 static void
@@ -499,8 +501,8 @@ ethproc(void *ved)
 		if((bmsr & BmsrLs) == 0){
 			print("smte: %s link down (BMSR=0x%04ux)\n", edev->name, bmsr);
 			ethersetlink(edev, 0);
-			csr32w(c->regs, MacTxctrl, 0);
-			csr32w(c->regs, MacRxctrl, 0);
+			wreg(c->regs, MacTxctrl, 0);
+			wreg(c->regs, MacRxctrl, 0);
 			txreset(c);
 			dprint("smte: MAC TX/RX disabled, waiting for link\n");
 			while((mdread(c, Bmsr) & BmsrLs) == 0)
@@ -516,7 +518,7 @@ ethproc(void *ved)
 		gbsr = mdread(c, Mssr);
 		dprint("smte: autoneg complete ANLPAR=0x%04ux GBSR=0x%04ux\n", lpa, gbsr);
 
-		ctrl = csr32r(c->regs, MacGlobalctrl)
+		ctrl = rd32(c->regs, MacGlobalctrl)
 			& ~(MacGlobalctrlSpeedmask | MacGlobalctrlDuplex);
 		dup  = "HD";
 
@@ -540,10 +542,10 @@ ethproc(void *ved)
 			speed = 10;
 		}
 
-		csr32w(c->regs, MacGlobalctrl, ctrl);
-		csr32w(c->regs, MacTxctrl,
+		wreg(c->regs, MacGlobalctrl, ctrl);
+		wreg(c->regs, MacTxctrl,
 			MacTxctrlEna | MacTxctrlAutoretry);
-		csr32w(c->regs, MacRxctrl,
+		wreg(c->regs, MacRxctrl,
 			MacRxctrlEna | MacRxctrlStoreforward);
 
 		/*
@@ -553,12 +555,12 @@ ethproc(void *ved)
 		 * once for safety, W1C status, and finally arm DmaIntrena
 		 * for IRQ-driven completion.
 		 */
-		csr32w(c->regs, DmaCtrl,
+		wreg(c->regs, DmaCtrl,
 			DmaCtrlTxstart | DmaCtrlRxstart);
 		c->dmarunning = 1;	/* poll-demand writes are now safe */
 		ethrx(edev);
 		ethtx(edev);
-		csr32w(c->regs, DmaStatusIrq, ~0U);
+		wreg(c->regs, DmaStatusIrq, ~0U);
 		/*
 		 * DmaIntrenaRxdone deliberately omitted: enabling it after a
 		 * Linux kexec breaks DHCP/RX (the chip seems to refuse further RX
@@ -574,22 +576,22 @@ ethproc(void *ved)
 		 * enough to avoid TX stalls while cutting the IRQ rate ~Txirqevery-
 		 * fold; the 1ms poll still mops up the tail when TX goes idle.
 		 */
-		csr32w(c->regs, DmaIntrena,
+		wreg(c->regs, DmaIntrena,
 			DmaIntrenaTxdone
 			| DmaIntrenaTxstop
 			| DmaIntrenaRxdu
 			| DmaIntrenaRxstop
 			| DmaIntrenaRxmiss);
 		/* readback drains the posted write */
-		ctrl = csr32r(c->regs, DmaIntrena);
+		ctrl = rd32(c->regs, DmaIntrena);
 		dprint("smte: %s irq-driven DmaIntrena=%#ux DmaStatusIrq=%#ux\n",
-			edev->name, ctrl, csr32r(c->regs, DmaStatusIrq));
+			edev->name, ctrl, rd32(c->regs, DmaStatusIrq));
 
 		print("smte: %s link up %dMbps %s\n", edev->name, speed, dup);
 		dprint("smte:   MacGlobalctrl=0x%08ux\n", ctrl);
 		dprint("smte:   MacTxctrl=0x%08ux MacRxctrl=0x%08ux\n",
-			csr32r(c->regs, MacTxctrl),
-			csr32r(c->regs, MacRxctrl));
+			rd32(c->regs, MacTxctrl),
+			rd32(c->regs, MacRxctrl));
 
 		ethersetspeed(edev, speed);
 		ethersetlink(edev, 1);
@@ -650,7 +652,7 @@ replenish(Ctlr *c)
 	 * enable the source.
 	 */
 	if(c->dmarunning)
-		csr32w(c->regs, DmaRxpolldemand, 0xFF);
+		wreg(c->regs, DmaRxpolldemand, 0xFF);
 	return 0;
 }
 
@@ -774,13 +776,13 @@ ethifstat(void *arg, char *p, char *e)
 	p = seprint(p, e, "rx: prod %d cons %d bufs %d frames %ud\n",
 		c->rxprodi, c->rxconsi, nrx, c->rxframes);
 	p = seprint(p, e, "irq bits seen %#ux dma ctl %#ux status %#ux intren %#ux\n",
-		c->irqseen, csr32r(c->regs, DmaCtrl),
-		csr32r(c->regs, DmaStatusIrq),
-		csr32r(c->regs, DmaIntrena));
+		c->irqseen, rd32(c->regs, DmaCtrl),
+		rd32(c->regs, DmaStatusIrq),
+		rd32(c->regs, DmaIntrena));
 	p = seprint(p, e, "mac global %#ux tx %#ux rx %#ux\n",
-		csr32r(c->regs, MacGlobalctrl),
-		csr32r(c->regs, MacTxctrl),
-		csr32r(c->regs, MacRxctrl));
+		rd32(c->regs, MacGlobalctrl),
+		rd32(c->regs, MacTxctrl),
+		rd32(c->regs, MacRxctrl));
 	p = seprint(p, e, "rgmii delay rx %ud tx %ud steps, phy reset pin %d\n",
 		c->rxdelay, c->txdelay, c->rstpin);
 	return p;
@@ -843,7 +845,7 @@ ethtx(Ether *edev)
 		r[0] = TxDesc0Own;
 		smtecacheflush(r, 16);		/* push descriptor to DRAM for HW */
 		if(c->dmarunning)
-			csr32w(c->regs, DmaTxpolldemand, 0xFF);
+			wreg(c->regs, DmaTxpolldemand, 0xFF);
 		c->txi = (c->txi + 1) & (Txring - 1);
 	}
 	iunlock(&c->txlock);
@@ -873,31 +875,31 @@ ethirq(Ureg *, void *arg)
 	edev = arg;
 	c    = edev->ctlr;
 
-	en = csr32r(c->regs, DmaIntrena);
+	en = rd32(c->regs, DmaIntrena);
 	if(en != 0){
-		csr32w(c->regs, DmaIntrena, 0);
+		wreg(c->regs, DmaIntrena, 0);
 		/*
 		 * Read back to force the posted write to commit before we
 		 * sample status: otherwise the chip's IRQ line can still be
 		 * asserted from a stale enabled-source view when plic.c
 		 * re-claims, and the 64-trip cap mistakes us for a storm.
 		 */
-		en = csr32r(c->regs, DmaIntrena);
+		en = rd32(c->regs, DmaIntrena);
 		USED(en);
 	}
 
-	fl = csr32r(c->regs, DmaStatusIrq);
-	macsts = csr32r(c->regs, MacStatusirq);
-	ptpsts = csr32r(c->regs, Ptp1588Irqsts);
+	fl = rd32(c->regs, DmaStatusIrq);
+	macsts = rd32(c->regs, MacStatusirq);
+	ptpsts = rd32(c->regs, Ptp1588Irqsts);
 	/* Belt-and-suspenders: W1C the other two too, in case one of them
 	 * is feeding the chip's IRQ line. */
 	if(macsts != 0)
-		csr32w(c->regs, MacStatusirq, macsts);
+		wreg(c->regs, MacStatusirq, macsts);
 	if(ptpsts != 0)
-		csr32w(c->regs, Ptp1588Irqsts, ptpsts);
+		wreg(c->regs, Ptp1588Irqsts, ptpsts);
 	if(fl != 0){
 		/* W1C every bit we observed.  No NIS/AIS summary on this part. */
-		csr32w(c->regs, DmaStatusIrq, fl);
+		wreg(c->regs, DmaStatusIrq, fl);
 
 		/*
 		 * Diagnostics use iprint() because ethirq runs at interrupt
@@ -906,20 +908,20 @@ ethirq(Ureg *, void *arg)
 		 */
 		if(fl & DmaStatusIrqRxdu)
 			/* chip just entered Suspended; silent kick (fires often) */
-			csr32w(c->regs, DmaRxpolldemand, 0xFF);
+			wreg(c->regs, DmaRxpolldemand, 0xFF);
 		if(fl & DmaStatusIrqRxmiss){
 			iprint("smte: %s RX missed frame (status=%#08ux "
 				"prod=%d cons=%d)\n",
 				edev->name, fl, c->rxprodi, c->rxconsi);
-			csr32w(c->regs, DmaRxpolldemand, 0xFF);
+			wreg(c->regs, DmaRxpolldemand, 0xFF);
 		}
 		if(fl & DmaStatusIrqRxstop){
 			iprint("smte: %s RX DMA stopped, restarting\n", edev->name);
-			csr32w(c->regs, DmaRxpolldemand, 0xFF);
+			wreg(c->regs, DmaRxpolldemand, 0xFF);
 		}
 		if(fl & DmaStatusIrqTxstop){
 			iprint("smte: %s TX DMA stopped, restarting\n", edev->name);
-			csr32w(c->regs, DmaTxpolldemand, 0xFF);
+			wreg(c->regs, DmaTxpolldemand, 0xFF);
 		}
 	}
 
@@ -934,7 +936,7 @@ ethirq(Ureg *, void *arg)
 
 	if(en != 0){
 		coherence();
-		csr32w(c->regs, DmaIntrena, en);
+		wreg(c->regs, DmaIntrena, en);
 	}
 }
 
@@ -952,7 +954,7 @@ etherserve(Ether *edev)
 	c = edev->ctlr;
 
 	/* accumulate raw DMA status bits before ethirq() W1Cs them */
-	fl = csr32r(c->regs, DmaStatusIrq);
+	fl = rd32(c->regs, DmaStatusIrq);
 	c->irqseen |= fl;
 
 	ethirq(nil, edev);
@@ -968,9 +970,9 @@ etherserve(Ether *edev)
 			edev->name, c->irqseen, c->rxconsi, c->rxprodi, c->rxframes,
 			c->txi, c->txdone,
 			c->rxr[4*c->rxconsi], lasttxi, c->txr[4*lasttxi],
-			csr32r(c->regs, MacRxctrl),
-			csr32r(c->regs, MacTxctrl),
-			csr32r(c->regs, DmaCtrl));
+			rd32(c->regs, MacRxctrl),
+			rd32(c->regs, MacTxctrl),
+			rd32(c->regs, DmaCtrl));
 		c->irqseen = 0;
 	}
 }
@@ -1016,7 +1018,7 @@ ethinit(Ether *edev)
 	 * already ungated when we take over, so the earlier ordering
 	 * (MAC accesses first, then APMU) worked incidentally.  Under a
 	 * cold u-boot boot u-boot never touches EMAC0 and the bus clock
-	 * is still gated + reset asserted; any csr32 to c->regs then
+	 * is still gated + reset asserted; any write to c->regs then
 	 * stalls the hart.  Do APMU first so the MAC block responds.
 	 *
 	 * Gate the AXI clock AND assert bus-reset (ApmuEmacBusrstrelease=0 =
@@ -1027,29 +1029,29 @@ ethinit(Ether *edev)
 	 * block is reachable if we ever query it.
 	 */
 	{
-		u32int origv = csr32r(c->apmu, c->apmuctrloff);
+		u32int origv = rd32(c->apmu, c->apmuctrloff);
 		u32int preserve = origv & ~(ApmuEmacBusena
 			| ApmuEmacBusrstrelease | ApmuEmacAximstid
 			| ApmuEmacPtpena);
-		csr32w(c->apmu, c->apmuctrloff, preserve);	/* clock off + reset asserted */
+		wreg(c->apmu, c->apmuctrloff, preserve);	/* clock off + reset asserted */
 		microdelay(10000);
-		csr32w(c->apmu, c->apmuctrloff,
+		wreg(c->apmu, c->apmuctrloff,
 			preserve | ApmuEmacBusena | ApmuEmacPtpena);	/* clocks on, still in reset */
 		microdelay(10000);
-		csr32w(c->apmu, c->apmuctrloff,
+		wreg(c->apmu, c->apmuctrloff,
 			preserve | ApmuEmacBusena | ApmuEmacPtpena
 			| ApmuEmacBusrstrelease | ApmuEmacAximstid);
 		microdelay(10000);
 		print("smte: APMU ApmuEmacClkrstctrl[%#ux] %#ux -> %#ux\n",
-			c->apmuctrloff, origv, csr32r(c->apmu, c->apmuctrloff));
+			c->apmuctrloff, origv, rd32(c->apmu, c->apmuctrloff));
 	}
 
 	/* Now the MAC block is reachable; stop everything. */
-	csr32w(c->regs, MacIntrena,   0);
-	csr32w(c->regs, DmaIntrena,   0);
-	csr32w(c->regs, MacTxctrl, 0);
-	csr32w(c->regs, MacRxctrl,  0);
-	csr32w(c->regs, DmaCtrl,          0);
+	wreg(c->regs, MacIntrena,   0);
+	wreg(c->regs, DmaIntrena,   0);
+	wreg(c->regs, MacTxctrl, 0);
+	wreg(c->regs, MacRxctrl,  0);
+	wreg(c->regs, DmaCtrl,          0);
 	print("smte: MAC/DMA stopped\n");
 
 	phyreset(c);
@@ -1059,32 +1061,32 @@ ethinit(Ether *edev)
 	  | ApmuEmacRgmiidlineRxstep15P6 | ApmuEmacRgmiidlineTxstep15P6
 	  | c->rxdelay << ApmuEmacRgmiidlineRxshift
 	  | c->txdelay << ApmuEmacRgmiidlineTxshift;
-	csr32w(c->apmu, c->apmudlineoff, v);
+	wreg(c->apmu, c->apmudlineoff, v);
 	print("smte: APMU DLINE[%#ux]=0x%08ux (rx=%d tx=%d steps x 15.6ps)\n",
 		c->apmudlineoff, v, c->rxdelay, c->txdelay);
 
 	/* MAC address */
-	csr32w(c->regs, MacAddr1hi, edev->ea[1]<<8 | edev->ea[0]);
-	csr32w(c->regs, MacAddr1me, edev->ea[3]<<8 | edev->ea[2]);
-	csr32w(c->regs, MacAddr1lo, edev->ea[5]<<8 | edev->ea[4]);
-	csr32w(c->regs, MacAddrctrl, MacAddrctrlAddr1ena);
+	wreg(c->regs, MacAddr1hi, edev->ea[1]<<8 | edev->ea[0]);
+	wreg(c->regs, MacAddr1me, edev->ea[3]<<8 | edev->ea[2]);
+	wreg(c->regs, MacAddr1lo, edev->ea[5]<<8 | edev->ea[4]);
+	wreg(c->regs, MacAddrctrl, MacAddrctrlAddr1ena);
 	dprint("smte: MAC %02X:%02X:%02X:%02X:%02X:%02X programmed\n",
 		edev->ea[0], edev->ea[1], edev->ea[2],
 		edev->ea[3], edev->ea[4], edev->ea[5]);
 
 	/* FIFO thresholds and frame size limits */
-	csr32w(c->regs, MacTxfifoalmostfull,        0x1f8);
-	csr32w(c->regs, MacTxthresh,  192);
-	csr32w(c->regs, MacRxthresh,   12);
-	csr32w(c->regs, MacMaxframe,               1536);
-	csr32w(c->regs, MacTxjabber,             1514+18);
-	csr32w(c->regs, MacRxjabber,              1514+18);
+	wreg(c->regs, MacTxfifoalmostfull,        0x1f8);
+	wreg(c->regs, MacTxthresh,  192);
+	wreg(c->regs, MacRxthresh,   12);
+	wreg(c->regs, MacMaxframe,               1536);
+	wreg(c->regs, MacTxjabber,             1514+18);
+	wreg(c->regs, MacRxjabber,              1514+18);
 	dprint("smte: FIFO thresholds and frame sizes programmed\n");
 
 	/* reset DMA engine */
-	csr32w(c->regs, DmaConfig, DmaConfigSwreset);
+	wreg(c->regs, DmaConfig, DmaConfigSwreset);
 	microdelay(10000);
-	csr32w(c->regs, DmaConfig, 0);
+	wreg(c->regs, DmaConfig, 0);
 	microdelay(10000);
 	/*
 	 * DmaConfig64bit: enables 64-bit buffer addresses in descriptors
@@ -1094,11 +1096,11 @@ ethinit(Ether *edev)
 	 * so descriptor rings must stay below 4 GB.
 	 */
 	v = DmaConfig64bit | DmaConfigStrictburst | DmaConfigBurst16;
-	csr32w(c->regs, DmaConfig, v);
-	dprint("smte: DMA reset, DmaConfig=%#ux\n", csr32r(c->regs, DmaConfig));
+	wreg(c->regs, DmaConfig, v);
+	dprint("smte: DMA reset, DmaConfig=%#ux\n", rd32(c->regs, DmaConfig));
 
 	/* Enable flow-control decode; harmless even without pause frames. */
-	csr32w(c->regs, MacFcctrl, MacFcctrlDecodeena);
+	wreg(c->regs, MacFcctrl, MacFcctrlDecodeena);
 
 	/*
 	 * Post-reset DMA tunables.  These registers are wiped by
@@ -1129,8 +1131,8 @@ ethinit(Ether *edev)
 	 * it alone too.
 	 */
 	dprint("smte: leaving MITIGATION=%#ux AUTOPOLL=%#ux at reset defaults\n",
-		csr32r(c->regs, DmaRxmitigation),
-		csr32r(c->regs, DmaTxautopoll));
+		rd32(c->regs, DmaRxmitigation),
+		rd32(c->regs, DmaTxautopoll));
 
 	/* K1 EMAC uses 32-bit DMA addresses */
 	c->rxr = xspanalloc(sizeof(u32int) * 4 * Rxring, 16, 0);
@@ -1170,12 +1172,12 @@ ethinit(Ether *edev)
 	uintptr rxpa, txpa;
 	rxpa = PADDR(c->rxr);
 	txpa = PADDR(c->txr);
-	csr32w(c->regs, DmaRxbase, (u32int)rxpa);
-	csr32w(c->regs, DmaTxbase, (u32int)txpa);
+	wreg(c->regs, DmaRxbase, (u32int)rxpa);
+	wreg(c->regs, DmaTxbase, (u32int)txpa);
 	dprint("smte: DMA base RX=0x%08ux TX=0x%08ux (readback RX=0x%08ux TX=0x%08ux)\n",
 		(u32int)rxpa, (u32int)txpa,
-		csr32r(c->regs, DmaRxbase),
-		csr32r(c->regs, DmaTxbase));
+		rd32(c->regs, DmaRxbase),
+		rd32(c->regs, DmaTxbase));
 
 	/*
 	 * Clear stale interrupt state from whoever ran before us (typically
@@ -1190,15 +1192,15 @@ ethinit(Ether *edev)
 	 * can drain.  We let the 100Hz etherclock polling path consume that
 	 * residue; ethproc flips DmaIntrena on once the link is up.
 	 */
-	csr32w(c->regs, Ptp1588Irqena, 0);
-	csr32w(c->regs, Ptp1588Irqsts, ~0U);
-	csr32w(c->regs, DmaStatusIrq, ~0U);
-	csr32w(c->regs, MacStatusirq, ~0U);
-	csr32w(c->regs, MacIntrena, 0);
-	csr32w(c->regs, DmaIntrena, 0);
+	wreg(c->regs, Ptp1588Irqena, 0);
+	wreg(c->regs, Ptp1588Irqsts, ~0U);
+	wreg(c->regs, DmaStatusIrq, ~0U);
+	wreg(c->regs, MacStatusirq, ~0U);
+	wreg(c->regs, MacIntrena, 0);
+	wreg(c->regs, DmaIntrena, 0);
 	dprint("smte: post-init DmaStatusIrq=%#ux Ptp1588Irqsts=%#ux (polled until link up)\n",
-		csr32r(c->regs, DmaStatusIrq),
-		csr32r(c->regs, Ptp1588Irqsts));
+		rd32(c->regs, DmaStatusIrq),
+		rd32(c->regs, Ptp1588Irqsts));
 
 	/*
 	 * DMA stays stopped until ethproc sees the link come up and turns
@@ -1207,7 +1209,7 @@ ethinit(Ether *edev)
 	 * RX FIFO, made DMA pull those frames into our descriptors and
 	 * latch DmaStatusIrqRxdone faster than we could W1C it.
 	 */
-	csr32w(c->regs, DmaCtrl, 0);
+	wreg(c->regs, DmaCtrl, 0);
 	dprint("smte: DMA held stopped; ethproc starts on link up\n");
 
 	return 0;
@@ -1316,8 +1318,8 @@ etherpnp(Ether *edev)
 	}
 
 	/* plic.c's intrinit has already masked every PLIC source. */
-	ct->regs = (ulong*)vmap(base, size);
-	ct->apmu = (ulong*)vmap(apmubase, ApmuSize);
+	ct->regs = (u32int*)vmap(base, size);
+	ct->apmu = (u32int*)vmap(apmubase, ApmuSize);
 	if(ct->regs == nil || ct->apmu == nil){
 		print("smte: ERROR vmap failed regs=%p apmu=%p\n", ct->regs, ct->apmu);
 		ct->regs = nil;
@@ -1373,9 +1375,9 @@ etherpnp(Ether *edev)
 				edev->ea[0], edev->ea[1], edev->ea[2],
 				edev->ea[3], edev->ea[4], edev->ea[5]);
 		} else {
-			hi = csr32r(ct->regs, MacAddr1hi);
-			me = csr32r(ct->regs, MacAddr1me);
-			lo = csr32r(ct->regs, MacAddr1lo);
+			hi = rd32(ct->regs, MacAddr1hi);
+			me = rd32(ct->regs, MacAddr1me);
+			lo = rd32(ct->regs, MacAddr1lo);
 			edev->ea[0] = hi & 0xff;  edev->ea[1] = (hi>>8) & 0xff;
 			edev->ea[2] = me & 0xff;  edev->ea[3] = (me>>8) & 0xff;
 			edev->ea[4] = lo & 0xff;  edev->ea[5] = (lo>>8) & 0xff;

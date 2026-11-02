@@ -276,13 +276,13 @@ enum {
 
 	/* per-bank register offsets -- confirmed against K3 TRM 16.8.3
 	 * except where noted. */
-	Plr		= 0x00,	/* pin level			RO	*/
-	Pdr		= 0x04,	/* pin direction		RW	0=in 1=out */
-	Psr		= 0x08,	/* output set			WO	*/
-	Pcr		= 0x0C,	/* output clear			WO	*/
-	Rer		= 0x10,	/* rising-edge detect enable	RW	*/
-	Fer		= 0x14,	/* falling-edge detect enable	RW	*/
-	Edr		= 0x18,	/* edge-detect status		RWC (write 1 to clear) */
+	Plr		= 0x00/4,	/* pin level			RO	*/
+	Pdr		= 0x04/4,	/* pin direction		RW	0=in 1=out */
+	Psr		= 0x08/4,	/* output set			WO	*/
+	Pcr		= 0x0C/4,	/* output clear			WO	*/
+	Rer		= 0x10/4,	/* rising-edge detect enable	RW	*/
+	Fer		= 0x14/4,	/* falling-edge detect enable	RW	*/
+	Edr		= 0x18/4,	/* edge-detect status		RWC (write 1 to clear) */
 	/*
 	 * Sdr/Cdr/Srer/Crer/Sfer/Cfer (0x1C, 0x20, 0x24, 0x28, 0x2C,
 	 * 0x30): bit-wise set/clear pulse registers for Pdr/Rer/Fer.
@@ -292,7 +292,7 @@ enum {
 	 * so a direct read-modify-write is both simpler and avoids the
 	 * direction-control mistake noted as source 3 above.
 	 */
-	Apmask		= 0x34,	/* AP-domain edge-irq mask, 1=unmasked	RW */
+	Apmask		= 0x34/4,	/* AP-domain edge-irq mask, 1=unmasked	RW */
 	Cpmask		= 0x38,	/* CP/RCPU-domain edge-irq mask -- not touched, see header */
 
 	/*
@@ -306,7 +306,7 @@ enum {
 	 */
 	ApbcPhys	= 0xD4015000ull,
 	ApbcSize	= 0x1000,
-	ApbcGpio	= 0x8,		/* APBC_GPIO_CLK_RST */
+	ApbcGpio	= 0x8/4,		/* APBC_GPIO_CLK_RST */
 	ApbcBusEn	= 1<<0,		/* APBCLK -- APB bus clock enable */
 	ApbcFuncEn	= 1<<1,		/* FNCLK -- functional clock (24 MHz) enable */
 	ApbcReset	= 1<<2,		/* RST -- 0 = release reset, 1 = reset */
@@ -324,22 +324,23 @@ static int gpioready;
 static Lock gpiolk;
 static Ivec vec[Npin];
 
-static uintptr
+static u32int*
 bankbase(uint pin)
 {
-	return gpiobase + (pin/Nport)*BankStride;
+	return (u32int*)(gpiobase + (pin/Nport)*BankStride);
 }
 
+/* the register window is per bank, so address it by pin rather than by base */
 static ulong
-rd(uint pin, int reg)
+gpior(uint pin, uintptr reg)
 {
-	return *(ulong*)(bankbase(pin) + reg);
+	return bankbase(pin)[reg];
 }
 
 static void
-wr(uint pin, int reg, ulong v)
+gpiow(uint pin, uintptr reg, ulong v)
 {
-	*(ulong*)(bankbase(pin) + reg) = v;
+	bankbase(pin)[reg] = v;
 	coherence();
 }
 
@@ -358,10 +359,14 @@ gpiointerrupt(Ureg*, void*)
 
 	ilock(&gpiolk);
 	for(bank = 0; bank < Nbank; bank++){
-		edr = *(ulong*)(gpiobase + bank*BankStride + Edr);
+		u32int *r;
+		ulong edr;
+
+		r = (u32int*)(gpiobase + bank*BankStride);
+		edr = r[Edr];
 		if(edr == 0)
 			continue;
-		*(ulong*)(gpiobase + bank*BankStride + Edr) = edr;	/* W1C */
+		r[Edr] = edr;			/* W1C */
 		coherence();
 		for(pin = bank*Nport; pin < (bank+1)*Nport; pin++)
 			if((edr & (1<<(pin%Nport))) && vec[pin].f != nil)
@@ -394,10 +399,10 @@ gpioout(uint pin, int set)
 	if(!gpioready || pin >= Npin)
 		return;
 	bit = 1<<(pin%Nport);
-	pdr = rd(pin, Pdr);
+	pdr = gpior(pin, Pdr);
 	if((pdr & bit) == 0)
-		wr(pin, Pdr, pdr | bit);	/* 0->1: configure as output */
-	wr(pin, set? Psr: Pcr, bit);
+		gpiow(pin, Pdr, pdr | bit);	/* 0->1: configure as output */
+	gpiow(pin, set? Psr: Pcr, bit);
 }
 
 /*
@@ -412,10 +417,10 @@ gpioin(uint pin)
 	if(!gpioready || pin >= Npin)
 		return -1;
 	bit = 1<<(pin%Nport);
-	pdr = rd(pin, Pdr);
+	pdr = gpior(pin, Pdr);
 	if(pdr & bit)
-		wr(pin, Pdr, pdr & ~bit);	/* 1->0: configure as input */
-	return (rd(pin, Plr) & bit) != 0;
+		gpiow(pin, Pdr, pdr & ~bit);	/* 1->0: configure as input */
+	return (gpior(pin, Plr) & bit) != 0;
 }
 
 /*
@@ -438,10 +443,10 @@ gpiointrenable(uint pin, int mode, void (*f)(uint pin, void *a), void *a)
 	ilock(&gpiolk);
 
 	/* interrupts only make sense on inputs */
-	wr(pin, Pdr, rd(pin, Pdr) & ~bit);
+	gpiow(pin, Pdr, gpior(pin, Pdr) & ~bit);
 
-	rer = rd(pin, Rer);
-	fer = rd(pin, Fer);
+	rer = gpior(pin, Rer);
+	fer = gpior(pin, Fer);
 	switch(mode){
 	case GpioRising:
 		rer |= bit;
@@ -459,11 +464,11 @@ gpiointrenable(uint pin, int mode, void (*f)(uint pin, void *a), void *a)
 		iunlock(&gpiolk);
 		return;
 	}
-	wr(pin, Rer, rer);
-	wr(pin, Fer, fer);
+	gpiow(pin, Rer, rer);
+	gpiow(pin, Fer, fer);
 
-	wr(pin, Edr, bit);				/* clear any stale status, W1C */
-	wr(pin, Apmask, rd(pin, Apmask) | bit);	/* unmask to the AP */
+	gpiow(pin, Edr, bit);				/* clear any stale status, W1C */
+	gpiow(pin, Apmask, gpior(pin, Apmask) | bit);	/* unmask to the AP */
 
 	vec[pin].f = f;
 	vec[pin].a = a;
@@ -480,9 +485,9 @@ gpiointrdisable(uint pin)
 	bit = 1<<(pin%Nport);
 
 	ilock(&gpiolk);
-	wr(pin, Apmask, rd(pin, Apmask) & ~bit);
-	wr(pin, Rer, rd(pin, Rer) & ~bit);
-	wr(pin, Fer, rd(pin, Fer) & ~bit);
+	gpiow(pin, Apmask, gpior(pin, Apmask) & ~bit);
+	gpiow(pin, Rer, gpior(pin, Rer) & ~bit);
+	gpiow(pin, Fer, gpior(pin, Fer) & ~bit);
 	vec[pin].f = nil;
 	vec[pin].a = nil;
 	iunlock(&gpiolk);
@@ -498,8 +503,8 @@ gpiointrdisable(uint pin)
 void
 gpiok3init(void)
 {
-	uchar *apbc;
-	ulong v;
+	u32int *apbc;
+	u32int v;
 
 	if(!dtbsocmatch("spacemit,k3"))
 		return;
@@ -518,8 +523,8 @@ gpiok3init(void)
 	 */
 	apbc = vmap(ApbcPhys, ApbcSize);
 	if(apbc != nil){
-		v = *(ulong*)(apbc + ApbcGpio);
-		*(ulong*)(apbc + ApbcGpio) = (v & ~ApbcReset) | ApbcBusEn | ApbcFuncEn;
+		v = apbc[ApbcGpio];
+		apbc[ApbcGpio] = (v & ~ApbcReset) | ApbcBusEn | ApbcFuncEn;
 		coherence();
 		vunmap(apbc, ApbcSize);
 	}
