@@ -20,7 +20,7 @@ enum {
 	ApbcPhys	= 0xD4015000ull,
 	ApbcSize	= 0x1000,
 	/* confirmed: SpacemiT k3-syscon.h, APBC_TSEN_CLK_RST */
-	ApbcTsen	= 0x6C,
+	ApbcTsen	= 0x6C/4,
 	 ApbcBusEn	= 1<<0,		/* confirmed: CCU_GATE_DEFINE(tsen_bus_clk, ...) */
 	 ApbcFuncEn	= 1<<1,		/* confirmed: CCU_GATE_DEFINE(tsen_clk, ...) */
 	 ApbcReset	= 1<<2,		/* UNCONFIRMED: K1 convention, not independently checked for K3 */
@@ -29,24 +29,24 @@ enum {
 	TsenPhys	= 0xD4018000ull,
 	TsenSize	= 0x100,
 
-	TsCfg		= 0x00,
+	TsCfg		= 0x00/4,
 	 CfgCkdivMask	= 3<<2,		/* clock divider select */
 	 CfgCkdivDiv4	= 0<<2,		/* /4 -- the only divider this driver sets */
 	 CfgVrefMask	= 0xFF<<7,	/* vref trim field */
 	 CfgAutozero	= 1<<25,	/* pulse: enable auto-zero calibration */
 	 CfgOutsel	= 1<<26,	/* pulse: alternate output select */
 	 CfgTsenEn	= 1<<0,		/* power up / enable the sensor block */
-	TsCfg2		= 0x04,		/* write sensor index here to mux it in */
-	TsIntenb	= 0x08,
-	TsIntst		= 0x0C,
-	TsIntclr	= 0x10,
-	TsRebootThresh	= 0x14,
-	TsTempData	= 0x18,
+	TsCfg2		= 0x04/4,		/* write sensor index here to mux it in */
+	TsIntenb	= 0x08/4,
+	TsIntst		= 0x0C/4,
+	TsIntclr	= 0x10/4,
+	TsRebootThresh	= 0x14/4,
+	TsTempData	= 0x18/4,
 	 TempDataMask	= 0xFFF,	/* 12-bit sample, K3 UM 16.4.2 */
-	TsVrefEfuse	= 0x1C,
-	TsTempThresh	= 0x20,
-	TsEcoIntvl	= 0x24,
-	TsLpFixBypass	= 0x28,
+	TsVrefEfuse	= 0x1C/4,
+	TsTempThresh	= 0x20/4,
+	TsEcoIntvl	= 0x24/4,
+	TsLpFixBypass	= 0x28/4,
 
 	VrefCalibDefault = 0xD8,	/* fallback vref trim; real value lives in efuse */
 	TempRawDiv	= 8,		/* raw code is in 1/8 degC units */
@@ -76,19 +76,14 @@ static char *sensorname[NMux] = {
 	[SCluster3]	"cluster3",
 };
 
-static uchar *tsen;
+static u32int *tsen;
 static QLock tsenlk;	/* the mux is a shared, select-then-read resource */
 
-static ulong
-rd(uchar *b, int off)
-{
-	return *(ulong*)(b + off);
-}
-
+/* a register write has to be ordered against what follows it */
 static void
-wr(uchar *b, int off, ulong v)
+wreg(u32int *base, uintptr reg, u32int v)
 {
-	*(ulong*)(b + off) = v;
+	base[reg] = v;
 	coherence();
 }
 
@@ -101,9 +96,9 @@ tempcode(int id)
 	if(tsen == nil)
 		return -1;
 	qlock(&tsenlk);
-	wr(tsen, TsCfg2, id);
+	wreg(tsen, TsCfg2, id);
 	delay(1);
-	v = rd(tsen, TsTempData) & TempDataMask;
+	v = tsen[TsTempData] & TempDataMask;
 	qunlock(&tsenlk);
 	return v;
 }
@@ -132,8 +127,8 @@ cputempread(Chan*, void *a, long n, vlong off)
 static void
 thermalinit(void)
 {
-	uchar *apbc;
-	ulong v;
+	u32int *apbc;
+	u32int v;
 
 	apbc = vmap(ApbcPhys, ApbcSize);
 	tsen = vmap(TsenPhys, TsenSize);
@@ -143,28 +138,28 @@ thermalinit(void)
 	}
 
 	/* enable both clocks (bus+func), release reset */
-	v = rd(apbc, ApbcTsen);
-	wr(apbc, ApbcTsen, (v & ~ApbcReset) | ApbcBusEn | ApbcFuncEn);
+	v = apbc[ApbcTsen];
+	wreg(apbc, ApbcTsen, (v & ~ApbcReset) | ApbcBusEn | ApbcFuncEn);
 	vunmap(apbc, ApbcSize);
 
-	wr(tsen, TsIntclr, ~0);
-	wr(tsen, TsIntenb, ~0);		/* mask all interrupts */
+	wreg(tsen, TsIntclr, ~0);
+	wreg(tsen, TsIntenb, ~0);		/* mask all interrupts */
 
-	v = rd(tsen, TsCfg);
+	v = tsen[TsCfg];
 	v &= ~CfgCkdivMask;
 	v |= CfgCkdivDiv4;
 	v &= ~CfgVrefMask;
 	v |= VrefCalibDefault<<7;
-	wr(tsen, TsCfg, v);
+	wreg(tsen, TsCfg, v);
 
 	/* one-shot auto-zero calibration pulse */
-	v = rd(tsen, TsCfg);
-	wr(tsen, TsCfg, v | CfgAutozero | CfgOutsel);
+	v = tsen[TsCfg];
+	wreg(tsen, TsCfg, v | CfgAutozero | CfgOutsel);
 	delay(1);
-	v = rd(tsen, TsCfg);
-	wr(tsen, TsCfg, v & ~(CfgAutozero | CfgOutsel));
+	v = tsen[TsCfg];
+	wreg(tsen, TsCfg, v & ~(CfgAutozero | CfgOutsel));
 
-	wr(tsen, TsCfg, rd(tsen, TsCfg) | CfgTsenEn);
+	wreg(tsen, TsCfg, tsen[TsCfg] | CfgTsenEn);
 
 	addarchfile("cputemp", 0444, cputempread, nil);
 }

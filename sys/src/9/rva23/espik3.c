@@ -30,14 +30,14 @@ enum {
 	PrMemBase1	= 0xcac8c000ull,	/* confirmed, dtb "pr-mem-base1" */
 
 	/* -- eSPI controller CSR offsets, K3 UM 14.9.4.2 -- */
-	DnTxHdr0	= 0x00,
-	GlobalControl0	= 0x30,
-	GlobalControl1	= 0x34,
-	PrBaseAddrMem0	= 0x38,
-	PrBaseAddrMem1	= 0x3C,
-	Slave0Config	= 0x68,
-	Slave0IntEn	= 0x6C,
-	Slave0IntSts	= 0x70,
+	DnTxHdr0	= 0x00/4,
+	GlobalControl0	= 0x30/4,
+	GlobalControl1	= 0x34/4,
+	PrBaseAddrMem0	= 0x38/4,
+	PrBaseAddrMem1	= 0x3C/4,
+	Slave0Config	= 0x68/4,
+	Slave0IntEn	= 0x6C/4,
+	Slave0IntSts	= 0x70/4,
 
 	/* -- EC shared-memory window layout, byte offsets -- */
 	OffHostCmd	= 0x000,
@@ -155,20 +155,15 @@ enum {
 	CmdProtocol3	= 0xDA,		/* EC_COMMAND_PROTOCOL_3 */
 };
 
-static uchar *espi;	/* controller CSRs */
-static uchar *ecwin;	/* EC shared-memory window */
+static u32int *espi;	/* controller CSRs */
+static u32int *ecwin;	/* EC shared-memory window */
 static QLock eclk;
 
-static ulong
-erd(int off)
-{
-	return *(ulong*)(espi + off);
-}
-
+/* a register write has to be ordered against what follows it */
 static void
-ewr(int off, ulong v)
+wreg(u32int *base, uintptr reg, u32int v)
 {
-	*(ulong*)(espi + off) = v;
+	base[reg] = v;
 	coherence();
 }
 
@@ -177,7 +172,7 @@ wrd(int off)
 {
 	uchar v;
 
-	v = *(ecwin + off);
+	v = ecwin[off];
 	coherence();
 	return v;
 }
@@ -185,7 +180,7 @@ wrd(int off)
 static void
 wwr(int off, uchar v)
 {
-	*(ecwin + off) = v;
+	ecwin[off] = v;
 	coherence();
 }
 
@@ -236,10 +231,10 @@ txhdrwr(int idx, uchar v)
 
 	reg = DnTxHdr0 + ((idx+1) & ~3);
 	shift = ((idx+1) & 3) * 8;
-	d = erd(reg);
+	d = espi[reg];
 	d &= ~(0xFFul << shift);
 	d |= (ulong)v << shift;
-	ewr(reg, d);
+	wreg(espi, reg, d);
 }
 
 static uchar
@@ -249,7 +244,7 @@ txhdrrd(int idx)
 
 	reg = DnTxHdr0 + ((idx+1) & ~3);
 	shift = ((idx+1) & 3) * 8;
-	return (erd(reg) >> shift) & 0xFF;
+	return (espi[reg] >> shift) & 0xFF;
 }
 
 static void
@@ -257,10 +252,10 @@ espitrigger(int type)
 {
 	ulong v;
 
-	v = erd(DnTxHdr0);
+	v = espi[DnTxHdr0];
 	v &= ~(DncmdTypeMask | DncmdEn);
 	v |= (type & DncmdTypeMask) | DncmdEn;
-	ewr(DnTxHdr0, v);
+	wreg(espi, DnTxHdr0, v);
 }
 
 static int
@@ -269,7 +264,7 @@ espiwaittxidle(void)
 	int i;
 
 	for(i = 0; i < TxIdleTimeoutUs; i++){
-		if((erd(DnTxHdr0) & DncmdEn) == 0)
+		if((espi[DnTxHdr0] & DncmdEn) == 0)
 			return 0;
 		microdelay(1);
 	}
@@ -289,14 +284,14 @@ espipollstatus(ulong expected)
 	ulong status;
 	int i;
 
-	ewr(Slave0IntSts, expected);
+	wreg(espi, Slave0IntSts, expected);
 	for(i = 0; i < CfgTimeoutUs/10; i++){
-		status = erd(Slave0IntSts);
+		status = espi[Slave0IntSts];
 		if(status == 0){
 			microdelay(10);
 			continue;
 		}
-		ewr(Slave0IntSts, status);
+		wreg(espi, Slave0IntSts, status);
 		if(status & expected)
 			return 0;
 		if(status & (IntProtocolMask|IntResponseMask))
@@ -340,8 +335,8 @@ espisetconfig(int addr, ulong val)
 static void
 espihwreset(void)
 {
-	ewr(GlobalControl1, erd(GlobalControl1) & ~G1EspiRstn);
-	ewr(GlobalControl1, erd(GlobalControl1) | G1EspiRstn | G1SwRst);
+	wreg(espi, GlobalControl1, espi[GlobalControl1] & ~G1EspiRstn);
+	wreg(espi, GlobalControl1, espi[GlobalControl1] | G1EspiRstn | G1SwRst);
 }
 
 static void
@@ -422,7 +417,7 @@ espiapplyconfig(ulong cfg)
 {
 	ulong v, iomode, freq;
 
-	v = erd(Slave0Config);
+	v = espi[Slave0Config];
 	v &= ~(ScCrcCheckEn|ScAlertModeSel|ScIoModeMask|ScFreqMask|
 		ScPrEn|ScVwEn|ScOobEn|ScFlashEn);
 
@@ -445,7 +440,7 @@ espiapplyconfig(ulong cfg)
 	if(cfg & GenFlashChanSup)
 		v |= ScFlashEn;
 
-	ewr(Slave0Config, v);
+	wreg(espi, Slave0Config, v);
 }
 
 static void
@@ -453,15 +448,15 @@ espiprogramwindow(void)
 {
 	ulong v;
 
-	v = erd(GlobalControl0);
+	v = espi[GlobalControl0];
 	v &= ~(G0WdgCntMask | G0MstStopEn);
 	v |= G0WdgEn;
 	v |= FIELD(G0WdgCntMask, G0WdgCntShift, 0xFFFF);
 	v |= G0MstStopEn;	/* auto-gating-enable present on this board */
-	ewr(GlobalControl0, v);
+	wreg(espi, GlobalControl0, v);
 
-	ewr(PrBaseAddrMem0, EcWinPhys);
-	ewr(PrBaseAddrMem1, PrMemBase1);
+	wreg(espi, PrBaseAddrMem0, EcWinPhys);
+	wreg(espi, PrBaseAddrMem1, PrMemBase1);
 }
 
 static int
@@ -477,8 +472,8 @@ espiinit(void)
 		return -1;
 	}
 
-	ewr(Slave0IntEn, IntAll);
-	ewr(Slave0IntSts, IntAll);
+	wreg(espi, Slave0IntEn, IntAll);
+	wreg(espi, Slave0IntSts, IntAll);
 
 	espihwreset();
 	espisendinbandreset();
