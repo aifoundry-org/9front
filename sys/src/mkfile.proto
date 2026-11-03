@@ -3,7 +3,7 @@
 #
 
 OS=056789qvtj
-CPUS=spim arm arm64 amd64 386 power power64 mips rva23
+CPUS=spim arm arm64 amd64 386 power power64 mips riscv64
 CFLAGS=-FTVw
 LEX=lex
 YACC=yacc
