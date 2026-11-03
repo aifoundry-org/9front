@@ -1,0 +1,34 @@
+riscv64
+	bin
+		aux
+			kbdfs
+			listen1
+			timesync
+		bind
+		cat
+		chmod
+		date
+		dd
+		echo
+		grep
+		ip
+			ping
+		ls
+		mkdir
+		mount
+		mxpsvc 555 sys sys maxion.mxpsvc
+		ps
+		ramfs
+		rc
+		rm
+		sleep
+		test
+		unmount
+		xd
+		smoke 555 sys sys maxionsmoke
+rc
+	lib
+		rcmain
+	bin
+		bootrc 555 sys sys maxion.bootrc
+tmp
