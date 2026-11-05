@@ -1,0 +1,13 @@
+$objtype
+	bin
+		ns
+		read
+		tlssrv
+rc
+	lib
+		cpuwait.rc 555 sys sys ../boot/cpuwait.rc
+	bin
+		service
+			tcp17019
+lib
+	namespace
