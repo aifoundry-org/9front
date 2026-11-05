@@ -1,0 +1,32 @@
+#!/bin/rc
+# pull: update the tree from the repository at /dist/host, as
+# sysupdate(1) does from git.9front.org: bind the tree's repository,
+# /dist/9front/.git, onto / and git/pull its branch front from the
+# remote's front.  The remote is a local path, so git/pull runs
+# git/serve on it; no network is needed.  Only the files that differ
+# between the two commits are written.
+rfork en
+ramfs -m /tmp
+cd /
+if(! test -d /dist/host/.git){
+	echo pull: no /dist/host/.git >[1=2]
+	exit nohost
+}
+bind -ac /dist/9front /
+if(! ~ `{git/branch} heads/front){
+	echo pull: the tree is not on front >[1=2]
+	exit branch
+}
+git/pull -u /dist/host || exit
+# the directories every objtype's builds install into
+. /sys/lib/rootstub
+# / (/9front, cdrom's, 555) allows no creates, so new top-level
+# entries (a host checkout's .github, say) were made in /dist/9front,
+# the only member of the union that allows them: they are left out
+for(f in `{ls /dist/9front})
+	if(! ~ $f /dist/9front/.git){
+		echo pull: left out: `{basename $f}
+		rm -rf $f
+	}
+# git/walk rewrites the index 644
+chmod 664 /dist/9front/.git/INDEX9
