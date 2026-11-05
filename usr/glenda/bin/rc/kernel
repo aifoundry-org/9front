@@ -1,0 +1,43 @@
+#!/bin/rc
+# kernel [-c] [conf]: make the kernel conf (default pc64cpuwait) from
+# /sys/src/9 and install it in /$objtype as 9conf (with 9conf.u,
+# s9conf or 9conf.gz, as the directory's mkfile makes them).  conf is
+# a configuration of one kernel directory (pc64/pc64, arm64/qemu,
+# bcm/pi2, ...), whose mkfile sets objtype.  NAMEcpuwait is NAME with
+# the cpuwait boot method: the name alone makes mk add
+# /sys/src/9/boot/cpuwait.proto to the boot file system (see
+# /sys/src/9/boot/bootmkfile).  The kernel links /$objtype/lib's
+# libraries, and its boot file system holds /$objtype/bin's
+# programs: build $objtype first.
+# -c cleans the kernel directory after the install.
+rfork e
+clean=()
+if(~ $1 -c){
+	clean=1
+	shift
+}
+conf=$1
+if(~ $#conf 0)
+	conf=pc64cpuwait
+base=`{echo $conf | sed 's/cpuwait$//'}
+dir=/sys/src/9/*/$base
+if(! ~ $#dir 1 || ! test -f $dir){
+	echo kernel: no single kernel configuration $base: $dir >[1=2]
+	exit conf
+}
+cd `{basename -d $dir}
+objtype=`{sed -n 's/^objtype=//p' mkfile}
+if(! test -f /$objtype/lib/libc.a){
+	echo kernel: no /$objtype/lib/libc.a: build $objtype first >[1=2]
+	exit userland
+}
+# the mkfile reads the configuration by its name; the boot file
+# system is the base's, not a stale proto of the copy's own
+if(! ~ $conf $base){
+	cp $base $conf
+	rm -f $conf.bootfs.proto
+}
+mk 'CONF='^$conf install || exit
+if(~ $#clean 0)
+	exit
+mk 'CONF='^$conf clean

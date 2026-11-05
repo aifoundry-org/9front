@@ -1,0 +1,21 @@
+#!/bin/rc
+# buildall: rebuild every objtype's userland with build, then a
+# kernel for each with kernel -c, which cleans the kernel directory
+# after installing.  Stops at the first failure.
+rfork en
+# build and kernel live beside this script
+bind -a /usr/glenda/bin/rc /bin
+
+fn fatal {
+	echo buildall: $* failed >[1=2]
+	exit $1
+}
+
+for(o in 386 amd64 arm arm64 riscv64){
+	echo '# world' $o
+	build $o || fatal world $o
+}
+for(c in pc pc64 pi pi4 rva23){
+	echo '# kernel' $c
+	kernel -c $c || fatal kernel $c
+}

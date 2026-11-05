@@ -1,0 +1,41 @@
+#!/bin/rc
+# build [objtype]: rebuild the userland for objtype (default
+# $cputype) from /sys/src and install it, in place, with the release's
+# own recipe (mk release: nuke, delete objtype's libraries, install,
+# clean).  The compilers cross-compile, so any of mkfile.proto's CPUS
+# builds here, and only /$objtype and /acme/bin/$objtype change.  The
+# mkfile runs each directory's mk in a loop, so its status is the
+# last one's: look for mk's errors in the output instead.
+#
+# A port newer than the tree's binaries (riscv64, from 9front's et
+# branch) has no compiler in $path yet (spim's are /rc/bin scripts
+# running mips's with -l or -L): then its assembler,
+# compiler and loader (from objtype's mkfile), and the tools that
+# read its objects (ar, pcc, nm, size, strip, file, by libmach), are
+# built for $cputype first, with the tree's own libraries.
+rfork en
+objtype=$1
+if(~ $#objtype 0)
+	objtype=$cputype
+if(! test -f /$objtype/mkfile){
+	echo build: no /$objtype/mkfile >[1=2]
+	exit objtype
+}
+# scratch files go to memory, not to the tree
+ramfs -m /tmp
+NPROC=`{wc -l </dev/sysstat}
+cc=`{sed -n 's/^CC=//p' /$objtype/mkfile}
+tools=`{sed -n 's/^(AS|CC|LD)=//p' /$objtype/mkfile}
+if(! whatis $cc >/dev/null >[2=1]) @{
+	# @ shares the environment: keep objtype from leaking out
+	rfork e
+	objtype=$cputype
+	echo build: building $tools for $cputype
+	# the compilers include cmd/cc's y.tab.h: clean after
+	for(d in cmd/cc libmach cmd/$tools)
+		@{ cd /sys/src/$d && mk install } || exit tools
+	cd /sys/src/cmd && mk ar.install pcc.install nm.install size.install strip.install file.install || exit tools
+	for(d in cmd cmd/cc libmach cmd/$tools)
+		@{ cd /sys/src/$d && mk clean }
+} || exit
+cd /sys/src && mk release
