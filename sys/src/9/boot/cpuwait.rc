@@ -1,0 +1,102 @@
+#!/bin/rc
+# cpuwait boot method: a cpu server without a root file server.
+#
+#	nobootprompt='cpuwait ether /net/ether0 10.0.2.15 255.255.255.0'
+#
+# configures the network and waits for rcpu clients (drawterm);
+# each client's exported tree (drawterm -r dir) becomes the
+# root file system of the processes it starts.  The sessions are
+# the stock rcpu service's, /rc/bin/service/tcp17019, in the stock
+# /lib/namespace, with the boot file system posted as /srv/boot.
+
+fn configcpuwait{
+	if(~ $#* 0){
+		e=/net/ether*
+		if(! ~ $e '/net/ether*')
+			*=(ether $e(1))
+	}
+	must ip/ipconfig -p $*
+
+	# normally cs sets it from ndb, but there is no /lib/ndb
+	if(~ $#sysname 0)
+		sysname=cpuwait
+	echo -n $sysname >/dev/sysname
+
+	if(~ $#auth 0)
+		auth=`{awk -F'=' '/^[ 	]*auth=/{print $2}' /net/ndb}
+
+	# publish info in /net/ndb for factotum
+	if(! ~ $#auth 0) >> /net/ndb {
+		echo
+		echo 'ipbootinfo='
+		for(i in $auth)	echo '	auth='^$i
+	}
+
+	# keys come from nvram; without $auth bootrc skips secstore
+	auth=()
+}
+
+fn connectcpuwait{
+	# the boot file system again, as the root that /lib/namespace
+	# gives rcpu clients until they supply their own
+	must /boot/paqfs -q -s -S boot /boot/bootfs.paq
+
+	@{
+		# start the listener with a clean environment
+		x=($cputype $sysname)
+		rfork E
+		cputype=$x(1)
+		objtype=$x(1)
+		sysname=$x(2)
+		service=cpu
+		rootdir=/root
+
+		# The first command of every rcpu client script is
+		#	mount -nc /fd/0 /mnt/term || exit
+		# After it, the tree the client exports (/mnt/term/root,
+		# i.e. drawterm -r dir) replaces the boot file system as
+		# the root.  The environment is copied by listen1, tlssrv
+		# and newns, so the session's rc gets this function.
+		fn mount {
+			fn mount
+			rm -f /env/'fn#mount'
+			mount $* || exit 'mount failed'
+			if(! ~ $#* 3 || ! ~ $3 /mnt/term)
+				exit 'cpuwait: unexpected first command: mount '^$"*
+			>/mnt/term/dev/cons >[2=1] {
+				if(! test -x /mnt/term/root/$cputype/bin/rc){
+					echo 'cpuwait: client root (drawterm -r) has no /'^$cputype^'/bin/rc'
+					echo -n 'no root' >/mnt/term/env/rstatus
+					exit 'no root'
+				}
+				unmount /root /
+				bind /mnt/term/root /root
+				bind -a /root /
+				bind /$cputype/bin /bin
+				bind /root/rc /rc
+				bind -a /rc/bin /bin
+				bind -qc /usr/$user/tmp /tmp
+				cat /adm/timezone/local >/env/timezone >[2]/dev/null
+				cd /usr/$user || cd /
+			}
+			status=''
+		}
+		exec aux/listen1 'tcp!*!17019' /rc/bin/service/tcp17019
+	} &
+	echo 'cpuwait: waiting for rcpu clients on tcp!*!17019'
+
+	# fshalt(8): no file server runs here, so there is nothing
+	# to sync or halt; the machine may be turned off at once
+	fn fshalt{
+		echo
+		echo done halting
+	}
+
+	# the console gets a shell in the boot name space
+	prompt=('cpuwait# ' '	')
+	while()
+		rc -i
+}
+
+mcpuwait=(configcpuwait connectcpuwait)
+mt=(mcpuwait $mt)
