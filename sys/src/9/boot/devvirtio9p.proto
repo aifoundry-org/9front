@@ -1,0 +1,3 @@
+rc
+	lib
+		virtio9p.rc 555 sys sys ../boot/virtio9p.rc

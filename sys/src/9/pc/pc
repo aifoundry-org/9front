@@ -40,6 +40,7 @@ dev
 	kbd
 	
 	segment
+	virtio9p	pci virtio10pc
 	vmx
 
 link
