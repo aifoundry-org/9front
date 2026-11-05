@@ -40,6 +40,7 @@ dev
 	
 	segment
 	vmx
+	virtio9p	pci virtio10pc
 	dtracy
 
 link

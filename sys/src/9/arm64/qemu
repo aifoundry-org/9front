@@ -20,6 +20,7 @@ dev
 	rtc
 	pci	pci
 	sd
+	virtio9p	pci virtio10mem
 
 link
 	usbxhcipci	pci usbxhci

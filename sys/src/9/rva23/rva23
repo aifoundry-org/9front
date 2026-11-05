@@ -26,6 +26,7 @@ dev
 #	rtc
 	pci	pci
 	sd
+	virtio9p	pci virtio10mem
 
 	dtracy
 
