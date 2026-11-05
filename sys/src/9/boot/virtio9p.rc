@@ -1,0 +1,20 @@
+#!/bin/rc
+# virtio9p boot method: the root is a host directory served by
+# qemu's virtio-9p device (-fsdev local, -device virtio-9p-pci)
+#
+#	nobootprompt=virtio9p	(#9/0)
+#	nobootprompt=virtio9p!1	(#9/1)
+
+fn configvirtio9p{
+}
+
+fn connectvirtio9p{
+	if(~ $#* 0)
+		*=0
+	if(! test -e '#9/'^$1)
+		fatal no virtio9p device '#9/'^$1
+	echo 3 >/srv/boot <>[3]'#9/'^$1
+}
+
+mvirtio9p=(configvirtio9p connectvirtio9p)
+mt=(mvirtio9p $mt)
