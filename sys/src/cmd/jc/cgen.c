@@ -669,6 +669,44 @@ fboolzerofree(Node *nod1, Node *n)
 }
 
 /*
+ * Converting to char or short in a register (gmove) does not
+ * truncate; the extra bits are discarded when the value is stored
+ * or widened.  Comparisons and tests use the whole register, so
+ * sign or zero extend the value of n in register r first.
+ * Loads already extend.
+ */
+static void
+regext(Node *n, Node *r)
+{
+	int a;
+
+	switch(n->op) {
+	case ONAME:
+	case OIND:
+	case OINDREG:
+	case OCONST:
+		return;
+	}
+	switch(r->type->etype) {
+	default:
+		return;
+	case TCHAR:
+		a = AMOVB;
+		break;
+	case TUCHAR:
+		a = AMOVBU;
+		break;
+	case TSHORT:
+		a = AMOVH;
+		break;
+	case TUSHORT:
+		a = AMOVHU;
+		break;
+	}
+	gins(a, r, r);
+}
+
+/*
  * If nn == Z, conditional branch if bool(n) != true
  * If nn != Z, assign n = (bool(n) == true)
  */
@@ -692,6 +730,7 @@ boolgen(Node *n, int true, Node *nn)
 	default:
 		regalloc(&nod, n, nn);
 		cgen(n, &nod);
+		regext(n, &nod);
 		if(nn == Z) {
 			o = true? OEQ : ONE;
 			if(typefd[n->type->etype]) {
@@ -823,6 +862,8 @@ boolgen(Node *n, int true, Node *nn)
 				regalloc(&nod1, l, Z);
 				cgen(l, &nod1);
 			}
+			regext(l, &nod1);
+			regext(r, &nod);
 			if(typefd[l->type->etype]) {
 				if(nn != Z) {
 					/* fp compare for assignment */
@@ -910,6 +951,8 @@ boolgen(Node *n, int true, Node *nn)
 			regalloc(&nod1, l, Z);
 			cgen(l, &nod1);
 		}
+		regext(l, &nod1);
+		regext(r, &nod);
 		
 		gopcode(o, &nod, &nod1, Z);
 		regfree(&nod);
