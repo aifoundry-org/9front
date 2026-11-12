@@ -21,11 +21,11 @@ IPFILES=`{../port/mkfilelist ../ip}
 %.acid:	../port/%.c
 	$CC $CFLAGS -a -I. ../port/$stem.c >$stem.acid
 
-installall:V:
+installall:V: $CONFLIST
 	for(i in $CONFLIST)
 		mk 'CONF='$i install
 
-all:V:
+all:V: $CONFLIST
 	for(i in $CONFLIST)
 		mk 'CONF='$i
 

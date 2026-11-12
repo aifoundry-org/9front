@@ -1,5 +1,5 @@
 CONF=rva23
-CONFLIST=rva23
+CONFLIST=rva23 rva23cpuwait
 
 # loadaddr is the link address (-T), but the kernel runs in place
 # wherever kexec/booti put it, fixing up its data pointers from the
@@ -110,6 +110,9 @@ LIB=\
 	/$objtype/lib/libdtracy.a\
 
 9:V:	$p$CONF s$p$CONF
+
+rva23cpuwait: rva23
+	cp $prereq $target
 
 $p$CONF $p$CONF.elf $p$CONF.elf.sym:D:	$OBJ $CONF.$O $LIB
 	$LD -s -l -u -o $p$CONF -H6 -R0x1000 -T$loadaddr $prereq
