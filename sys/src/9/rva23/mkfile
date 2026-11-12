@@ -111,12 +111,12 @@ LIB=\
 
 9:V:	$p$CONF s$p$CONF
 
-$p$CONF:D:	$OBJ $CONF.$O $LIB
-	$LD -s -l -u -o $target -H6 -R0x1000 -T$loadaddr $prereq
+$p$CONF $p$CONF.elf $p$CONF.elf.sym:D:	$OBJ $CONF.$O $LIB
+	$LD -s -l -u -o $p$CONF -H6 -R0x1000 -T$loadaddr $prereq
 	# ELF for kexec
-	$LD -s -l -u -o $target.elf -H5 -R4 -T$loadaddr $prereq
+	$LD -s -l -u -o $p$CONF.elf -H5 -R4 -T$loadaddr $prereq
 	# ELF with symbols, for source-level gdb-on-qemu
-	$LD -l -u -o $target.elf.sym -H5 -R4 -T$loadaddr $prereq
+	$LD -l -u -o $p$CONF.elf.sym -H5 -R4 -T$loadaddr $prereq
 
 s$p$CONF:D:	$OBJ $CONF.$O $LIB
 	$LD -l -o $target -R0x1000 -T$loadaddr $prereq
@@ -126,8 +126,8 @@ $OBJ: $HFILES
 
 install:V: /$objtype/$p$CONF
 
-/$objtype/$p$CONF:D: $p$CONF s$p$CONF
-	cp -x $p$CONF s$p$CONF /$objtype/
+/$objtype/$p$CONF:D: $p$CONF s$p$CONF $p$CONF.elf $p$CONF.elf.sym
+	cp -x $prereq /$objtype/
 
 # mk install.9fat: copy 9rva23 to 9fat partition for u-boot; backup to 9rva23.o
 install.%:V:	$p$CONF
