@@ -1,5 +1,5 @@
 CONF=pc
-CONFLIST=pc pcf pccpuf
+CONFLIST=pc
 EXTRACOPIES=
 #EXTRACOPIES=lookout boundary	# copy to these servers on install
 
