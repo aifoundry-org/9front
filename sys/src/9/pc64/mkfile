@@ -1,5 +1,5 @@
 CONF=pc64
-CONFLIST=pc64
+CONFLIST=pc64 pc64cpuwait
 
 objtype=amd64
 </$objtype/mkfile
@@ -81,6 +81,9 @@ SDEV=`{cd ../pc; echo sd*.c | sed 's/\.c/.'$O'/g'}
 $p$CONF:	$OBJ $CONF.$O $LIB
 	$LD -o $target -T$KTZERO -R4096 -l $prereq
 	size $target
+
+pc64cpuwait: pc64
+	cp $prereq $target
 
 install:V:	$p$CONF
 	cp $p$CONF /$objtype/
