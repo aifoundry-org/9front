@@ -12,6 +12,7 @@ ARCH=\
 	pc64\
 	pc\
 	#ppc\
+	rva23\
 	sgi\
 	teg2\
 	xen\
