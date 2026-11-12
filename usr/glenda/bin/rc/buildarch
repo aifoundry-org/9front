@@ -1,0 +1,40 @@
+#!/bin/rc
+# buildarch [objtype]: rebuild one userland and its kernels
+rfork en
+bind -a /usr/glenda/bin/rc /bin
+path=($path /bin .)
+
+fn fatal {
+	echo buildarch: $* failed >[1=2]
+	exit $1
+}
+
+if(! ~ $#* 0 1){
+	echo 'usage: buildarch [objtype]' >[1=2]
+	exit usage
+}
+o=$1
+if(~ $#o 0)
+	o=$cputype
+
+EXTRACOPIES=()
+echo '# world' $o
+build $o || fatal world $o
+# the platforms of /sys/src/9/mkfile's ARCH that build for $o;
+# a switch, since a false if would leave buildarch's status false
+for(d in `{sed -n 's/^	([a-z0-9]+)\\$/\1/p' /sys/src/9/mkfile}){
+	switch(`{sed -n 's/^objtype=//p' /sys/src/9/$d/mkfile}){
+	case $o
+		platforms=($platforms $d)
+	}
+}
+for(d in $platforms){
+	@{cd /sys/src/9/$d && mk clean} || fatal clean $d
+	confs=`{sed -n 's/^CONFLIST=//p' /sys/src/9/$d/mkfile}
+	if(~ $#confs 0)
+		fatal configurations $d
+	for(c in $confs){
+		echo '# kernel' $c
+		kernel -c $c || fatal kernel $c
+	}
+}
