@@ -714,6 +714,44 @@ bcgen(Node *n, int true)
 		boolgen(n, true, Z);
 }
 
+/*
+ * A conversion to char or short in a register (gmove) leaves
+ * the register's high bits as they were; they are dropped only
+ * when the value is stored or widened.  Comparisons and tests
+ * use the whole register, so sign or zero extend the value of n
+ * in register r first.  Loads already extend.
+ */
+static void
+regext(Node *n, Node *r)
+{
+	int a;
+
+	switch(n->op) {
+	case ONAME:
+	case OIND:
+	case OINDREG:
+	case OCONST:
+		return;
+	}
+	switch(r->type->etype) {
+	default:
+		return;
+	case TCHAR:
+		a = AMOVB;
+		break;
+	case TUCHAR:
+		a = AMOVBU;
+		break;
+	case TSHORT:
+		a = AMOVH;
+		break;
+	case TUSHORT:
+		a = AMOVHU;
+		break;
+	}
+	gins(a, r, r);
+}
+
 void
 boolgen(Node *n, int true, Node *nn)
 {
@@ -734,6 +772,7 @@ boolgen(Node *n, int true, Node *nn)
 	default:
 		regalloc(&nod, n, nn);
 		cgen(n, &nod);
+		regext(n, &nod);
 		o = ONE;
 		if(true)
 			o = OEQ;
@@ -839,6 +878,7 @@ boolgen(Node *n, int true, Node *nn)
 		if(sconst(l)) {
 			regalloc(&nod, r, nn);
 			cgenrel(r, &nod, 1);
+			regext(r, &nod);
 			o = invrel[relindex(o)];
 			gopcode(true ? o | BTRUE : o, l, &nod, Z);
 			regfree(&nod);
@@ -847,6 +887,7 @@ boolgen(Node *n, int true, Node *nn)
 		if(sconst(r)) {
 			regalloc(&nod, l, nn);
 			cgenrel(l, &nod, 1);
+			regext(l, &nod);
 			gopcode(true ? o | BTRUE : o, r, &nod, Z);
 			regfree(&nod);
 			goto com;
@@ -862,6 +903,8 @@ boolgen(Node *n, int true, Node *nn)
 			regalloc(&nod1, l, Z);
 			cgenrel(l, &nod1, 1);
 		}
+		regext(l, &nod1);
+		regext(r, &nod);
 		gopcode(true ? o | BTRUE : o, &nod, &nod1, Z);
 		regfree(&nod);
 		regfree(&nod1);
