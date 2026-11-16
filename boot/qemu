@@ -1,0 +1,237 @@
+#!/usr/bin/env bash
+# ROOT, KERNEL, MEM (e.g. 512M), SMP and SERIAL override the defaults.
+set -e
+cd "$(dirname "$0")/.."
+
+root=${ROOT:-$PWD}
+mem=${MEM:-512M}
+smp=${SMP:-1}
+serial=${SERIAL:-stdio}
+arch=386
+cpuwait=false
+net=true
+vga=false
+kitty=false
+kittyuart=false
+emu=false
+scale=0
+
+while [ $# -gt 0 ]; do
+	case "$1" in
+	-386)		arch=386 ;;
+	-amd64)		arch=amd64 ;;
+	-arm64)		arch=arm64 ;;
+	-riscv64)	arch=riscv64 ;;
+	-cpuwait)	cpuwait=true ;;
+	-nonet)		net=false ;;
+	-smp)		smp=$2; shift ;;
+	-vga)		vga=true ;;
+	-kitty)		kitty=true; kittyuart=false ;;
+	-kitty-uart)	kitty=true; kittyuart=true ;;
+	-emu)		emu=true ;;
+	-x[0-8])	scale=${1#-x} ;;
+	-x)
+		scale=1
+		if [ $# -gt 1 ] && [[ $2 != -* ]]; then
+			if [[ ! $2 =~ ^[0-8]$ ]]; then
+				echo 'boot/qemu: -x takes an integer from 0 to 8' >&2
+				exit 1
+			fi
+			scale=$2; shift
+		fi
+		;;
+	*)
+		echo 'usage: boot/qemu [-386 | -amd64 | -arm64 | -riscv64] [-cpuwait] [-nonet] [-smp n] [-vga | -kitty | -kitty-uart] [-emu] [-x [n]]' >&2
+		exit 1
+		;;
+	esac
+	shift
+done
+
+if $emu && ! $kitty; then
+	echo 'boot/qemu: -emu needs -kitty or -kitty-uart' >&2
+	exit 1
+fi
+if [ "$scale" != 0 ] && ! $kitty; then
+	echo 'boot/qemu: -x needs -kitty or -kitty-uart' >&2
+	exit 1
+fi
+
+case $arch in
+386)		base=9pc ;;
+amd64)		base=9pc64 ;;
+arm64)		base=9qemu ;;
+riscv64)	base=9rva23 ;;
+esac
+append='console=0 user=glenda service=terminal nobootprompt=virtio9p'
+forward=
+if $cpuwait; then
+	case $arch in
+	amd64|riscv64)	base=${base}cpuwait ;;
+	*) echo 'boot/qemu: cpuwait is available for amd64 and riscv64' >&2; exit 1 ;;
+	esac
+	$net || { echo 'boot/qemu: cpuwait needs networking' >&2; exit 1; }
+	append='console=0 user=glenda service=cpu nobootprompt=cpuwait'
+	forward=',hostfwd=tcp:127.0.0.1:17019-:17019'
+fi
+append="$append nvram=/dev/sdF0/data"
+os=$(uname -s)
+if $kitty; then
+	case $arch in
+	386|amd64) ;;
+	arm64|riscv64)
+		if $kittyuart; then
+			echo 'boot/qemu: -kitty-uart needs an x86 COM2; use -kitty on ARM64 or RISC-V' >&2
+			exit 1
+		fi
+		;;
+	esac
+	if $vga || $cpuwait; then
+		echo 'boot/qemu: -kitty needs a terminal kernel without -vga' >&2
+		exit 1
+	fi
+	serial=${SERIAL:-file:$root/.qemu.console.log}
+	if $kittyuart; then
+		append="$append kittyuart=1 monitor=kitty"
+	else
+		append="$append kittyuart=virtserialport1 monitor=kitty"
+	fi
+	if [ "$scale" != 0 ]; then
+		append="$append kittyscale=$scale"
+	fi
+	if $emu || [ "$os" = Darwin ]; then
+		append="$append kittyemu=1"
+	fi
+fi
+kernel=${KERNEL:-$root/$arch/$base}
+gfx=(-display none)
+if $vga; then
+	case $arch in
+	386|amd64) ;;
+	*) echo 'boot/qemu: -vga is for x86 kernels' >&2; exit 1 ;;
+	esac
+	gfx=(-vga std)
+	append="$append monitor=vesa vgasize=1920x1080x32 mouseport=ps2intellimouse"
+fi
+args=(-m "$mem" -smp "$smp" "${gfx[@]}" -monitor none -serial "$serial" -no-reboot)
+# Public test credentials; not for production.
+# authid=glenda authdom=front; dp9ik password='glen||glenda'.
+# No secstore or p9sk1 key.
+args+=(-drive "file=$PWD/boot/cpu.nvram,if=none,id=nvram,format=raw,readonly=on"
+	-device virtio-blk-pci,drive=nvram,disable-legacy=on)
+if $kitty; then
+	if $kittyuart; then
+		args+=(-serial stdio)
+	else
+		# Preserve the x86 COM2 backend for legacy UART users.
+		case $arch in
+		386|amd64) args+=(-serial null) ;;
+		esac
+		args+=(-chardev stdio,id=kitty,signal=off
+			-device virtio-serial-pci,id=kittyserial,disable-legacy=on,max_ports=2
+			-device virtserialport,bus=kittyserial.0,chardev=kitty,nr=1,name=org.9front.kitty)
+	fi
+fi
+
+board=()
+cpu=()
+bios=()
+case $arch in
+386|amd64)
+	qemu=qemu-system-x86_64
+	args+=(-kernel "$kernel" -append "$append")
+	;;
+arm64)
+	qemu=qemu-system-aarch64
+	# QEMU ignores -append for Plan 9 uImages.
+	ini=$root/.qemu.ini
+	size=$mem
+	case $size in
+	*[Kk])	size=${size%?}; unit=1024 ;;
+	*[Mm])	size=${size%?}; unit=1048576 ;;
+	*[Gg])	size=${size%?}; unit=1073741824 ;;
+	*[Tt])	size=${size%?}; unit=1099511627776 ;;
+	*)	unit=1048576 ;;
+	esac
+	size=$(LC_ALL=C awk -v size="$size" -v unit="$unit" 'BEGIN {printf "%.0f", size*unit}')
+	printf '%s\n' $append >"$ini"
+	printf '*maxmem=%#x\n*ncpu=%s\n' "$((0x40000000 + size))" "$smp" >>"$ini"
+	board=(-M virt,gic-version=3,highmem=off)
+	cpu=(-cpu cortex-a72)
+	args+=(-kernel "${kernel%.u}.u"
+		-device "loader,file=$ini,addr=0x40010000,force-raw=on")
+	;;
+riscv64)
+	qemu=qemu-system-riscv64
+	board=(-M virt)
+	bios=(-bios default)
+	cpu=(-cpu rv64,svpbmt=true,zicbom=true,sstc=true)
+	args+=(-kernel "$kernel" -append "$append")
+	;;
+esac
+
+host=$(uname -m)
+case $host in
+x86_64|amd64)	host=amd64 ;;
+i[3-6]86)	host=386 ;;
+aarch64|arm64)	host=arm64 ;;
+esac
+hw=
+if [ "$host" = "$arch" ] || { [ "$host" = amd64 ] && [ "$arch" = 386 ]; }; then
+	case $os in
+	Linux)
+		# RISC-V raw kernels need the space left by OpenSBI.
+		case $arch in 386|amd64|arm64) hw=kvm ;; esac
+		;;
+	Darwin)
+		case $host in amd64|arm64) hw=hvf ;; esac
+		;;
+	NetBSD)
+		case $host in 386|amd64) hw=nvmm ;; esac
+		;;
+	MINGW*|MSYS*|CYGWIN*)
+		case $host in 386|amd64|arm64) hw=whpx ;; esac
+		;;
+	esac
+fi
+accel=tcg
+if [ -n "$hw" ]; then
+	hwcpu=(-cpu host)
+	case $arch in
+	386|amd64)
+		# Older QEMU supports -cpu host only with KVM and HVF.
+		case $hw in whpx|nvmm) hwcpu=() ;; esac
+		;;
+	esac
+	# Initialize a paused machine: compiled support alone is not enough.
+	if printf '%s\n' '{"execute":"qmp_capabilities"}' '{"execute":"quit"}' |
+		"$qemu" "${board[@]}" "${hwcpu[@]}" "${bios[@]}" -accel "$hw" \
+		-m 64M -smp "$smp" -S -nodefaults -display none -monitor none \
+		-serial none -qmp stdio >/dev/null 2>&1; then
+		accel=$hw
+		cpu=("${hwcpu[@]}")
+	fi
+fi
+args+=(-accel "$accel" "${board[@]}" "${cpu[@]}" "${bios[@]}")
+
+if ! $cpuwait; then
+	args+=(-fsdev "local,id=root,path=$root,security_model=none"
+		-device virtio-9p-pci,fsdev=root,mount_tag=root,disable-legacy=on)
+fi
+if $net; then
+	args+=(-device virtio-net-pci,netdev=net0,mac=52:54:00:12:34:56,disable-legacy=on,romfile=
+		-netdev "user,id=net0$forward")
+else
+	args+=(-nic none)
+fi
+if [ "$accel" = tcg ]; then
+	echo "boot/qemu: software emulation: TCG ($os/$host, guest $arch)" >&2
+else
+	echo "boot/qemu: hardware acceleration: $accel ($os/$host, guest $arch)" >&2
+fi
+if $kitty; then
+	trap 'printf "\033[<u\033[?2048l\033[?2004l\033[?1004l\033[?1016l\033[?1006l\033[?1003l\033[?7h\033[?25h\033[?1049l"' EXIT
+	"$qemu" "${args[@]}"
+else
+	exec "$qemu" "${args[@]}"
+fi
