@@ -1,109 +1,83 @@
-# Build the riscv64 kernels from this commit's sys/src/9 with p9cloud's
-# rebuild.sh, on the riscv64 userland of ghcr.io/rvs/9front-riscv64:
-# 9rva23 (K1 and K3), 9rva23cpuwait (K1/K3, cpuwait boot file system)
-# and 9maxion.  Boot-test 9rva23cpuwait with p9cloud's boot-test.sh and
-# 9maxion's embedded smoke test, both in qemu-system-riscv64.
-#
-# The maxion configuration lives in sys/src/9/ainekko, which this branch
-# does not have yet: its build and boot test are commented out below
-# until it does.
-name: Build and test RISC-V kernels
+name: Build userlands and kernels
 
 on:
   push:
+    branches: ['**']
+    tags: ['v[0-9]+.[0-9]+.[0-9]+']
+  pull_request:
+  workflow_dispatch:
 
 permissions:
   contents: read
 
+concurrency:
+  group: build-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
-  kernel:
+  build:
     runs-on: ubuntu-24.04
-    timeout-minutes: 60
-    env:
-      FS: p9cloud/src/docker/fs
-      IMAGE: 9front-riscv64-ci
+    timeout-minutes: 180
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: ['386', amd64, arm, arm64, mips, spim, power, power64, riscv64]
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         with:
-          path: 9front
           persist-credentials: false
 
-      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
-        with:
-          repository: rvs/p9cloud
-          path: p9cloud
-          persist-credentials: false
-
-      - name: KVM and qemu
+      - name: Install QEMU and enable KVM
         run: |
-          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' |
-            sudo tee /etc/udev/rules.d/99-kvm4all.rules
-          sudo udevadm control --reload-rules
-          sudo udevadm trigger --name-match=kvm
           sudo apt-get update -q
-          sudo apt-get install -qy --no-install-recommends qemu-system-x86 qemu-system-misc opensbi
-          test -w /dev/kvm
+          sudo apt-get install -qy --no-install-recommends qemu-system-x86 expect gh
+          if [ -e /dev/kvm ]; then
+            echo "KERNEL==\"kvm\", OWNER=\"$(id -u)\", MODE=\"0600\"" | sudo tee /etc/udev/rules.d/99-kvm.rules
+            sudo udevadm control --reload-rules
+            sudo udevadm trigger --name-match=kvm
+            sudo udevadm settle
+            test -r /dev/kvm && test -w /dev/kvm
+          fi
 
-      # the published riscv64 tree, with this commit's kernel sources
-      # over its own, owned by sys like the rest of the tree.  rva23
-      # (riscv64 before its rename) and ainekko are wholly this
-      # repository's: drop the image's copies first, or files moved or
-      # deleted here (and stale objects) would survive the COPY
-      - name: Image
+      - name: Fetch amd64 bootstrap from latest release
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
-          docker build -t "$IMAGE" -f - 9front/sys/src/9 <<'END'
-          FROM ghcr.io/rvs/9front-riscv64:latest
-          RUN rm -rf /9front/sys/src/9/riscv64 /9front/sys/src/9/rva23 /9front/sys/src/9/ainekko
-          COPY --chown=110000:110000 . /9front/sys/src/9/
-          END
+          gh release download --repo "$GITHUB_REPOSITORY" \
+            --pattern amd64.tar.gz --dir "$RUNNER_TEMP"
 
-      # - name: Build 9rva23, 9rva23cpuwait and 9maxion
-      - name: Build 9rva23 and 9rva23cpuwait
-        run: |
-          # for conf in rva23 rva23cpuwait maxion; do
-          for conf in rva23 rva23cpuwait; do
-            "$FS/rebuild.sh" -c $conf kernel out/9$conf
-          done
-          (cd out && sha256sum * >SHA256SUMS)
+      - name: Build ${{ matrix.arch }} userland and kernels
+        run: .github/ci/build.sh '${{ matrix.arch }}' "$RUNNER_TEMP/amd64.tar.gz"
 
-      # boot-test.sh guesses the objtype only from 9rv64* names
-      - name: Boot test 9rva23cpuwait
-        run: $FS/boot-test.sh -a riscv64 out/9rva23cpuwait
-
-      ## the Maxion hart has no Svpbmt, Zicbom or Sstc: neither may qemu's;
-      ## maxion.bootrc runs the smoke test before its shell
-      #- name: Boot test 9maxion
-      #  run: |
-      #    qemu-system-riscv64 -nodefaults -M virt -bios default \
-      #      -cpu rv64,svpbmt=false,zicbom=false,sstc=false -m 1G -smp 1 \
-      #      -kernel out/9maxion -nic none -display none -monitor none \
-      #      -append 'console=0 user=glenda *maxion=1 *ncpu=1 *uartpoll=1' \
-      #      -serial file:maxion.console -daemonize -pidfile maxion.pid
-      #    trap 'kill $(cat maxion.pid)' EXIT
-      #    for i in $(seq 120); do
-      #      grep -qa MAXION-SMOKE-PASS maxion.console && break
-      #      sleep 1
-      #    done
-      #    tr -d '\r' <maxion.console
-      #    grep -qa MAXION-SMOKE-PASS maxion.console
-
-      - name: Upload kernels
+      # tar preserves executable modes, unlike uploading loose binaries.
+      - name: Upload binaries
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: riscv64-kernels-${{ github.sha }}
-          path: out/
+          name: 9front-${{ matrix.arch }}-${{ github.sha }}
+          path: ${{ matrix.arch }}.tar.gz
           if-no-files-found: error
           retention-days: 14
 
-      # rebuild.sh and boot-test.sh keep their VM's console when they fail
-      - name: Upload consoles
-        if: failure()
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+  smoke:
+    needs: build
+    uses: ./.github/workflows/smoke.yml
+
+  release:
+    if: github.ref_type == 'tag'
+    needs: [build, smoke]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
-          name: riscv64-consoles-${{ github.sha }}
-          path: |
-            /tmp/tmp.*/console
-            /tmp/tmp.*/log
-            maxion.console
-          if-no-files-found: ignore
-          retention-days: 14
+          pattern: 9front-*-${{ github.sha }}
+          merge-multiple: true
+          path: dist
+
+      - name: Publish release ${{ github.ref_name }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" dist/*.tar.gz --repo "$GITHUB_REPOSITORY" \
+            --verify-tag --title "$GITHUB_REF_NAME" --generate-notes

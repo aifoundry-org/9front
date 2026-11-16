@@ -16,8 +16,26 @@ if(! ~ $#* 0 1){
 o=$1
 if(~ $#o 0)
 	o=$cputype
+if(! test -f /$o/mkfile)
+	fatal objtype $o
 
 EXTRACOPIES=()
+ramfs -m /tmp || fatal ramfs
+host=`{sed -n 's/^(AS|CC|LD)=//p' /$cputype/mkfile}
+tools=`{sed -n 's/^(AS|CC|LD)=//p' /$o/mkfile}
+if(~ $cputype spim)
+	host=(va vc vl)
+if(~ $o spim)
+	tools=(va vc vl)
+echo '# tools' $cputype $o
+@{
+	rfork e
+	objtype=$cputype
+	cd /sys/src/cmd || exit tools
+	mk -s 'DIRS=cc ../libmach '^$"host^' '^$"tools nuke.dirs install.dirs || exit tools
+	mk ar.install pcc.install nm.install size.install strip.install file.install || exit tools
+} || fatal tools $o
+
 echo '# world' $o
 build $o || fatal world $o
 # the platforms of /sys/src/9/mkfile's ARCH that build for $o;

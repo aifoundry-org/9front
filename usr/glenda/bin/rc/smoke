@@ -1,6 +1,8 @@
 #!/bin/rc
 
-cd /usr/glenda/src/smoke
-mk clean
+objtype=$cputype
+path=(/$cputype/bin /rc/bin .)
+cd /usr/glenda/src/smoke || exit cd
+mk clean || exit clean
 mk smoke || exit compile
 exec ./smoke

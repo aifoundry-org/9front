@@ -1,6 +1,6 @@
 </$objtype/mkfile
 
-smoke:	smoke.$O
+smoke:	smoke.$O jc-regression.$O
 	$LD -o $target $prereq
 
 %.$O:	%.c
