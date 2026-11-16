@@ -73,5 +73,5 @@ bootdir
 	/$objtype/bin/paqfs
 	/$objtype/bin/rc
 	/$objtype/bin/auth/factotum
-	bootfs.paq
+	$CONF.bootfs.paq	bootfs.paq
 	boot
