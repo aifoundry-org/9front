@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# ROOT, KERNEL, MEM (e.g. 512M), SMP and SERIAL override the defaults.
+# ROOT, KERNEL, MEM (e.g. 512M), SMP, SERIAL and SERVICE override the defaults.
 set -e
 cd "$(dirname "$0")/.."
 
@@ -7,6 +7,7 @@ root=${ROOT:-$PWD}
 mem=${MEM:-512M}
 smp=${SMP:-1}
 serial=${SERIAL:-stdio}
+service=${SERVICE:-terminal}
 arch=386
 cpuwait=false
 net=true
@@ -63,7 +64,7 @@ amd64)		base=9pc64 ;;
 arm64)		base=9qemu ;;
 riscv64)	base=9rva23 ;;
 esac
-append='console=0 user=glenda service=terminal nobootprompt=virtio9p'
+append="console=0 user=glenda service=$service nobootprompt=virtio9p"
 forward=
 if $cpuwait; then
 	case $arch in

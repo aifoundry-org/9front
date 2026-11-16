@@ -1,0 +1,48 @@
+name: Smoke Test
+
+on:
+  workflow_call:
+
+jobs:
+  smoke:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {arch: '386', kernel: 9pc, packages: qemu-system-x86}
+          - {arch: amd64, kernel: 9pc64, packages: qemu-system-x86}
+          - {arch: amd64, kernel: 9pc64cpuwait, packages: qemu-system-x86}
+          - {arch: arm64, kernel: 9qemu, packages: qemu-system-arm}
+          - {arch: riscv64, kernel: 9rva23, packages: 'qemu-system-misc opensbi'}
+          - {arch: riscv64, kernel: 9rva23cpuwait, packages: 'qemu-system-misc opensbi'}
+    name: ${{ matrix.kernel }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+
+      - name: Install QEMU
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -qy --no-install-recommends ${{ matrix.packages }} expect
+
+      - name: Enable KVM
+        if: matrix.arch == '386' || matrix.arch == 'amd64'
+        run: |
+          if [ -e /dev/kvm ]; then
+            echo "KERNEL==\"kvm\", OWNER=\"$(id -u)\", MODE=\"0600\"" | sudo tee /etc/udev/rules.d/99-kvm.rules
+            sudo udevadm control --reload-rules
+            sudo udevadm trigger --name-match=kvm
+            sudo udevadm settle
+            test -r /dev/kvm && test -w /dev/kvm
+          fi
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          name: 9front-${{ matrix.arch }}-${{ github.sha }}
+          path: ${{ runner.temp }}/binaries
+
+      - name: Boot and test
+        run: .github/ci/smoke.sh '${{ matrix.arch }}' '${{ matrix.kernel }}' "$RUNNER_TEMP/binaries/${{ matrix.arch }}.tar.gz"
