@@ -47,7 +47,7 @@ init0(void)
 
 	p = newpage(USTKTOP-BY2PG, nil);
 	segpage(up->seg[SSEG], p);
-	sp = (char**)(p->pa + BY2PG - sizeof(Tos) - 8 - sizeof(sp[0])*4);
+	sp = (char**)((uintptr)KADDR(p->pa) + BY2PG - sizeof(Tos) - 8 - sizeof(sp[0])*4);
 	print("sp is %p for usp %p\n", sp, sp);
 	sp[3] = sp[2] = sp[1] = nil;
 	strcpy(sp[1] = (char*)&sp[4], "boot");
@@ -73,7 +73,7 @@ void
 confinit(void)
 {
 	int userpcnt;
-	ulong kpages;
+	ulong kpages, kmax, n;
 	char *p;
 	int i;
 
@@ -120,6 +120,16 @@ confinit(void)
 	 */
 	if(kpages > (2ULL*GiB)/BY2PG)
 		kpages = (2ULL*GiB)/BY2PG;
+	/* nor more than xinit can give it: memory kaddr can reach */
+	kmax = 0;
+	for(i = 0; i < nelem(conf.mem); i++){
+		n = cankaddr(conf.mem[i].base)/BY2PG;
+		if(n > conf.mem[i].npage)
+			n = conf.mem[i].npage;
+		kmax += n;
+	}
+	if(kpages > kmax)
+		kpages = kmax;
 
 	conf.upages = conf.npage - kpages;
 	conf.ialloc = (kpages/2)*BY2PG;

@@ -251,6 +251,7 @@ extern void pciintrdisable(int tbdf, void (*f)(Ureg*, void*), void *a);
 
 /* bootargs */
 extern void bootargsinit(void);
+extern int dtbmemregion(int, int, uvlong*, uvlong*);
 extern int dtbnuart(void);
 extern Dtbuart *dtbuart(int);
 extern int dtbhasplic(void);

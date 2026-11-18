@@ -13,12 +13,15 @@ enum {
 // kmax will be computed dynamically in future; for now it is
 // UZERO.
 uintptr klimit = UZERO;
+uintptr khighlimit = UZERO;	/* end of the RAM mapped at KHIGH */
 
 uintptr
 paddr(void *va)
 {
 	if((uintptr)va < KLIMIT)
 		return (uintptr)va;
+	if((uintptr)va >= KHIGH && (uintptr)va - KHIGH < khighlimit - UZERO)
+		return (uintptr)va - KHIGH + UZERO;
 	panic("paddr: va=%#p pc=%#p", va, getcallerpc(&va));
 }
 
@@ -36,6 +39,8 @@ kaddr(uintptr pa)
 {
 	if(pa < (uintptr)KLIMIT)
 		return (void*)(pa);
+	if(pa >= UZERO && pa < khighlimit)
+		return (void*)(pa - UZERO + KHIGH);
 	panic("kaddr: pa=%#p pc=%#p", pa, getcallerpc(&pa));
 }
 

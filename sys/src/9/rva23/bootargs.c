@@ -71,6 +71,17 @@ static int ndtbufs;
 static char dtbalias[MAXDTBUARTS][64];	/* serial<N> -> DT node path */
 static char dtbethalias[MAXDTBETHERS][64]; /* ethernet<N> -> DT node path */
 static char dtbstdout[64];
+
+/*
+ * RAM banks (/memory reg) and regions not to allocate from
+ * (/reserved-memory reg and alloc-ranges), as [base, limit).
+ * Two address and two size cells, as on every board we run on.
+ */
+#define MAXDTBMEM 8
+static uvlong dtbmem[MAXDTBMEM][2];
+static int ndtbmem;
+static uvlong dtbresv[MAXDTBMEM][2];
+static int ndtbresv;
 static int dtbhasplic_;			/* root interrupt controller is a PLIC */
 static char dtbrootcompat[128];		/* root "compatible": NUL-separated list */
 static int dtbrootcompatlen;
@@ -434,6 +445,43 @@ findorallocuart(char *path)
 	return u;
 }
 
+/* append the <base size> pairs in a reg-like property to r */
+static int
+dtbranges(uvlong (*r)[2], int n, uchar *p, int len)
+{
+	for(; len >= 16 && n < MAXDTBMEM; len -= 16, p += 16){
+		r[n][0] = (uvlong)beget4(p)<<32 | beget4(p+4);
+		r[n][1] = r[n][0] + ((uvlong)beget4(p+8)<<32 | beget4(p+12));
+		if(r[n][1] > r[n][0])
+			n++;
+	}
+	return n;
+}
+
+/*
+ * Return in *base and *limit the i'th RAM bank of the DTB, or of
+ * its reserved regions if resv is set; -1 past the last.
+ */
+int
+dtbmemregion(int resv, int i, uvlong *base, uvlong *limit)
+{
+	uvlong (*r)[2];
+	int n;
+
+	if(resv){
+		r = dtbresv;
+		n = ndtbresv;
+	} else {
+		r = dtbmem;
+		n = ndtbmem;
+	}
+	if(i < 0 || i >= n)
+		return -1;
+	*base = r[i][0];
+	*limit = r[i][1];
+	return 0;
+}
+
 static void
 devtreeprop(char *path, char *key, void *val, int len)
 {
@@ -449,8 +497,14 @@ devtreeprop(char *path, char *key, void *val, int len)
 		dtbrootcompat[dtbrootcompatlen] = 0;
 		return;
 	}
+	if(strncmp(path, "/reserved-memory/", 17) == 0
+	   && (strcmp(key, "reg") == 0 || strcmp(key, "alloc-ranges") == 0)){
+		ndtbresv = dtbranges(dtbresv, ndtbresv, p, len);
+		return;
+	}
 	if((strncmp(path, "/memory", 7) == 0 || strncmp(path, "/memory@0", 9) == 0)
 	   && strcmp(key, "reg") == 0){
+		ndtbmem = dtbranges(dtbmem, ndtbmem, p, len);
 		if(findconf("*maxmem") < 0 && len == 16){
 			/* <base size>, two BE cells each: limit = base + size */
 			addr = (uvlong)beget4(p)<<32 | beget4(p+4);
@@ -911,6 +965,12 @@ parsedevtree(uchar *base)
 	if(t->stab >= (char*)t->end)
 		return -1;
 	devtreenode(t, base + beget4(base+8), t->path);
+	/* the parsed config may point into the blob: keep it */
+	if(ndtbresv < MAXDTBMEM){
+		dtbresv[ndtbresv][0] = (uintptr)base;
+		dtbresv[ndtbresv][1] = (uintptr)base + total;
+		ndtbresv++;
+	}
 	finishdtbintc();
 	finishdtbuarts();
 	if(preloadedini)
