@@ -139,21 +139,6 @@ struct Ctlr {
 };
 
 static Ctlr ctlrs[Maxctlr];
-static uintptr ncnext = NCDMABASE;
-
-/* never freed: the rings live as long as the kernel */
-static void*
-ncalloc(usize n)
-{
-	uintptr p;
-
-	p = ROUND(ncnext, 64);
-	if(p + n > NCDMABASE + NCDMASIZE)
-		panic("ethermpfs: out of non-cached memory");
-	ncnext = p + n;
-	memset((void*)p, 0, n);
-	return (void*)p;
-}
 
 static int
 mdiowait(Ctlr *c)
@@ -410,15 +395,15 @@ reset(Ether *edev)
 	/* 32-bit descriptors: everything is below 4GB */
 	c->r[Dmacfg] = (Bufsz/64)<<Rxbsshift | Txpbsmax | Rxpbsmax | Incr16;
 
-	c->rxd = ncalloc(8*Nrx);
-	c->rxb = ncalloc(Nrx*Bufsz);
+	c->rxd = ncalloc(8*Nrx, 64);
+	c->rxb = ncalloc(Nrx*Bufsz, 64);
 	for(i = 0; i < Nrx; i++){
 		c->rxd[2*i] = PADDR(c->rxb + i*Bufsz);
 		c->rxd[2*i+1] = 0;
 	}
 	c->rxd[2*(Nrx-1)] |= Rxwrap;
-	c->txd = ncalloc(8*Ntx);
-	c->txb = ncalloc(Ntx*Bufsz);
+	c->txd = ncalloc(8*Ntx, 64);
+	c->txb = ncalloc(Ntx*Bufsz, 64);
 	for(i = 0; i < Ntx; i++){
 		c->txd[2*i] = PADDR(c->txb + i*Bufsz);
 		c->txd[2*i+1] = Txused;
@@ -426,7 +411,7 @@ reset(Ether *edev)
 	c->txd[2*(Ntx-1)+1] |= Txwrap;
 
 	/* a used, wrapping descriptor stops the other queues */
-	c->dummy = ncalloc(16);
+	c->dummy = ncalloc(16, 64);
 	c->dummy[0] = Rxused | Rxwrap;
 	c->dummy[1] = Txused | Txwrap;
 	nq = c->r[Dcfg6] & 0xfffe;
