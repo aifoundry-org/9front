@@ -628,7 +628,8 @@ devtreeprop(char *path, char *key, void *val, int len)
 			e->compatible[n] = 0;
 		} else if(strcmp(key, "status") == 0){
 			e->ok = (len >= 5 && strcmp((char*)val, "okay") == 0);
-		} else if(strcmp(key, "local-mac-address") == 0 && len == 6){
+		} else if(strcmp(key, "local-mac-address") == 0 && len == 6
+		   && memcmp(val, "\0\0\0\0\0\0", 6) != 0){
 			memmove(e->mac, val, 6);
 			e->hasmac = 1;
 		} else if(strcmp(key, "mac-address") == 0 && len == 6 && !e->hasmac){
