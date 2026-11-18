@@ -14,3 +14,12 @@
 
 #undef TEXTOFF
 #define TEXTOFF		0x200000
+
+/*
+ * DDR the HSS maps non-cached at 0xc0000000: the DTB's
+ * non-cached-low-buffer, kept out of the RAM banks by its
+ * alloc-ranges.  The U54s have no cache-block operations, so
+ * device DMA goes through here.
+ */
+#define NCDMABASE	0xc4000000ULL
+#define NCDMASIZE	(64*MiB)

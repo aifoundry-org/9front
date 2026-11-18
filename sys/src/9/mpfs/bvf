@@ -15,9 +15,12 @@ dev
 	fs
 	ip	arp chandial ip ipv6 ipaux iproute netlog nullmedium pktmedium inferno
 	uart
+	ether	netif
 
 link
 	loopbackmedium
+	ethermedium
+	ethermpfs
 
 ip
 	tcp
