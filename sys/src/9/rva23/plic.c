@@ -13,14 +13,8 @@
 enum {
 	PLICSIZE	= 0x04000000,
 
-	/*
-	 * S-mode context for the boot hart.  Both QEMU-virt (hart 0) and the
-	 * SpacemiT K1 (boot hart phandle 0x10, the first entry in the PLIC's
-	 * interrupts-extended) put M-mode at context 0 and S-mode at context 1.
-	 * If we ever boot a kernel on a non-zero hart this will need to come
-	 * from socidentify() or the DTB.
-	 */
-	Suctxt		= 1,
+	/* S-mode context of cpu0's hart; see PLICSCTXT in mem.h */
+	Suctxt		= PLICSCTXT,
 	Defprio		= 1,
 
 	/*

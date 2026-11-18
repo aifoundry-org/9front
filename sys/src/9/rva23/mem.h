@@ -76,6 +76,19 @@
 
 #define MACHADDR(n)	(KTZERO-((n)+1)*MACHSIZE)
 
+/* lowest hart that runs S-mode; cpu0 runs on it */
+#define FIRSTHART	0
+
+/*
+ * PLIC S-mode context of FIRSTHART.  QEMU virt (hart 0) and the
+ * SpacemiT K1 (the first entry in the PLIC's interrupts-extended)
+ * put M-mode at context 0 and S-mode at context 1.
+ */
+#define PLICSCTXT	1
+
+/* booti image header text_offset; see l.s */
+#define TEXTOFF		0x40200000
+
 #define CONFADDR	(VDRAM + 0x10000)	/* 0x40010000 on the bpi-f3 */
 
 /*
