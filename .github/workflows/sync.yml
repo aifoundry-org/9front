@@ -1,0 +1,28 @@
+name: Sync 9front
+
+on:
+  schedule:
+    - cron: '0 14 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Update front from 9front/9front and tag it
+        env:
+          ORIGIN: https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}
+        run: |
+          git init -q .
+          git fetch -q https://github.com/9front/9front front
+          new=$(git rev-parse FETCH_HEAD)
+          old=$(git ls-remote "$ORIGIN" refs/heads/front | cut -f1)
+          if [ "$new" = "$old" ]; then
+            echo "front is already at $new"
+            exit 0
+          fi
+          tag=9front-current-$(date -u +%Y%m%d)
+          git push --atomic "$ORIGIN" "$new:refs/heads/front" "$new:refs/tags/$tag"
