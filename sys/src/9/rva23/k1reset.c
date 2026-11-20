@@ -23,13 +23,13 @@
 #include "k1.h"
 
 static int
-twsiwait(uchar *t, ulong bit)
+twsiwait(u32int *t, ulong bit)
 {
 	int i;
 
 	for(i = 0; i < 10000; i++){
-		if(*(ulong*)(t + TwsiIsr) & bit){
-			*(ulong*)(t + TwsiIsr) = bit;
+		if(t[TwsiIsr] & bit){
+			t[TwsiIsr] = bit;
 			return 0;
 		}
 		microdelay(10);
@@ -38,29 +38,29 @@ twsiwait(uchar *t, ulong bit)
 }
 
 static int
-twsiput(uchar *t, int b, ulong flags)
+twsiput(u32int *t, int b, ulong flags)
 {
-	*(ulong*)(t + TwsiIdbr) = b;
-	*(ulong*)(t + TwsiIcr) = Iue|Scle|flags|Tb;
+	t[TwsiIdbr] = b;
+	t[TwsiIcr] = Iue|Scle|flags|Tb;
 	coherence();
 	return twsiwait(t, Ite);
 }
 
 static int
-twsiget(uchar *t, ulong flags)
+twsiget(u32int *t, ulong flags)
 {
-	*(ulong*)(t + TwsiIcr) = Iue|Scle|flags|Tb;
+	t[TwsiIcr] = Iue|Scle|flags|Tb;
 	coherence();
 	if(twsiwait(t, Irf) < 0)
 		return -1;
-	return *(ulong*)(t + TwsiIdbr) & 0xFF;
+	return t[TwsiIdbr] & 0xFF;
 }
 
-static uchar*
+static u32int*
 k1twsi(void)
 {
-	static uchar *t;
-	uchar *apbc;
+	static u32int *t;
+	u32int *apbc;
 
 	if(t != nil)
 		return t;
@@ -72,15 +72,15 @@ k1twsi(void)
 	}
 
 	/* the clock register is write-only: pulse reset, leave clocks on */
-	*(ulong*)(apbc + ApbcTwsi8) = 0x7;
+	apbc[ApbcTwsi8] = 0x7;
 	coherence();
 	delay(1);
-	*(ulong*)(apbc + ApbcTwsi8) = 0x3;
+	apbc[ApbcTwsi8] = 0x3;
 	coherence();
 	delay(1);
 	vunmap(apbc, ApbcSize);
 
-	*(ulong*)(t + TwsiIcr) = Iue|Scle;
+	apbc[TwsiIcr] = Iue|Scle;
 	coherence();
 	return t;
 }
@@ -88,7 +88,7 @@ k1twsi(void)
 int
 k1pmicread(int reg)
 {
-	uchar *t;
+	u32int *t;
 
 	t = k1twsi();
 	if(t == nil)
@@ -105,7 +105,7 @@ k1pmicread(int reg)
 int
 k1pmicwrite(int reg, int val)
 {
-	uchar *t;
+	u32int *t;
 
 	t = k1twsi();
 	if(t == nil)
@@ -144,18 +144,18 @@ k1poweroff(void)
 }
 
 static void
-k1wdtwrite(uchar *wdt, int off, ulong val)
+k1wdtwrite(u32int *wdt, uintptr off, ulong val)
 {
-	*(ulong*)(wdt + WdtWfar) = 0xbaba;
-	*(ulong*)(wdt + WdtWsar) = 0xeb10;
-	*(ulong*)(wdt + off) = val;
+	wdt[WdtWfar] = 0xbaba;
+	wdt[WdtWsar] = 0xeb10;
+	wdt[off] = val;
 	coherence();
 }
 
 static void
 k1reset(void)
 {
-	uchar *wdt, *mpmu, *apmu;
+	u32int *wdt, *mpmu, *apmu;
 	ulong v;
 
 	/*
@@ -179,14 +179,14 @@ k1reset(void)
 	 */
 	apmu = vmap(ApmuPhys, ApmuSize);
 	if (apmu != nil){
-		*(ulong*)(apmu + ApmuSdh0) = SdhPorval;
-		*(ulong*)(apmu + ApmuSdh2) = SdhPorval;
+		apmu[ApmuSdh0] = SdhPorval;
+		apmu[ApmuSdh2] = SdhPorval;
 		coherence();
 	}
 
 	/* clock-enable + reset-deassert (bits 0-1 set, bit 2 clear) */
-	v = *(ulong*)(mpmu + MpmuWdtpcr);
-	*(ulong*)(mpmu + MpmuWdtpcr) = (v | 0x3) & ~0x4;
+	v = mpmu[MpmuWdtpcr];
+	mpmu[MpmuWdtpcr] = (v | 0x3) & ~0x4;
 	coherence();
 
 	k1wdtwrite(wdt, WdtWsr,  0x0);
@@ -194,7 +194,7 @@ k1reset(void)
 	k1wdtwrite(wdt, WdtWmer, 0x3);	/* enable counter + reset */
 	k1wdtwrite(wdt, WdtWcr,  0x1);	/* clear/restart counter */
 
-	*(ulong*)(mpmu + MpmuAprr) |= (1u<<4);
+	mpmu[MpmuAprr] |= (1u<<4);
 	coherence();
 
 	delay(5000);

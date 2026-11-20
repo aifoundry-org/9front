@@ -33,14 +33,14 @@
 
 enum {
 	/* APLIC domain memory map, byte offsets */
-	Domaincfg	= 0x0000,
-	Sourcecfg	= 0x0004,	/* + 4*(i-1) */
-	Setipnum	= 0x1cdc,
-	Clripnum	= 0x1ddc,
-	Setienum	= 0x1edc,
-	Clrienum	= 0x1fdc,
-	Genmsi		= 0x3000,
-	Target		= 0x3004,	/* + 4*(i-1) */
+	Domaincfg	= 0x0000/4,
+	Sourcecfg	= 0x0004/4,	/* + (i-1) */
+	Setipnum	= 0x1cdc/4,
+	Clripnum	= 0x1ddc/4,
+	Setienum	= 0x1edc/4,
+	Clrienum	= 0x1fdc/4,
+	Genmsi		= 0x3000/4,
+	Target		= 0x3004/4,	/* + (i-1) */
 
 	Domainsize	= 0x8000,
 
@@ -74,18 +74,6 @@ static u32int *regs;
 static uint nsrc;
 static int mhart;		/* APLIC hart index all MSIs are routed to */
 
-static u32int
-rd(uint off)
-{
-	return regs[off/4];
-}
-
-static void
-wr(uint off, u32int v)
-{
-	regs[off/4] = v;
-}
-
 void
 aplicinit(void)
 {
@@ -98,11 +86,12 @@ aplicinit(void)
 	if(nsrc == 0 || nsrc >= Ngintr)
 		nsrc = Ngintr - 1;
 
-	wr(Domaincfg, 0);
+	regs[Domaincfg] = 0;
 	for(i = Firstirq; i <= nsrc; i++){
-		wr(Sourcecfg + 4*(i-1), Sminactive);
-		wr(Clrienum, i);
+		regs[Sourcecfg + (i-1)] = Sminactive;
+		regs[Clrienum] = i;
 	}
+	coherence();
 	mhart = m->machno;
 
 	/*
@@ -114,11 +103,11 @@ aplicinit(void)
 	imsicswr(Eithreshold, 0);
 	imsicswr(Eidelivery, 1);
 
-	wr(Domaincfg, Ie|Dm);
+	regs[Domaincfg] = Ie|Dm;
 	coherence();
-	if((rd(Domaincfg) & Dm) == 0)
+	if((regs[Domaincfg] & Dm) == 0)
 		panic("aplicinit: domain can't do MSI delivery");
-	print("aplic: %ud sources, domaincfg %ux\n", nsrc, rd(Domaincfg));
+	print("aplic: %ud sources, domaincfg %ux\n", nsrc, regs[Domaincfg]);
 
 	/* enable S-mode external interrupts in SIE CSR */
 	setsie(Seie);
@@ -144,10 +133,8 @@ aplicirq(Ureg *ureg)
 	while((id = stopeiclaim() >> 16) != 0){
 		v = id < Ngintr? vctl[id]: nil;
 		if(v == nil){
-			if(id >= Firstirq && id <= nsrc){
-				wr(Sourcecfg + 4*(id-1), Sminactive);
-				coherence();
-			}
+			if(id >= Firstirq && id <= nsrc)
+				regs[Sourcecfg + (id-1)] = Sminactive;
 			iprint("aplic: spurious irq %ud, masking\n", id);
 		} else {
 			for(; v != nil; v = v->next)
@@ -160,16 +147,16 @@ aplicirq(Ureg *ureg)
 			 * if the line dropped, it's a no-op.
 			 */
 			if(id <= nsrc && srcmode[id] >= Smlevelhigh)
-				wr(Setipnum, id);
+				regs[Setipnum] = id;
 		}
 		if(--trips <= 0){
 			if(id >= Firstirq && id <= nsrc){
-				wr(Sourcecfg + 4*(id-1), Sminactive);
-				coherence();
+				regs[Sourcecfg + (id-1)] = Sminactive;
 			}
 			iprint("aplic: irq %ud storm, masking source\n", id);
 			break;
 		}
+		coherence();
 	}
 	idlewake();
 	return 0;
@@ -212,9 +199,9 @@ aplicintrenable(int irq, void (*f)(Ureg*, void*), void *a, int tbdf, char *name)
 	 * order matters: target[i] is read-only zero (writes discarded)
 	 * while source i is inactive, so sourcecfg must go live first.
 	 */
-	wr(Sourcecfg + 4*(irq-1), srcmode[irq]);
-	wr(Target + 4*(irq-1), (u32int)mhart<<Thartshift | irq);
-	wr(Setienum, irq);
+	regs[Sourcecfg + (irq-1)] = srcmode[irq];
+	regs[Target + (irq-1)] = (u32int)mhart<<Thartshift | irq;
+	regs[Setienum] = irq;
 	coherence();
 	/*
 	 * read back for the boot log: both are WARL, and a sourcecfg
@@ -222,7 +209,7 @@ aplicintrenable(int irq, void (*f)(Ureg*, void*), void *a, int tbdf, char *name)
 	 * exactly what a "boots but no interrupts" report needs to show.
 	 */
 	print("aplic: src %d for %s: cfg %ux target %ux\n", irq, name,
-		rd(Sourcecfg + 4*(irq-1)), rd(Target + 4*(irq-1)));
+		regs[Sourcecfg + (irq-1)], regs[Target + (irq-1)]);
 	unlock(&vctllock);
 }
 
