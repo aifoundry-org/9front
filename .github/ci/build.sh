@@ -15,7 +15,7 @@ cp adm/timezone/US_Pacific adm/timezone/local
 
 # Booted as a cpu server, the guest runs buildarch from cpurc's last
 # hook, /cfg/$sysname/cpustart; the ndb entry above names it 9.
-mkdir cfg/9
+mkdir -p cfg/9
 echo "/usr/glenda/bin/rc/buildarch $1 && echo BATCH-PASS || echo BATCH-FAIL" >cfg/9/cpustart
 
 # The launcher's default of one CPU matters: build runs a mk job per CPU
