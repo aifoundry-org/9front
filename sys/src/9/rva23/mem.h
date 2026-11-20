@@ -62,12 +62,16 @@
 #define	KZERO		(0x0000000000000000ULL)	/* 0x00000000 - kernel address space */
 #define KLIMIT 		klimit
 //#define KLIMIT			(0x800000000000ULL) // half of the hole.
-#define iskern(v) (((uintptr)v)<=UZERO)
 /*
  * the kernel is identity-mapped low memory with user space above it,
  * so the usual "above KZERO" test for kernel addresses is inverted.
+ * RAM at or above UZERO is mapped for the kernel at KHIGH+(pa-UZERO),
+ * the upper half of the Sv39 space.
  */
-#define iskaddr(a) (((uintptr)(a)) < UZERO)
+#define KHIGH		(0xffffffc000000000ULL)
+#define KHIGHSIZE	(256ULL*GiB)
+#define iskern(v)	(((uintptr)(v)) <= UZERO || ((uintptr)(v)) >= KHIGH)
+#define iskaddr(a)	(((uintptr)(a)) < UZERO || ((uintptr)(a)) >= KHIGH)
 
 /* shared kernel page table for TTBR1 */
 #define L1		(L1TOP-L1SIZE)
@@ -75,6 +79,19 @@
 #define L1TOP		((MACHADDR(MAXMACH-1)-L1TOPSIZE)&-BY2PG)
 
 #define MACHADDR(n)	(KTZERO-((n)+1)*MACHSIZE)
+
+/* lowest hart that runs S-mode; cpu0 runs on it */
+#define FIRSTHART	0
+
+/*
+ * PLIC S-mode context of FIRSTHART.  QEMU virt (hart 0) and the
+ * SpacemiT K1 (the first entry in the PLIC's interrupts-extended)
+ * put M-mode at context 0 and S-mode at context 1.
+ */
+#define PLICSCTXT	1
+
+/* booti image header text_offset; see l.s */
+#define TEXTOFF		0x40200000
 
 #define CONFADDR	(VDRAM + 0x10000)	/* 0x40010000 on the bpi-f3 */
 

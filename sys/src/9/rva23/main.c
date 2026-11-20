@@ -47,7 +47,7 @@ init0(void)
 
 	p = newpage(USTKTOP-BY2PG, nil);
 	segpage(up->seg[SSEG], p);
-	sp = (char**)(p->pa + BY2PG - sizeof(Tos) - 8 - sizeof(sp[0])*4);
+	sp = (char**)((uintptr)KADDR(p->pa) + BY2PG - sizeof(Tos) - 8 - sizeof(sp[0])*4);
 	print("sp is %p for usp %p\n", sp, sp);
 	sp[3] = sp[2] = sp[1] = nil;
 	strcpy(sp[1] = (char*)&sp[4], "boot");
@@ -73,7 +73,7 @@ void
 confinit(void)
 {
 	int userpcnt;
-	ulong kpages;
+	ulong kpages, kmax, n;
 	char *p;
 	int i;
 
@@ -120,6 +120,16 @@ confinit(void)
 	 */
 	if(kpages > (2ULL*GiB)/BY2PG)
 		kpages = (2ULL*GiB)/BY2PG;
+	/* nor more than xinit can give it: memory kaddr can reach */
+	kmax = 0;
+	for(i = 0; i < nelem(conf.mem); i++){
+		n = cankaddr(conf.mem[i].base)/BY2PG;
+		if(n > conf.mem[i].npage)
+			n = conf.mem[i].npage;
+		kmax += n;
+	}
+	if(kpages > kmax)
+		kpages = kmax;
 
 	conf.upages = conf.npage - kpages;
 	conf.ialloc = (kpages/2)*BY2PG;
@@ -210,7 +220,7 @@ main(u64int hartid, uintptr dtb)
 
 	dtbphys = dtb;
 
-	if((hartid == 0) && !once){
+	if((hartid == FIRSTHART) && !once){
 		/*
 		 * Zero every per-cpu Mach page, not just cpu0's.  The Mach
 		 * pages stack downward from just below KTZERO (MACHADDR(n) =
@@ -225,19 +235,21 @@ main(u64int hartid, uintptr dtb)
 		memset(MACHP(MAXMACH-1), 0, KTZERO-(uintptr)MACHP(MAXMACH-1));
 	}
 
-	if (hartid != 0) {
+	if (hartid != FIRSTHART) {
 		/*
-		 * SBI cold-booted a hart other than 0 (e.g. QEMU's OpenSBI
-		 * cold-boot lottery picks a random hart).  The kernel wires pid 1
-		 * to cpu0 == hart 0, so funnel the boot onto hart 0: HSM-start it
-		 * at _start past the 64-byte Image header, forwarding the DTB as
-		 * its a1, then stop ourselves.  hart 0 re-enters _start, finds the
-		 * kernel already relocated, and runs the real boot as main(0,dtb).
-		 * print() isn't up this early, so report via the SBI console.
+		 * SBI cold-booted a hart other than the board's first S-mode
+		 * hart (e.g. QEMU's OpenSBI cold-boot lottery picks a random
+		 * hart).  The kernel wires pid 1 to cpu0 == FIRSTHART, so funnel
+		 * the boot onto it: HSM-start it at _start past the 64-byte
+		 * Image header, forwarding the DTB as its a1, then stop
+		 * ourselves.  FIRSTHART re-enters _start, finds the kernel
+		 * already relocated, and runs the real boot as main(FIRSTHART,
+		 * dtb).  print() isn't up this early, so report via the SBI
+		 * console.
 		 */
-		sbiputs("boot hart != 0; handing off to hart 0\r\n");
-		if (sbihartstart(0, PADDR(_start), dtb) < 0)
-			sbiputs("sbihartstart(hart 0) failed\r\n");
+		sbiputs("boot hart is not the first S-mode hart; handing off\r\n");
+		if (sbihartstart(FIRSTHART, PADDR(_start), dtb) < 0)
+			sbiputs("sbihartstart(FIRSTHART) failed\r\n");
 		sbihartstop();			/* no return on success */
 		sbiputs("sbihartstop returned; hanging\r\n");
 		for(;;)
@@ -263,6 +275,7 @@ main(u64int hartid, uintptr dtb)
 		vfy = 0;
 	}
 	memset(edata, 0, end - edata);		/* zero bss */
+	m->hartid = hartid;
 	machinit();
 #ifdef XXX
 	if(m->machno){
