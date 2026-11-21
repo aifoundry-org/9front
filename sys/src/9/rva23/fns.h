@@ -77,7 +77,7 @@ extern void kmapinval(void);
 extern KMap *kmap(Page*);
 extern void kunmap(KMap*);
 extern uintptr mmukmap(uintptr, uintptr, usize);
-extern void kmapram(uintptr, uintptr);
+extern void kmapram(void);
 extern void* vmap(uvlong, vlong);
 extern void vunmap(void*, vlong);
 extern void mmu1init(void);
@@ -226,6 +226,7 @@ extern void pciintrdisable(int tbdf, void (*f)(Ureg*, void*), void *a);
 
 /* bootargs */
 extern void bootargsinit(void);
+extern int dtbmemregion(int, int, uvlong*, uvlong*);
 extern int dtbnuart(void);
 extern Dtbuart *dtbuart(int);
 extern int dtbhasplic(void);

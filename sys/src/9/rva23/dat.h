@@ -127,7 +127,7 @@ struct Conf
 {
 	ulong	nmach;		/* processors */
 	ulong	nproc;		/* processes */
-	Confmem	mem[3];		/* physical memory */
+	Confmem	mem[8];		/* physical memory */
 	ulong	npage;		/* total physical pages of memory */
 	ulong	upages;		/* user page pool */
 	ulong	copymode;	/* 0 is copy on write, 1 is copy on reference */
@@ -248,8 +248,8 @@ struct
 
 #define MACHP(n)	((Mach*)MACHADDR(n))
 
-extern uintptr uzero;						/* uzero; set in main.c, moved by meminit */
 extern void _start(void);		/* KTZERO */
+extern uintptr uzero;			/* user space start; set in meminit */
 
 extern register Mach* m;			/* R7 */
 extern register Proc* up;			/* R6 */

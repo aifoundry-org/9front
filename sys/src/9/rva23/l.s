@@ -441,8 +441,8 @@ TEXT touser(SB), 1, $-4
 	AND	R10, R9, R9		/* clear SPP */
 	OR	$0x20, R9, R9		/* set SPIE */
 	MOV	R9, CSR(SSTATUS)
-	MOV uzero(SB), R12
-	ADD  $0x28, R12	/* skip unextended exec hdr of init */
+	MOV	uzero(SB), R12		/* UTZERO */
+	ADD	$0x28, R12		/* skip unextended exec hdr of init */
 	MOV	R12, CSR(SEPC)		/* new pc */
 	MOV	RARG, R2		/* new sp */
 	WORD $0x10200073 //SRET
