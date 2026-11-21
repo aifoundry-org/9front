@@ -880,7 +880,7 @@ segattach(int attr, char *name, uintptr va, uintptr len)
 	Segment *s, *os;
 	Physseg *ps;
 
-	if(va != 0 && va >= USTKTOP)
+	if(va != 0 && (va < UTZERO || va >= USTKTOP))
 		error(Ebadarg);
 
 	qlock(&up->seglock);
@@ -932,7 +932,7 @@ segattach(int attr, char *name, uintptr va, uintptr len)
 	}
 
 	va &= ~(BY2PG-1);
-	if(va == 0 || (va+len) > USTKTOP || (va+len) < va)
+	if(va == 0 || va < UTZERO || (va+len) > USTKTOP || (va+len) < va)
 		error(Ebadarg);
 
 	if(isoverlap(va, len) != nil)

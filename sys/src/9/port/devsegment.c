@@ -358,7 +358,7 @@ segmentwrite(Chan *c, void *a, long n, vlong voff)
 			len = strtoull(cb->f[2], 0, 0);
 			top = PGROUND(va + len);
 			va = va&~(BY2PG-1);
-			if(va == 0 || top > USTKTOP || top <= va)
+			if(va == 0 || va < UTZERO || top > USTKTOP || top <= va)
 				error(Ebadarg);
 			len = top - va;
 			if(len > SEGMAXSIZE)
