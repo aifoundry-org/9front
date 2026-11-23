@@ -8,12 +8,13 @@ CONFLIST=picoitx picoitxcpuwait com260 com260cpuwait
 #	picoitx	K3 Pico-ITX
 #	com260	K3 CoM260 on the IFX carrier
 #
-# loadaddr is the link address (-T), but the kernel runs in place
-# wherever kexec/booti put it, fixing up its data pointers from the
-# jl -u relocation table and binding memory layout to _start runtime address.
+# loadaddr is the link address (-T).  The kernel runs wherever it is
+# loaded, fixing up its data pointers from the jl -u relocation table
+# and binding memory layout to _start's runtime address, but kexec
+# loads the ELF at its link address.
 # CPU type		RAM base
 # K3 (all)		0x100000000, all available
-loadaddr=0x102202000 # could probably be 0x100200000: maybe skip reloc on K3
+loadaddr=0x102202000
 
 objtype=riscv64
 </$objtype/mkfile

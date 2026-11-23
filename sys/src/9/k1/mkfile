@@ -6,13 +6,15 @@ CONFLIST=bpif3 bpif3cpuwait
 # fan, and its PMIC reset and power off.  The board file (bpif3board.c)
 # is named in the configuration.
 #
-# loadaddr is the link address (-T), but the kernel runs in place
-# wherever kexec/booti put it, fixing up its data pointers from the
-# jl -u relocation table and binding memory layout to _start runtime address.
+# loadaddr is the link address (-T).  The kernel runs wherever it is
+# loaded, fixing up its data pointers from the jl -u relocation table
+# and binding memory layout to _start's runtime address, but booti
+# (to the Image header's text_offset) and kexec (to the ELF's link
+# address) both put it here.
 # CPU type		RAM base
 # BPI-F3 2/4GB	0x40000000; some lower RAM reserved for firmware
 # BPI-F3 > 4GB	ditto, plus second block at 0x100000000
-loadaddr=0x102202000
+loadaddr=0x40200000
 
 objtype=riscv64
 </$objtype/mkfile

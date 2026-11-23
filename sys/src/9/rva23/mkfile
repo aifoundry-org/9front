@@ -6,9 +6,10 @@ CONFLIST=rva23 rva23cpuwait
 # file here that it does not replace and adds its own drivers;
 # rva23mkfile has the build both share, socmkfile the SoC part.
 #
-# loadaddr is the link address (-T), but the kernel runs in place
-# wherever kexec/booti put it, fixing up its data pointers from the
-# jl -u relocation table and binding memory layout to _start runtime address.
+# loadaddr is the link address (-T).  The kernel runs wherever it is
+# loaded, fixing up its data pointers from the jl -u relocation table
+# and binding memory layout to _start's runtime address.  QEMU loads
+# it at 0x80200000, after OpenSBI, so it does the fix-up there.
 # CPU type		RAM base
 # qemu-virt		0x80000000
 loadaddr=0x102202000
