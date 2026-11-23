@@ -4,8 +4,8 @@
  * DisplayPort connector (J1801). Board-specific, not just
  * SoC-specific, matching this tree's usbxhcipicoitx.c/usbxhcicom260.c
  * convention. Covers power domain, DSI4LN2 clock/reset tree, DP1
- * controller init (PLLs/analog calibration), framebuffer reservation,
- * DPU1 mode-set, MSA, AUX channel, and real DisplayPort link training.
+ * controller init (PLLs/analog calibration), DPU1 mode-set, MSA,
+ * AUX channel, and real DisplayPort link training.
  *
  * Derived from screenpicoitx.c (CONFIRMED WORKING on real K3 Pico-ITX
  * hardware): every SoC-side register this file touches is identical
@@ -28,9 +28,9 @@
 
 /*
  * Local prototypes for every static function -- everything except
- * dpuk3com260() (fns.h) and the framebuffer helpers (shared, defined
- * once in screenpicoitx.c). Needed since dpuk3com260() is defined near
- * the top and calls these before their real definitions.
+ * dpuk3com260() (fns.h) and the framebuffer helpers (screen.c).
+ * Needed since dpuk3com260() is defined near the top and calls
+ * these before their real definitions.
  */
 static void dpuk3pwron(void);
 static void dpuk3init(void);
@@ -681,28 +681,18 @@ enum {
 	ModeVsyncMd	= 5,
 	ModeVbpMd		= 36,
 
-	/* XRGB8888: 4 bytes/pixel, no padding -- what dpuk3() passes as
-	 * dpuk3mode()'s stride argument, and what FbReserve below (and
-	 * dpuk3fbaddr()'s own comment) size the framebuffer for */
+	/* XRGB8888: 4 bytes/pixel, no padding -- what dpuk3com260() passes
+	 * as dpuk3mode()'s stride argument, and what screen.c's FbReserve
+	 * sizes the framebuffer for */
 	ModeBppMd	= 4,
 	ModeStrideMd	= ModeHactiveMd*ModeBppMd,
 };
 
-/* Framebuffer physical memory reservation (dpuk3fbaddr) -- reservation size constant */
-enum {
-	/* 1920x1080 XRGB8888 needs ~7.91MiB (1920*1080*4 = 8294400 bytes);
-	 * round up to a clean, page-aligned reservation */
-	FbReserve	= 8*1024*1024,
-};
-
 /*
- * Single entry point for the whole DP1 pipeline, called unconditionally
- * from devarch.c's archinit() alongside dpuk3() (screenpicoitx.c) --
- * this checks the board itself via dtbsocmatch() and does nothing on
- * any other board. Named dpuk3com260(), not dpuk3(), since both files
- * are linked into the same kernel and a second global dpuk3() would
- * collide. fbaddr comes from dpuk3fbaddr(), shared with and defined
- * once in screenpicoitx.c.
+ * Single entry point for the whole DP1 pipeline, called from
+ * com260board.c's boardinit() -- this checks the board itself via
+ * dtbsocmatch() and does nothing on any other board.  fbaddr comes
+ * from dpuk3fbaddr() in screen.c.
  */
 void
 dpuk3com260(void)
@@ -1990,10 +1980,3 @@ dpuk3mode(uvlong addr, ulong stride)
 		addr, stride, ModeHactiveMd, ModeVactiveMd,
 		ModeHfpMd, ModeHsyncMd, ModeHbpMd, ModeVfpMd, ModeVsyncMd, ModeVbpMd);
 }
-
-/*
- * No framebuffer reservation code here -- dpuk3fbaddr()/dpuk3fbkaddr()
- * are board-agnostic and shared with, and defined once in,
- * screenpicoitx.c (see fns.h). FbReserve above just documents the
- * size this file's mode constants expect from that shared reservation.
- */

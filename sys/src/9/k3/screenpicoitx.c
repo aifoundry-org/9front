@@ -5,8 +5,8 @@
  * usbxhcibpif3.c/usbxhcicom260.c convention. Covers power domain,
  * Type-C orientation switch, FUSB301 CC-logic init, DSI4LN2 clock/
  * reset tree, DP1 controller init (PLLs/analog calibration),
- * framebuffer reservation, DPU1 mode-set, MSA, AUX channel, and real
- * DisplayPort link training.
+ * DPU1 mode-set, MSA, AUX channel, and real DisplayPort link
+ * training.
  *
  * CONFIRMED WORKING on real hardware: DP1 shows a clean, stable
  * 1920x1080@60 image (verified live, September 2026).
@@ -735,17 +735,10 @@ enum {
 	ModeVbpMd		= 36,
 
 	/* XRGB8888: 4 bytes/pixel, no padding -- what dpuk3() passes as
-	 * dpuk3mode()'s stride argument, and what FbReserve below (and
-	 * dpuk3fbaddr()'s own comment) size the framebuffer for */
+	 * dpuk3mode()'s stride argument, and what screen.c's FbReserve
+	 * sizes the framebuffer for */
 	ModeBppMd	= 4,
 	ModeStrideMd	= ModeHactiveMd*ModeBppMd,
-};
-
-/* Framebuffer physical memory reservation (dpuk3fbaddr) -- reservation size constant */
-enum {
-	/* 1920x1080 XRGB8888 needs ~7.91MiB (1920*1080*4 = 8294400 bytes);
-	 * round up to a clean, page-aligned reservation */
-	FbReserve	= 8*1024*1024,
 };
 
 /*
@@ -2246,88 +2239,4 @@ dpuk3mode(uvlong addr, ulong stride)
 		"(hfp %d hs %d hbp %d vfp %d vs %d vbp %d)\n",
 		addr, stride, ModeHactiveMd, ModeVactiveMd,
 		ModeHfpMd, ModeHsyncMd, ModeHbpMd, ModeVfpMd, ModeVsyncMd, ModeVbpMd);
-}
-
-/*
- * ============================================================
- * Section: DP1 framebuffer physical memory reservation (originally dpuk3fb.c)
- * ============================================================
- */
-
-/*
- * Spacemit K3 framebuffer physical memory: reserve a physically
- * contiguous chunk from the kernel's own xalloc pool for the DPU1
- * RDMA source buffer, instead of depending on any external kexec-time
- * maxmem coordination.
- *
- * xspanalloc()/xalloc() (port/port/xalloc.c, already linked into
- * every 9front kernel) carve their memory from the kernel-reserved
- * slice that xinit() splits off conf.mem at boot -- physically
- * contiguous and properly accounted, so nothing else can ever be
- * handed the same pages. This works identically across the 8/16/32GB
- * K3 Pico-ITX variants (xinit() already sizes the kernel pool
- * correctly via bootargs.c's normal *maxmem-from-DTB path), needing
- * no board-specific constant and no kexec-launcher cooperation.
- *
- * IMPORTANT: xspanalloc() does NOT return nil on failure -- it panics
- * the kernel directly (xalloc.c: "if(a==0) panic(...)"). So
- * dpuk3fbaddr() cannot fail gracefully; if the reservation can't be
- * satisfied, boot stops here with a panic, not a nil return.
- *
- * There is deliberately no separate mapping step for the framebuffer
- * itself: vmap() is only for physical ranges outside the kernel's
- * normal linear RAM mapping (device/MMIO registers). Memory from
- * xspanalloc() is ordinary kernel RAM, already KADDR-mapped the
- * moment it's allocated -- the pointer xspanalloc() returns is kept
- * (fbkaddr) alongside its PADDR() (fbaddr, for the DPU's base_addr
- * register), since writing pixel data needs the kernel-virtual side.
- */
-
-static uvlong fbaddr;
-static void *fbkaddr;
-
-/*
- * Reserve the framebuffer's backing memory. Call once, early (from
- * archinit(), alongside dpuk3init()). Safe to call more than once --
- * later calls just return the address from the first.
- */
-uvlong
-dpuk3fbaddr(void)
-{
-	void *v;
-
-	if(fbaddr != 0)
-		return fbaddr;
-
-	/* panics on failure -- see STATUS note above, not a nil return */
-	v = xspanalloc(FbReserve, BY2PG, 0);
-
-	/* Mark this range non-cacheable in place via mmuuncache() (mmu.c).
-	 * The display DMAs from here and this SoC is not coherent: without
-	 * this, every CPU write would need an explicit cachedwbinvse()
-	 * before the DPU can see it -- too costly once devdraw/screeninit()
-	 * are driving this buffer continuously. xspanalloc() above already
-	 * aligns to BY2PG and FbReserve is BY2PG-aligned by construction,
-	 * meeting mmuuncache()'s alignment requirement. */
-	if(mmuuncache(v, FbReserve) == nil)
-		print("dpuk3fb: mmuuncache failed, framebuffer stays cached "
-			"(writes need an explicit cache flush)\n");
-
-	fbkaddr = v;
-	fbaddr = PADDR(v);
-	print("dpuk3fb: reserved %d bytes, kaddr %#p paddr %#llux\n",
-		FbReserve, v, fbaddr);
-	return fbaddr;
-}
-
-/*
- * The same reservation's kernel-virtual address, for CPU read/write
- * of pixel data (step 8's test pattern, and later devdraw/softscreen
- * use). Must be called after dpuk3fbaddr() has run at least once;
- * returns nil otherwise rather than silently allocating out of order.
- */
-void*
-dpuk3fbkaddr(void)
-{
-	return fbkaddr;
 }

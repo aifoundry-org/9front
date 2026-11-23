@@ -55,9 +55,9 @@ enum {
 
 Memimage *gscreen;
 
-static uchar *fbraw;		/* K3 Pico-ITX's own DP1 framebuffer, made
+static uchar *fbraw;		/* the K3's own DP1 framebuffer, made
 				 * non-cacheable in place by
-				 * dpuk3fbaddr() (screenpicoitx.c) via
+				 * dpuk3fbaddr() below via
 				 * mmuuncache() -- not a second mapping */
 static int fbstride;		/* its bytes per line */
 
@@ -247,6 +247,90 @@ screensettilt(char *name)
 	return newscreen(fbstride/4, tilt & 1? Dx(gscreen->r): Dy(gscreen->r), t);
 }
 
+enum {
+	/* 1920x1080 XRGB8888 needs ~7.91MiB (1920*1080*4 = 8294400 bytes);
+	 * round up to a clean, page-aligned reservation */
+	FbReserve	= 8*1024*1024,
+};
+
+/*
+ * Spacemit K3 framebuffer physical memory: reserve a physically
+ * contiguous chunk from the kernel's own xalloc pool for the DPU1
+ * RDMA source buffer, instead of depending on any external kexec-time
+ * maxmem coordination.
+ *
+ * xspanalloc()/xalloc() (port/port/xalloc.c, already linked into
+ * every 9front kernel) carve their memory from the kernel-reserved
+ * slice that xinit() splits off conf.mem at boot -- physically
+ * contiguous and properly accounted, so nothing else can ever be
+ * handed the same pages. This works identically across the 8/16/32GB
+ * K3 Pico-ITX variants (xinit() already sizes the kernel pool
+ * correctly via bootargs.c's normal *maxmem-from-DTB path), needing
+ * no board-specific constant and no kexec-launcher cooperation.
+ *
+ * IMPORTANT: xspanalloc() does NOT return nil on failure -- it panics
+ * the kernel directly (xalloc.c: "if(a==0) panic(...)"). So
+ * dpuk3fbaddr() cannot fail gracefully; if the reservation can't be
+ * satisfied, boot stops here with a panic, not a nil return.
+ *
+ * There is deliberately no separate mapping step for the framebuffer
+ * itself: vmap() is only for physical ranges outside the kernel's
+ * normal linear RAM mapping (device/MMIO registers). Memory from
+ * xspanalloc() is ordinary kernel RAM, already KADDR-mapped the
+ * moment it's allocated -- the pointer xspanalloc() returns is kept
+ * (fbkaddr) alongside its PADDR() (fbpaddr, for the DPU's base_addr
+ * register), since writing pixel data needs the kernel-virtual side.
+ */
+
+static uvlong fbpaddr;
+static void *fbkaddr;
+
+/*
+ * Reserve the framebuffer's backing memory, from the board's DP1
+ * driver (dpuk3(), dpuk3com260()). Safe to call more than once --
+ * later calls just return the address from the first.
+ */
+uvlong
+dpuk3fbaddr(void)
+{
+	void *v;
+
+	if(fbpaddr != 0)
+		return fbpaddr;
+
+	/* panics on failure -- see STATUS note above, not a nil return */
+	v = xspanalloc(FbReserve, BY2PG, 0);
+
+	/* Mark this range non-cacheable in place via mmuuncache() (mmu.c).
+	 * The display DMAs from here and this SoC is not coherent: without
+	 * this, every CPU write would need an explicit cachedwbinvse()
+	 * before the DPU can see it -- too costly once devdraw/screeninit()
+	 * are driving this buffer continuously. xspanalloc() above already
+	 * aligns to BY2PG and FbReserve is BY2PG-aligned by construction,
+	 * meeting mmuuncache()'s alignment requirement. */
+	if(mmuuncache(v, FbReserve) == nil)
+		print("dpuk3fb: mmuuncache failed, framebuffer stays cached "
+			"(writes need an explicit cache flush)\n");
+
+	fbkaddr = v;
+	fbpaddr = PADDR(v);
+	print("dpuk3fb: reserved %d bytes, kaddr %#p paddr %#llux\n",
+		FbReserve, v, fbpaddr);
+	return fbpaddr;
+}
+
+/*
+ * The same reservation's kernel-virtual address, for CPU read/write
+ * of pixel data (step 8's test pattern, and later devdraw/softscreen
+ * use). Must be called after dpuk3fbaddr() has run at least once;
+ * returns nil otherwise rather than silently allocating out of order.
+ */
+void*
+dpuk3fbkaddr(void)
+{
+	return fbkaddr;
+}
+
 void
 screeninit(void)
 {
@@ -264,7 +348,7 @@ screeninit(void)
 	 * physical address) and marks that range non-cacheable in place
 	 * via mmuuncache(), same mechanism the reference screeninit()
 	 * used on its own firmware-inherited framebuffer -- see its own
-	 * comment in screenpicoitx.c. devarch.c calls this AFTER
+	 * comment above. devarch.c calls this AFTER
 	 * dpuk3dp() has already finished, so the DP1 pipeline is live by
 	 * the time we get here, and the mode is the fixed 1920x1080@60
 	 * this whole codebase uses throughout (no EDID/mode negotiation
@@ -347,7 +431,7 @@ flushmemscreen(Rectangle r)
 	/*
 	 * No 2D engine ported (v2d.c, reference-only) -- always the plain
 	 * CPU copy loop below. fbraw is non-cacheable (mmuuncache(), see
-	 * dpuk3fbaddr() in screenpicoitx.c), so each memmove here lands
+	 * dpuk3fbaddr()), so each memmove here lands
 	 * in real DRAM immediately, visible to the DPU's own DMA without
 	 * any separate cache-flush step.
 	 */
