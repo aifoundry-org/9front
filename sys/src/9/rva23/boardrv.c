@@ -5,14 +5,13 @@
 #include "fns.h"
 
 /*
- * Board device setup for the SpacemiT K1/K3 boards and QEMU virt, run
+ * Board device setup for the SpacemiT K3 boards and QEMU virt, run
  * from archinit.  A SoC directory with other devices supplies its own.
  */
 void
 boardinit(void)
 {
 	gpiok3init();
-	k1thermalinit();
 	k3thermalinit();
 	k3ecfaninit();
 

@@ -6,8 +6,6 @@ CONFLIST=rva23 rva23cpuwait
 # jl -u relocation table and binding memory layout to _start runtime address.
 # CPU type		RAM base
 # qemu-virt		0x80000000
-# BPI-F3 2/4GB  0x40000000; some lower RAM reserved for firmware
-# BPI-F3 > 4GB	ditto, plus second block at 0x100000000
 # K3 (all)		0x100000000, all available
 loadaddr=0x102202000 # could probably be 0x100200000: maybe skip reloc on K3
 
@@ -75,17 +73,13 @@ OBJ=\
 	sbicall.$O\
 	sbiecall.$O\
 	boardrv.$O\
-	ethersmte.$O\
 	etherdwqe.$O\
-	k1reset.$O\
 	fan.$O\
-	k1thermal.$O\
 	i2ck3.$O\
 	k3thermal.$O\
 	gpiok3.$O\
 	espik3.$O\
 	espik3fan.$O\
-	usbxhcibpif3.$O\
 	usbxhcipicoitx.$O\
 	screenpicoitx.$O\
 	usbxhcicom260.$O\

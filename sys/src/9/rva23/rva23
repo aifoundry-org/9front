@@ -32,16 +32,13 @@ dev
 
 link
 	usbxhcipci	pci usbxhci
-	usbxhcibpif3	usbxhci
 	usbxhcipicoitx	usbxhci
 	usbxhcicom260	usbxhci
-	sdspacemit
 	i2ck3
 	ethervirtio10 virtio10mem pci
 #	ethersink
 	ethermedium
 	loopbackmedium
-	ethersmte
 	etherdwqe
 #	netdevmedium
 	pciqemu		pci
@@ -59,7 +56,6 @@ misc
 #	gic
 	uarti8250
 	sdvirtio10	pci sdscsi
-	sdmmc		sdspacemit
 	sdufs		sdscsi
 
 	dtracysys

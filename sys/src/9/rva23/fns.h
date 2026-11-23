@@ -201,13 +201,6 @@ void gpiointrdisable(uint pin);
 /* gpiok3 */
 extern void gpiok3init(void);
 
-/* k1reset */
-extern int k1pmicread(int reg);
-extern int k1pmicwrite(int reg, int val);
-
-/* k1thermal */
-extern void k1thermalinit(void);
-
 /* k3thermal */
 extern void k3thermalinit(void);
 
