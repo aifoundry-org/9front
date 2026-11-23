@@ -44,6 +44,24 @@ serial console logged to `~/p9/console.log`). Commands are sent to it with:
   (`tail -3 /tmp/build.log`), rather than one huge timeout.
 - Cross-compile for the target with `objtype=riscv64 mk ...` in `/sys/src`.
 
+## Kernel layout
+
+- `sys/src/9/rva23` is the generic kernel: QEMU virt and standard
+  devices only (virtio, PCI ECAM, 8250 UART, PLIC/APLIC, SBI).
+- Each SoC has its own directory (`k1`, `k3`, ...), named after the SoC;
+  its configurations are named after boards (`k1/bpif3`, `k3/picoitx`,
+  `k3/com260`).  Its mkfile builds every `../rva23` file it does not
+  replace, with `.` and `../rva23` on the include path; its `dat.h`,
+  `io.h`, `mem.h` and `fns.h` include `../rva23`'s, `fns.h` adding the
+  SoC's own prototypes.
+- Board devices start from `boardinit()`: `rva23/boardrv.c` is empty;
+  a board supplies its own (`bpif3board.c`, ...) in its configuration's
+  `misc` section.  Kernels without PCI link `nopci.c` instead of
+  `pciqemu`.
+- Configuration names must be unique across `sys/src/9/*/`: glenda's
+  `kernel` finds the directory by the name, and CI builds every
+  `CONFLIST` entry of every riscv64 directory listed in `sys/src/9/mkfile`.
+
 ## Coding standard
 
 All C written for 9front **must follow the Plan 9 C style** (`style(6)`,
