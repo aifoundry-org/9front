@@ -1,0 +1,59 @@
+dev
+	arch
+	root
+	cons
+	swap
+	env
+	pipe
+	proc
+	mnt
+	srv
+	shr
+	dup
+	tls
+	cap
+	fs
+	dtracy
+	ether	netif
+	ip	arp chandial ip ipv6 ipaux iproute netlog nullmedium pktmedium inferno
+	uart
+	draw	screen swcursor
+	mouse	screen swcursor
+	usb
+	i2c
+	gpiok3
+	sd
+
+link
+	usbxhcicom260	usbxhci
+	i2ck3
+	ethermedium
+	loopbackmedium
+	etherdwqe
+
+ip
+	tcp
+	udp
+	il
+	ipifc
+	icmp
+	icmp6
+	igmp
+	ipmux
+misc
+	uarti8250
+	sdufs		sdscsi
+	com260board	screencom260 screenpicoitx
+
+	dtracysys
+	dtracytimer
+	dtracydev
+
+port
+	int cpuserver = 0;
+bootdir
+	/$objtype/bin/paqfs
+	/$objtype/bin/rc
+	/$objtype/bin/auth/factotum
+	$CONF.bootfs.paq	bootfs.paq
+	boot

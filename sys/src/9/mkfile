@@ -5,6 +5,7 @@ ARCH=\
 	cycv\
 	imx8\
 	k1\
+	k3\
 	kw\
 	lx2k\
 	mt7688\

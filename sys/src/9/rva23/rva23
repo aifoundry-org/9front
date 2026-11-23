@@ -18,11 +18,7 @@ dev
 #	bridge	log
 	ip	arp chandial ip ipv6 ipaux iproute netlog nullmedium pktmedium inferno
 	uart
-	draw	screen swcursor
-	mouse	screen swcursor
 	usb
-	i2c
-	gpiok3
 #	rtc
 	pci	pci
 	sd
@@ -32,14 +28,10 @@ dev
 
 link
 	usbxhcipci	pci usbxhci
-	usbxhcipicoitx	usbxhci
-	usbxhcicom260	usbxhci
-	i2ck3
 	ethervirtio10 virtio10mem pci
 #	ethersink
 	ethermedium
 	loopbackmedium
-	etherdwqe
 #	netdevmedium
 	pciqemu		pci
 
@@ -56,7 +48,6 @@ misc
 #	gic
 	uarti8250
 	sdvirtio10	pci sdscsi
-	sdufs		sdscsi
 
 	dtracysys
 	dtracytimer
