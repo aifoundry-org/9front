@@ -1,0 +1,28 @@
+# The mkfile of a SoC directory: the kernel of rva23mkfile, built
+# from every ../rva23 file the directory does not replace.
+
+CFLAGS=-I. -I../rva23 $CFLAGS
+AFLAGS=-I. -I../rva23 $AFLAGS
+
+HFILES=\
+	../rva23/mem.h\
+	../rva23/dat.h\
+	../rva23/fns.h\
+	../rva23/io.h\
+	../rva23/riscv64.h\
+
+<../rva23/rva23mkfile
+
+# memmap.c also names a ../port file, so it gets its own rule
+RVA23FILES=`{../port/mkfilelist ../rva23 | sed 's/(^|\|)memmap(\||$)/\1/'}
+^($RVA23FILES)\.$O:R:	'../rva23/\1.c'
+	$CC $CFLAGS -. ../rva23/$stem1.c
+
+memmap.$O:	../rva23/memmap.c
+	$CC $CFLAGS -. ../rva23/memmap.c
+
+# ja looks for includes beside the file first, so these see
+# ../rva23/mem.h: one that must see ./mem.h needs a local wrapper
+RVA23SFILES=`{rc ../rva23/mkasmlist ../rva23}
+^($RVA23SFILES)\.$O:R:	'../rva23/\1.s'
+	$AS $AFLAGS ../rva23/$stem1.s

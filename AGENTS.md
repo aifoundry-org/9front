@@ -50,10 +50,11 @@ serial console logged to `~/p9/console.log`). Commands are sent to it with:
   devices only (virtio, PCI ECAM, 8250 UART, PLIC/APLIC, SBI).
 - Each SoC has its own directory (`k1`, `k3`, ...), named after the SoC;
   its configurations are named after boards (`k1/bpif3`, `k3/picoitx`,
-  `k3/com260`).  Its mkfile builds every `../rva23` file it does not
-  replace, with `.` and `../rva23` on the include path; its `dat.h`,
-  `io.h`, `mem.h` and `fns.h` include `../rva23`'s, `fns.h` adding the
-  SoC's own prototypes.
+  `k3/com260`).  Its mkfile sets `CONF`, `CONFLIST`, `loadaddr` and
+  `SOCOBJ` (its own objects) and includes `../rva23/socmkfile`, which
+  builds every `../rva23` file it does not replace, with `.` and
+  `../rva23` on the include path; its `dat.h`, `io.h`, `mem.h` and
+  `fns.h` include `../rva23`'s, `fns.h` adding the SoC's own prototypes.
 - Board devices start from `boardinit()`: `rva23/boardrv.c` is empty;
   a board supplies its own (`bpif3board.c`, ...) in its configuration's
   `misc` section.  Kernels without PCI link `nopci.c` instead of

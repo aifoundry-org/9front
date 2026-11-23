@@ -1,0 +1,15 @@
+#!/bin/rc
+# mkasmlist dir: the .s files of dir that . replaces with
+# neither a .c nor a .s, as a regular expression for mk
+
+rfork e
+if(! ~ $#* 1)
+	exit usage
+x=()
+for(f in `{builtin cd $1; ls *.s}){
+	b=`{basename $f .s}
+	if(! test -f $b.c && ! test -f $b.s)
+		x=($x $b)
+}
+echo $x | sed 's/ /|/g'
+exit ''
