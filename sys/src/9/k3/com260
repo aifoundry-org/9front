@@ -43,7 +43,7 @@ ip
 misc
 	uarti8250
 	sdufs		sdscsi
-	com260board	screencom260
+	com260board	screencom260 i2ck3fan fan
 
 	dtracysys
 	dtracytimer

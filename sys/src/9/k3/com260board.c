@@ -15,6 +15,7 @@ boardinit(void)
 {
 	gpiok3init();
 	k3thermalinit();
+	i2ck3faninit();
 	dpuk3com260();
 	screeninit();
 }
