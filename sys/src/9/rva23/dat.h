@@ -311,7 +311,6 @@ typedef struct Clint Clint;
 typedef struct Sbiret Sbiret;
 typedef struct Dtbuart Dtbuart;
 typedef struct Dtbether Dtbether;
-typedef struct Dtbufs Dtbufs;
 
 struct Dtbuart {
 	char	path[64];	/* DT node path, e.g. "/soc/serial@d4017000" */
@@ -329,37 +328,11 @@ struct Dtbether {
 	char	compatible[32];
 	uvlong	base;		/* MMIO physical base */
 	uvlong	size;		/* MMIO region size */
-	uvlong	apmubase;	/* SpacemiT "k1x,apmu-base-reg" if present */
-	u32int	ctrlregoff;	/* SpacemiT "ctrl-reg": APMU offset for clk/reset */
-	u32int	dlineregoff;	/* SpacemiT "dline-reg": APMU offset for RGMII delays */
 	int	irq;
 	int	ok;
 	int	aliasidx;	/* ethernet<N>; -1 if no alias */
 	uchar	mac[6];		/* local-mac-address; all-zero if unset */
 	int	hasmac;
-	int	txphase;	/* SpacemiT "tx-phase": RGMII delay, degrees; -1 unset */
-	int	rxphase;	/* SpacemiT "rx-phase" */
-	int	rstpin;		/* "emac,reset-gpio" pin for the PHY; -1 unset */
-};
-
-/*
- * DT node info for the K3's UFS host controller ("ufshc@..." node,
- * compatible "spacemit,k3-ufshcd"), harvested the same way as
- * Dtbether/Dtbuart by bootargs.c's isufsnode()/findorallocufs().
- * Consumed by sdufs.c's ufspnp().
- */
-struct Dtbufs {
-	char	path[64];	/* DT node path, e.g. "/soc/ufshc@c0e00000" */
-	uvlong	base;		/* UFSHC MMIO physical base */
-	uvlong	size;		/* MMIO region size (covers UFS_MNG too --
-				 * see UfsMngOff in sdufs.c) */
-	uvlong	mngbase;	/* 0 unless the DTB gives UFS_MNG as a
-				 * separate second reg pair; if 0, the
-				 * caller derives it as base+UfsMngOff */
-	uvlong	mngsize;
-	int	irq;
-	char	compatible[64];	/* NUL-separated list */
-	int	ok;		/* status = "okay" */
 };
 
 struct Soc {

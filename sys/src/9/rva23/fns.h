@@ -223,8 +223,6 @@ extern Dtbuart *dtbuart(int);
 extern int dtbhasplic(void);
 extern int dtbnether(void);
 extern Dtbether *dtbether(int);
-extern int dtbnufs(void);
-extern Dtbufs *dtbufs(int);
 extern int dtbsocmatch(char*);
 
 // new
@@ -313,6 +311,7 @@ int peekl(void *addr, u32int *dst, int numwords);
 /* archrv */
 void calibrate(void);
 void boardinit(void);
+void boarddtbprop(char*, char*, uchar*, int);
 u64int *bootptpage(void);
 uint mach2context(Mach *);
 void cpuinit(int);

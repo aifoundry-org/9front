@@ -56,11 +56,8 @@ enum {
 };
 
 /*
- * UfsMngOff must match the constant of the same name in bootargs.c's
- * Dtbufs handling: the UFS_MNG block sits this far past UFSHC's base
- * per K3 UM 9.7.5 (0xC0E01B00 - 0xC0E00000), used as a fallback when
- * the DTB's "reg" property gives only one address/size pair. Dtbufs
- * comes from dat.h, dtbnufs()/dtbufs() from fns.h.
+ * The UFS_MNG block sits this far past UFSHC's base per K3 UM 9.7.5
+ * (0xC0E01B00 - 0xC0E00000), inside the window of the DTB's "reg".
  */
 enum {
 	UfsMngOff = 0x1B00,
@@ -2273,23 +2270,71 @@ ufsdevinit(Ctlr *c)
 	return -1;
 }
 
+/*
+ * The UFS host's device tree node, which bootargsinit hands to
+ * ufsdtbprop.
+ */
+typedef struct Ufsdt Ufsdt;
+struct Ufsdt {
+	char	path[64];	/* e.g. "/soc/ufshc@c0e00000" */
+	uvlong	base;		/* UFSHC MMIO physical base */
+	uvlong	size;		/* MMIO region size, UFS_MNG included */
+	int	irq;
+	int	ok;		/* status = "okay" */
+};
+
+static Ufsdt ufsdt[2];
+static int nufsdt;
+
+void
+ufsdtbprop(char *path, char *key, uchar *p, int len)
+{
+	char *b;
+	Ufsdt *u;
+
+	/* the K3 device tree names it "ufshc: ufshc@0xc0e00000" */
+	b = strrchr(path, '/');
+	if(b == nil || strncmp(b+1, "ufshc@", 6) != 0)
+		return;
+	for(u = ufsdt; u < ufsdt+nufsdt; u++)
+		if(strcmp(u->path, path) == 0)
+			break;
+	if(u == ufsdt+nufsdt){
+		if(nufsdt == nelem(ufsdt))
+			return;
+		nufsdt++;
+		memset(u, 0, sizeof *u);
+		strecpy(u->path, u->path+sizeof u->path, path);
+		u->irq = -1;
+		u->ok = 1;	/* absent status = enabled */
+	}
+	if(strcmp(key, "reg") == 0 && len >= 16){
+		u->base = nhgetv(p);
+		u->size = nhgetv(p+8);
+	}else if(strcmp(key, "interrupts") == 0 && len >= 4)
+		u->irq = nhgetl(p);
+	else if(strcmp(key, "interrupts-extended") == 0 && len >= 8)
+		u->irq = nhgetl(p+4);	/* <&intc irq> */
+	else if(strcmp(key, "status") == 0)
+		u->ok = len >= 5 && strcmp((char*)p, "okay") == 0;
+}
+
 static SDev*
 ufspnp(void)
 {
 	Ctlr *c;
 	SDev *sdev;
-	Dtbufs *du;
+	Ufsdt *du;
 	uvlong base, size;
 	int irq, i, n;
 
 	/*
 	 * DTB-first attach, mirroring etherdwqe.c's etherpnp() pattern
 	 * for this same port: dtbsocmatch() to confirm we're on a K3,
-	 * then walk the "ufs"-class nodes bootargs.c now tracks
-	 * (isufsnode()/Dtbufs, added alongside the existing Dtbether
-	 * infrastructure), falling back to the manual's hardcoded
-	 * addresses if there's no matching DTB entry.  Like etherpnp(),
-	 * skip other SoCs: the K3 addresses are RAM or unmapped there.
+	 * then walk the "ufshc@" nodes ufsdtbprop() collected, falling
+	 * back to the manual's hardcoded addresses if there's no
+	 * matching DTB entry.  Like etherpnp(), skip other SoCs: the
+	 * K3 addresses are RAM or unmapped there.
 	 */
 	if(!dtbsocmatch("spacemit,k3")){
 		if(debug)
@@ -2297,11 +2342,10 @@ ufspnp(void)
 		return nil;
 	}
 	du = nil;
-	n = dtbnufs();
+	n = nufsdt;
 	for(i = 0; i < n; i++){
-		Dtbufs *d = dtbufs(i);
-		if(d != nil && d->ok){
-			du = d;
+		if(ufsdt[i].ok){
+			du = &ufsdt[i];
 			break;
 		}
 	}

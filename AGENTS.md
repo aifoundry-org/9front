@@ -55,9 +55,10 @@ serial console logged to `~/p9/console.log`). Commands are sent to it with:
   builds every `../rva23` file it does not replace, with `.` and
   `../rva23` on the include path; its `dat.h`, `io.h`, `mem.h` and
   `fns.h` include `../rva23`'s, `fns.h` adding the SoC's own prototypes.
-- Board devices start from `boardinit()`: `rva23/boardrv.c` is empty;
-  a board supplies its own (`bpif3board.c`, ...) in its configuration's
-  `misc` section.  Kernels without PCI link `nopci.c` instead of
+- Board devices start from `boardinit()`, and `boarddtbprop()` gets
+  every device tree property for drivers that need vendor properties:
+  `rva23/boardrv.c` has empty ones; a board supplies its own
+  (`bpif3board.c`, ...) in its configuration's `misc` section.  Kernels without PCI link `nopci.c` instead of
   `pciqemu`.
 - Configuration names must be unique across `sys/src/9/*/`: glenda's
   `kernel` finds the directory by the name, and CI builds every

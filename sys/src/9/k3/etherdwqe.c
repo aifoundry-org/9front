@@ -29,7 +29,8 @@ static int debug;
 /*
  * Default MMIO layout for the K3's GMAC0, used only as a fallback when
  * no matching DTB entry is found.  Normal operation pulls base/IRQ/
- * APMU base out of /soc/ethernet@... via the Dtbether table.
+ * APMU base out of /soc/ethernet@... via the Dtbether table and
+ * dwqedtbprop.
  */
 enum {
 	Gmac0Phys	= 0xcac80000UL,
@@ -1076,11 +1077,79 @@ ethinit(Ether *edev)
 
 /* Plug-and-play -------------------------------------------------------- */
 
+/*
+ * The SpacemiT properties of an ethernet node, which bootargsinit
+ * hands to dwqedtbprop; Dtbether has the standard ones.
+ */
+typedef struct Dwqedt Dwqedt;
+struct Dwqedt {
+	char	path[64];	/* node, as in Dtbether */
+	uvlong	apmubase;	/* "k1x,apmu-base-reg"; 0 unset */
+	u32int	ctrlregoff;	/* APMU offset for clk/reset; 0 unset */
+	u32int	dlineregoff;	/* APMU offset for RGMII delays; 0 unset */
+	int	txphase;	/* RGMII delay, degrees; -1 unset */
+	int	rxphase;
+};
+
+static Dwqedt dwqedt[4];
+static int ndwqedt;
+
+static Dwqedt*
+dwqedtnode(char *path)
+{
+	static Dwqedt spare;
+	Dwqedt *d;
+
+	for(d = dwqedt; d < dwqedt+ndwqedt; d++)
+		if(strcmp(d->path, path) == 0)
+			return d;
+	if(ndwqedt < nelem(dwqedt))
+		d = &dwqedt[ndwqedt++];
+	else
+		d = &spare;	/* table full: defaults */
+	memset(d, 0, sizeof *d);
+	strecpy(d->path, d->path+sizeof d->path, path);
+	d->txphase = -1;
+	d->rxphase = -1;
+	return d;
+}
+
+void
+dwqedtbprop(char *path, char *key, uchar *p, int len)
+{
+	char *b, *phase;
+	Dwqedt *d;
+
+	b = strrchr(path, '/');
+	if(b == nil || strncmp(b+1, "ethernet@", 9) != 0)
+		return;
+	d = dwqedtnode(path);
+	/* K1 names the phases "tx-phase", K3 "spacemit,tx-phase" */
+	phase = key;
+	if(strncmp(phase, "spacemit,", 9) == 0)
+		phase += 9;
+	if(strcmp(key, "k1x,apmu-base-reg") == 0 && len >= 4)
+		d->apmubase = nhgetl(p);
+	else if(strcmp(key, "spacemit,apmu") == 0 && len >= 12){
+		/* <&syscon_apmu ctrl-off dline-off> */
+		d->ctrlregoff = nhgetl(p+4);
+		d->dlineregoff = nhgetl(p+8);
+	}else if(strcmp(key, "ctrl-reg") == 0 && len >= 4)
+		d->ctrlregoff = nhgetl(p);
+	else if(strcmp(key, "dline-reg") == 0 && len >= 4)
+		d->dlineregoff = nhgetl(p);
+	else if(strcmp(phase, "tx-phase") == 0 && len >= 4)
+		d->txphase = nhgetl(p);
+	else if(strcmp(phase, "rx-phase") == 0 && len >= 4)
+		d->rxphase = nhgetl(p);
+}
+
 static int
 etherpnp(Ether *edev)
 {
 	Ctlr *ct;
 	Dtbether *de;
+	Dwqedt *dv;
 	uvlong base, size, apmubase;
 	int irq, i, n;
 
@@ -1115,13 +1184,15 @@ etherpnp(Ether *edev)
 			break;
 		}
 	}
+	dv = nil;
 	if(de != nil){
+		dv = dwqedtnode(de->path);
 		base     = de->base;
 		size     = de->size ? de->size : Gmac0Size;
-		apmubase = de->apmubase ? de->apmubase : ApmuPhys;
+		apmubase = dv->apmubase ? dv->apmubase : ApmuPhys;
 		irq      = de->irq;
-		ct->apmuctrloff  = de->ctrlregoff  ? de->ctrlregoff/4  : 0x3e4/4;
-		ct->apmudlineoff = de->dlineregoff ? de->dlineregoff/4 : 0x3e8/4;
+		ct->apmuctrloff  = dv->ctrlregoff  ? dv->ctrlregoff/4  : 0x3e4/4;
+		ct->apmudlineoff = dv->dlineregoff ? dv->dlineregoff/4 : 0x3e8/4;
 		print("dwqe: ether%d from DTB %s base=%#llux size=%#llux apmu=%#llux+{%#ux,%#ux} irq=%d\n",
 			edev->ctlrno, de->path, base, size, apmubase,
 			ct->apmuctrloff, ct->apmudlineoff, irq);
@@ -1151,11 +1222,11 @@ etherpnp(Ether *edev)
 
 	ct->rxdelay = DwqeRxDelay;
 	ct->txdelay = DwqeTxDelay;
-	if(de != nil){
-		if(de->txphase > 0)
-			ct->txdelay = (de->txphase * 8000 / 360 * 10 + 78) / 156;
-		if(de->rxphase > 0)
-			ct->rxdelay = (de->rxphase * 8000 / 360 * 10 + 78) / 156;
+	if(dv != nil){
+		if(dv->txphase > 0)
+			ct->txdelay = (dv->txphase * 8000 / 360 * 10 + 78) / 156;
+		if(dv->rxphase > 0)
+			ct->rxdelay = (dv->rxphase * 8000 / 360 * 10 + 78) / 156;
 	}
 
 	edev->ctlr     = ct;

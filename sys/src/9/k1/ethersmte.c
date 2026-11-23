@@ -38,7 +38,7 @@ static int debug;
  * Default MMIO layout for the SpacemiT K1's first EMAC, used only as
  * a fallback when no matching DTB entry is found.  Normal operation
  * pulls base / IRQ / APMU base / MAC out of /soc/ethernet@* via
- * the Dtbether table built by bootargs.c.
+ * the Dtbether table built by bootargs.c and smtedtbprop.
  */
 enum {
 	Emac0Phys	= 0xcac80000UL,
@@ -1250,11 +1250,83 @@ smtectl(Ether *edev, void *buf, long n)
 
 /* Plug-and-play -------------------------------------------------------------- */
 
+/*
+ * The SpacemiT properties of an ethernet node, which bootargsinit
+ * hands to smtedtbprop; Dtbether has the standard ones.
+ */
+typedef struct Smtedt Smtedt;
+struct Smtedt {
+	char	path[64];	/* node, as in Dtbether */
+	uvlong	apmubase;	/* "k1x,apmu-base-reg"; 0 unset */
+	u32int	ctrlregoff;	/* APMU offset for clk/reset; 0 unset */
+	u32int	dlineregoff;	/* APMU offset for RGMII delays; 0 unset */
+	int	txphase;	/* RGMII delay, degrees; -1 unset */
+	int	rxphase;
+	int	rstpin;		/* "emac,reset-gpio": PHY reset pin; -1 unset */
+};
+
+static Smtedt smtedt[4];
+static int nsmtedt;
+
+static Smtedt*
+smtedtnode(char *path)
+{
+	static Smtedt spare;
+	Smtedt *s;
+
+	for(s = smtedt; s < smtedt+nsmtedt; s++)
+		if(strcmp(s->path, path) == 0)
+			return s;
+	if(nsmtedt < nelem(smtedt))
+		s = &smtedt[nsmtedt++];
+	else
+		s = &spare;	/* table full: defaults */
+	memset(s, 0, sizeof *s);
+	strecpy(s->path, s->path+sizeof s->path, path);
+	s->txphase = -1;
+	s->rxphase = -1;
+	s->rstpin = -1;
+	return s;
+}
+
+void
+smtedtbprop(char *path, char *key, uchar *p, int len)
+{
+	char *b, *phase;
+	Smtedt *s;
+
+	b = strrchr(path, '/');
+	if(b == nil || strncmp(b+1, "ethernet@", 9) != 0)
+		return;
+	s = smtedtnode(path);
+	/* K1 names the phases "tx-phase", K3 "spacemit,tx-phase" */
+	phase = key;
+	if(strncmp(phase, "spacemit,", 9) == 0)
+		phase += 9;
+	if(strcmp(key, "k1x,apmu-base-reg") == 0 && len >= 4)
+		s->apmubase = nhgetl(p);
+	else if(strcmp(key, "spacemit,apmu") == 0 && len >= 12){
+		/* <&syscon_apmu ctrl-off dline-off> */
+		s->ctrlregoff = nhgetl(p+4);
+		s->dlineregoff = nhgetl(p+8);
+	}else if(strcmp(key, "ctrl-reg") == 0 && len >= 4)
+		s->ctrlregoff = nhgetl(p);
+	else if(strcmp(key, "dline-reg") == 0 && len >= 4)
+		s->dlineregoff = nhgetl(p);
+	else if(strcmp(phase, "tx-phase") == 0 && len >= 4)
+		s->txphase = nhgetl(p);
+	else if(strcmp(phase, "rx-phase") == 0 && len >= 4)
+		s->rxphase = nhgetl(p);
+	else if(strcmp(key, "emac,reset-gpio") == 0 && len >= 12)
+		s->rstpin = nhgetl(p+4);	/* <&gpio pin flags> */
+}
+
 static int
 etherpnp(Ether *edev)
 {
 	Ctlr *ct;
 	Dtbether *de;
+	Smtedt *dv;
 	uvlong base, size, apmubase;
 	int irq, i, n;
 
@@ -1294,13 +1366,15 @@ etherpnp(Ether *edev)
 			break;
 		}
 	}
+	dv = nil;
 	if(de != nil){
+		dv = smtedtnode(de->path);
 		base     = de->base;
 		size     = de->size ? de->size : Emac0Size;
-		apmubase = de->apmubase ? de->apmubase : ApmuPhys;
+		apmubase = dv->apmubase ? dv->apmubase : ApmuPhys;
 		irq      = de->irq;
-		ct->apmuctrloff  = de->ctrlregoff  ? de->ctrlregoff  : ApmuEmacClkrstctrl;
-		ct->apmudlineoff = de->dlineregoff ? de->dlineregoff : ApmuEmacRgmiidline;
+		ct->apmuctrloff  = dv->ctrlregoff  ? dv->ctrlregoff  : ApmuEmacClkrstctrl;
+		ct->apmudlineoff = dv->dlineregoff ? dv->dlineregoff : ApmuEmacRgmiidline;
 		print("smte: ether%d from DTB %s base=%#llux size=%#llux apmu=%#llux+{%#ux,%#ux} irq=%d\n",
 			edev->ctlrno, de->path, base, size, apmubase,
 			ct->apmuctrloff, ct->apmudlineoff, irq);
@@ -1338,12 +1412,12 @@ etherpnp(Ether *edev)
 	ct->rxdelay = SmteRxdelaydef;
 	ct->txdelay = SmteTxdelaydef;
 	ct->rstpin = -1;
-	if(de != nil){
-		if(de->txphase > 0)
-			ct->txdelay = (de->txphase * 8000 / 360 * 10 + 78) / 156;
-		if(de->rxphase > 0)
-			ct->rxdelay = (de->rxphase * 8000 / 360 * 10 + 78) / 156;
-		ct->rstpin = de->rstpin;
+	if(dv != nil){
+		if(dv->txphase > 0)
+			ct->txdelay = (dv->txphase * 8000 / 360 * 10 + 78) / 156;
+		if(dv->rxphase > 0)
+			ct->rxdelay = (dv->rxphase * 8000 / 360 * 10 + 78) / 156;
+		ct->rstpin = dv->rstpin;
 	}
 
 	edev->ctlr     = ct;

@@ -42,32 +42,11 @@ char *bootconf;			/* BOOTARGS; see mem.h */
  */
 #define MAXDTBUARTS 16
 #define MAXDTBETHERS 4
-#define MAXDTBUFS 2
 
 static Dtbuart dtbuarts[MAXDTBUARTS];
 static int ndtbuarts;
 static Dtbether dtbethers[MAXDTBETHERS];
 static int ndtbethers;
-/*
- * Per-UFS-controller information, same idea as Dtbether but for the
- * K3's UFS host controller.  Unlike ether, there's no APMU/MAC-address
- * vendor cruft to track -- just where the two register blocks and the
- * irq are.  See K3 UM ch.9.7.5: UFSHC registers at one base, and a
- * separate UFS_MNG (MPHY reset/power-up) block that in practice sits
- * 0x1B00 into the same window, but we don't assume that -- if the DTB
- * gives a second reg entry we use it, otherwise we fall back to the
- * fixed offset from the manual.
- *
- * struct Dtbufs itself now lives in dat.h, next to Dtbether/Dtbuart
- * (moved there so sdufs.c can see it too -- it used to be declared
- * locally here, which only worked for this file).
- */
-#define UfsMngOff 0x1B00	/* K3 UM: MNG base - UFSHC base, used as
-				 * fallback when the DTB reg property only
-				 * has one address/size pair. Must match the
-				 * enum of the same name in sdufs.c. */
-static Dtbufs dtbufss[MAXDTBUFS];
-static int ndtbufs;
 static char dtbalias[MAXDTBUARTS][64];	/* serial<N> -> DT node path */
 static char dtbethalias[MAXDTBETHERS][64]; /* ethernet<N> -> DT node path */
 static char dtbstdout[64];
@@ -134,20 +113,6 @@ int
 dtbnether(void)
 {
 	return ndtbethers;
-}
-
-int
-dtbnufs(void)
-{
-	return ndtbufs;
-}
-
-Dtbufs*
-dtbufs(int i)
-{
-	if(i < 0 || i >= ndtbufs)
-		return nil;
-	return &dtbufss[i];
 }
 
 /*
@@ -287,19 +252,6 @@ isethernetnode(char *path)
 }
 
 static int
-isufsnode(char *path)
-{
-	char *base;
-
-	base = strrchr(path, '/');
-	if(base == nil)
-		return 0;
-	base++;
-	/* the K3 device tree names it "ufshc: ufshc@0xc0e00000". */
-	return strncmp(base, "ufshc@", 6) == 0;
-}
-
-static int
 isintcnode(char *path)
 {
 	char *base;
@@ -380,33 +332,7 @@ findorallocether(char *path)
 	e->irq = -1;
 	e->aliasidx = -1;
 	e->ok = 1;		/* per DT spec sec. 2.3.4, absent status = enabled */
-	e->txphase = -1;
-	e->rxphase = -1;
-	e->rstpin = -1;
 	return e;
-}
-
-static Dtbufs*
-findorallocufs(char *path)
-{
-	int i, n;
-	Dtbufs *u;
-
-	for(i = 0; i < ndtbufs; i++)
-		if(strcmp(dtbufss[i].path, path) == 0)
-			return &dtbufss[i];
-	if(ndtbufs >= MAXDTBUFS)
-		return nil;
-	u = &dtbufss[ndtbufs++];
-	memset(u, 0, sizeof(*u));
-	n = strlen(path);
-	if(n >= (int)sizeof(u->path))
-		n = sizeof(u->path) - 1;
-	memmove(u->path, path, n);
-	u->path[n] = 0;
-	u->irq = -1;
-	u->ok = 1;		/* per DT spec sec. 2.3.4, absent status = enabled */
-	return u;
 }
 
 static Dtbuart*
@@ -440,6 +366,7 @@ devtreeprop(char *path, char *key, void *val, int len)
 	uvlong addr;
 	uchar *p = val;
 
+	boarddtbprop(path, key, val, len);
 	if(path[0] == 0 && strcmp(key, "compatible") == 0){
 		/* root node: says which SoC/board this tree describes */
 		dtbrootcompatlen = len;
@@ -541,85 +468,6 @@ devtreeprop(char *path, char *key, void *val, int len)
 		} else if(strcmp(key, "mac-address") == 0 && len == 6 && !e->hasmac){
 			memmove(e->mac, val, 6);
 			e->hasmac = 1;
-		} else if(strcmp(key, "k1x,apmu-base-reg") == 0 && len >= 4){
-			/* SpacemiT extension: APMU MMIO base shared by all EMACs.
-			 * K1 binding name. */
-			e->apmubase = beget4(p);
-		} else if(strcmp(key, "spacemit,apmu") == 0 && len >= 12){
-			/*
-			 * K3 binding: spacemit,apmu = <&syscon_apmu ctrl-off
-			 * dline-off>; a phandle + 2 args, not the separate
-			 * bare ctrl-reg/dline-reg properties K1 uses.  We
-			 * don't resolve the phandle itself (there's only one
-			 * APMU syscon on this SoC family; apmubase keeps its
-			 * K3 default from etherpnp() unless k1x,apmu-base-reg
-			 * says otherwise), just the two offset cells.
-			 */
-			e->ctrlregoff = beget4(p + 4);
-			e->dlineregoff = beget4(p + 8);
-		} else if(strcmp(key, "ctrl-reg") == 0 && len >= 4){
-			/* SpacemiT extension: per-EMAC offset into APMU for
-			 * clock/reset control.  K1 binding name. */
-			e->ctrlregoff = beget4(p);
-		} else if(strcmp(key, "dline-reg") == 0 && len >= 4){
-			/* SpacemiT extension: per-EMAC offset into APMU for
-			 * the RGMII delay-line register.  K1 binding name. */
-			e->dlineregoff = beget4(p);
-		} else if(strcmp(key, "tx-phase") == 0 && len >= 4){
-			/* SpacemiT extension: RGMII delay in degrees of the
-			 * 125MHz clock; per-port board tuning.  K1 binding name. */
-			e->txphase = beget4(p);
-		} else if(strcmp(key, "rx-phase") == 0 && len >= 4){
-			e->rxphase = beget4(p);
-		} else if(strcmp(key, "spacemit,tx-phase") == 0 && len >= 4){
-			/* Same thing, K3 binding name. */
-			e->txphase = beget4(p);
-		} else if(strcmp(key, "spacemit,rx-phase") == 0 && len >= 4){
-			e->rxphase = beget4(p);
-		} else if(strcmp(key, "emac,reset-gpio") == 0 && len >= 12){
-			/* <phandle pin flags> — the PHY's reset line */
-			e->rstpin = beget4(p + 4);
-		}
-		return;
-	}
-	if(isufsnode(path)){
-		Dtbufs *u = findorallocufs(path);
-		int n;
-		if(u == nil)
-			return;
-		if(strcmp(key, "reg") == 0 && len >= 16){
-			/*
-			 * #address-cells=2 #size-cells=2.  In the K3 device
-			 * tree "reg = <0x0 0xc0e00000 0x0 0x40000>" is a
-			 * single <addr size> pair (16 bytes) covering both
-			 * UFSHC and UFS_MNG (UFS_MNG sits at +0x1B00, well
-			 * inside the 0x40000 window) -- so mngbase stays 0
-			 * here and the caller derives it via base+UfsMngOff.
-			 * The len>=32 (two-pair) branch below is defensive
-			 * only; no known K3 board actually emits it.
-			 */
-			u->base = ((uvlong)beget4(p) << 32) | beget4(p + 4);
-			u->size = ((uvlong)beget4(p + 8) << 32) | beget4(p + 12);
-			if(len >= 32){
-				u->mngbase = ((uvlong)beget4(p + 16) << 32) | beget4(p + 20);
-				u->mngsize = ((uvlong)beget4(p + 24) << 32) | beget4(p + 28);
-			}
-		} else if(strcmp(key, "interrupts") == 0 && len >= 4){
-			/* interrupts = <135 0x4>; -- the first cell is the
-			 * aplic_int number, matching K3 UM ch.7.1 exactly. */
-			u->irq = beget4(p);
-		} else if(strcmp(key, "interrupts-extended") == 0 && len >= 8){
-			/* <phandle irq> — second cell is the source number,
-			 * same convention as the ethernet block above */
-			u->irq = beget4(p + 4);
-		} else if(strcmp(key, "compatible") == 0){
-			n = len;
-			if(n >= (int)sizeof(u->compatible))
-				n = sizeof(u->compatible) - 1;
-			memmove(u->compatible, val, n);
-			u->compatible[n] = 0;
-		} else if(strcmp(key, "status") == 0){
-			u->ok = (len >= 5 && strcmp((char*)val, "okay") == 0);
 		}
 		return;
 	}
@@ -975,9 +823,9 @@ bootargsinit(void)
 		for(i = 0; i < ndtbethers; i++)
 			if(!dtbethers[i].ok)
 				ndis++;
-		print("bootargsinit: %d entries from %s, %d uart %d ether %d ufs nodes (%d ether disabled)\n",
+		print("bootargsinit: %d entries from %s, %d uart %d ether nodes (%d ether disabled)\n",
 			nconf, preloadedini? "plan9.ini": "DTB /chosen/bootargs",
-			ndtbuarts, ndtbethers, ndtbufs, ndis);
+			ndtbuarts, ndtbethers, ndis);
 	}
 }
 

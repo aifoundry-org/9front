@@ -1,5 +1,11 @@
 #include "../rva23/fns.h"
 
+/* etherdwqe */
+extern void dwqedtbprop(char*, char*, uchar*, int);
+
+/* sdufs */
+extern void ufsdtbprop(char*, char*, uchar*, int);
+
 /* gpiok3 */
 extern void gpiok3init(void);
 
