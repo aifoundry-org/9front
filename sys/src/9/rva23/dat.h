@@ -249,6 +249,7 @@ struct
 
 #define MACHP(n)	((Mach*)MACHADDR(n))
 
+extern uintptr uzero;						/* uzero; set in main.c */
 extern void _start(void);		/* KTZERO */
 
 extern register Mach* m;			/* R7 */

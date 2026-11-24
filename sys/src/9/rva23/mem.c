@@ -52,6 +52,7 @@ meminit(void)
 	extern u64int *sv57, *sv48, *sv39, *pGiB;
 	extern uintptr klimit;
 
+	klimit = uzero;
 	if(p = getconf("*maxmem"))
 		l = strtoull(p, 0, 0);
 
@@ -59,8 +60,8 @@ meminit(void)
 	conf.mem[0].base = ROUND(PGROUND((uintptr)end - KTZERO) + (uintptr)(VDRAM+0x2fffff), 0x200000);
 	conf.mem[0].limit = l;
 
-	if(l > KLIMIT)
-		l = KLIMIT;
+	if(l > klimit)
+		l = klimit;
 	sv57 = (void *)PGROUND((uintptr)end);
 	sv48 = (void *)PGROUND((uintptr)sv57 + 1);
 	sv39 = (void *)PGROUND((uintptr)sv48 + 1);
