@@ -40,15 +40,15 @@ kmapram(uintptr, uintptr limit)
 	 * cover every GiB slot up to the end of RAM, not a fixed few:
 	 * pages the kernel can only reach through this identity map
 	 * (kaddr) fault if their slot is missing.  Keep at least the
-	 * first 6 slots for the low MMIO leaves, and stop at UZERO,
+	 * first 6 slots for the low MMIO leaves, and stop at uzero,
 	 * where user space begins.
 	 * TODO: handle more complex memory topologies.
 	 */
 	n = (limit + 0x40000000ULL-1)/0x40000000ULL;
 	if(n < 6)
 		n = 6;
-	if(n > UZERO/0x40000000ULL)
-		n = UZERO/0x40000000ULL;
+	if(n > uzero/0x40000000ULL)
+		n = uzero/0x40000000ULL;
 	for(i = 0; i < n; i++){
 		pa = 0x40000000ULL*i;
 		/*

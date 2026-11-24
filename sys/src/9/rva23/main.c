@@ -200,6 +200,8 @@ sbiputs(char *s)
 	}
 }
 
+uintptr uzero = 0;
+
 int i = 1;
 int once = 0;
 void
@@ -211,6 +213,7 @@ main(u64int hartid, uintptr dtb)
 	dtbphys = dtb;
 
 	if((hartid == 0) && !once){
+		uzero = 0x1000000000ULL;
 		/*
 		 * Zero every per-cpu Mach page, not just cpu0's.  The Mach
 		 * pages stack downward from just below KTZERO (MACHADDR(n) =
