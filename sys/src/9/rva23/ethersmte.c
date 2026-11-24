@@ -63,10 +63,11 @@ enum {
 
 	GpioPhys	= 0xd4019000UL,
 	GpioSize	= 0x200,
-	GpioBank3off	= 0x100,		/* bank 3 register group offset */
-	GpioGsdr	= 0x54,			/* set direction = output */
-	GpioGpcr	= 0x24,			/* set output low (clear) */
-	GpioGpsr	= 0x18,			/* set output high */
+	/* word offsets (byte offset / 4) into the mapped register file */
+	GpioBank3off	= 0x100/4,		/* bank 3 register group offset */
+	GpioGsdr	= 0x54/4,		/* set direction = output */
+	GpioGpcr	= 0x24/4,		/* set output low (clear) */
+	GpioGpsr	= 0x18/4,		/* set output high */
 };
 
 /* DMA registers (byte offset) */
@@ -1043,7 +1044,7 @@ ethinit(Ether *edev)
 			| ApmuEmacBusrstrelease | ApmuEmacAximstid);
 		microdelay(10000);
 		print("smte: APMU ApmuEmacClkrstctrl[%#ux] %#ux -> %#ux\n",
-			c->apmuctrloff, origv, rd32(c->apmu, c->apmuctrloff));
+			(uint)c->apmuctrloff, origv, rd32(c->apmu, c->apmuctrloff));
 	}
 
 	/* Now the MAC block is reachable; stop everything. */
@@ -1063,7 +1064,7 @@ ethinit(Ether *edev)
 	  | c->txdelay << ApmuEmacRgmiidlineTxshift;
 	wreg(c->apmu, c->apmudlineoff, v);
 	print("smte: APMU DLINE[%#ux]=0x%08ux (rx=%d tx=%d steps x 15.6ps)\n",
-		c->apmudlineoff, v, c->rxdelay, c->txdelay);
+		(uint)c->apmudlineoff, v, c->rxdelay, c->txdelay);
 
 	/* MAC address */
 	wreg(c->regs, MacAddr1hi, edev->ea[1]<<8 | edev->ea[0]);
@@ -1299,11 +1300,12 @@ etherpnp(Ether *edev)
 		size     = de->size ? de->size : Emac0Size;
 		apmubase = de->apmubase ? de->apmubase : ApmuPhys;
 		irq      = de->irq;
-		ct->apmuctrloff  = de->ctrlregoff  ? de->ctrlregoff  : ApmuEmacClkrstctrl;
-		ct->apmudlineoff = de->dlineregoff ? de->dlineregoff : ApmuEmacRgmiidline;
+		/* the DTB properties are byte offsets; ct fields are word indices */
+		ct->apmuctrloff  = de->ctrlregoff  ? de->ctrlregoff/4  : ApmuEmacClkrstctrl;
+		ct->apmudlineoff = de->dlineregoff ? de->dlineregoff/4 : ApmuEmacRgmiidline;
 		print("smte: ether%d from DTB %s base=%#llux size=%#llux apmu=%#llux+{%#ux,%#ux} irq=%d\n",
 			edev->ctlrno, de->path, base, size, apmubase,
-			ct->apmuctrloff, ct->apmudlineoff, irq);
+			(uint)ct->apmuctrloff, (uint)ct->apmudlineoff, irq);
 	} else if(edev->ctlrno == 0 && n == 0){
 		base     = Emac0Phys;
 		size     = Emac0Size;
