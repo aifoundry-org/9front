@@ -80,7 +80,7 @@ k1twsi(void)
 	delay(1);
 	vunmap(apbc, ApbcSize);
 
-	apbc[TwsiIcr] = Iue|Scle;
+	t[TwsiIcr] = Iue|Scle;
 	coherence();
 	return t;
 }
