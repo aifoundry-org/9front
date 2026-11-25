@@ -547,16 +547,23 @@ devtreeprop(char *path, char *key, void *val, int len)
 			e->apmubase = beget4(p);
 		} else if(strcmp(key, "spacemit,apmu") == 0 && len >= 12){
 			/*
-			 * K3 binding: spacemit,apmu = <&syscon_apmu ctrl-off
-			 * dline-off>; a phandle + 2 args, not the separate
-			 * bare ctrl-reg/dline-reg properties K1 uses.  We
-			 * don't resolve the phandle itself (there's only one
+			 * Older K3 binding: spacemit,apmu = <&syscon_apmu ctrl-off
+			 * dline-off>; a phandle plus the two APMU offsets.
+			 * Current K3 trees put those in the separate
+			 * spacemit,ctrl-offset/dline-offset properties handled below.
+			 * We don't resolve the phandle itself (there's only one
 			 * APMU syscon on this SoC family; apmubase keeps its
 			 * K3 default from etherpnp() unless k1x,apmu-base-reg
 			 * says otherwise), just the two offset cells.
 			 */
 			e->ctrlregoff = beget4(p + 4);
 			e->dlineregoff = beget4(p + 8);
+		} else if(strcmp(key, "spacemit,ctrl-offset") == 0 && len >= 4){
+			/* K3: per-EMAC APMU offset for clock/reset control. */
+			e->ctrlregoff = beget4(p);
+		} else if(strcmp(key, "spacemit,dline-offset") == 0 && len >= 4){
+			/* K3: per-EMAC APMU offset for the RGMII delay line. */
+			e->dlineregoff = beget4(p);
 		} else if(strcmp(key, "ctrl-reg") == 0 && len >= 4){
 			/* SpacemiT extension: per-EMAC offset into APMU for
 			 * clock/reset control.  K1 binding name. */

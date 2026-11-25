@@ -1122,6 +1122,17 @@ etherpnp(Ether *edev)
 		irq      = de->irq;
 		ct->apmuctrloff  = de->ctrlregoff  ? de->ctrlregoff/4  : 0x3e4/4;
 		ct->apmudlineoff = de->dlineregoff ? de->dlineregoff/4 : 0x3e8/4;
+		/*
+		 * The fallbacks above are EMAC0's APMU registers.  Driving
+		 * another port's MAC with them leaves it gated, and the
+		 * first MAC access then hangs the bus -- refuse instead.
+		 */
+		if((de->ctrlregoff == 0 || de->dlineregoff == 0)
+		   && base != Gmac0Phys){
+			print("dwqe: ether%d at %#llux: DTB has no APMU ctrl/dline offset\n",
+				edev->ctlrno, base);
+			return -1;
+		}
 		print("dwqe: ether%d from DTB %s base=%#llux size=%#llux apmu=%#llux+{%#ux,%#ux} irq=%d\n",
 			edev->ctlrno, de->path, base, size, apmubase,
 			ct->apmuctrloff, ct->apmudlineoff, irq);
