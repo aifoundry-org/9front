@@ -248,6 +248,89 @@ dodata(void)
 	xdefine("etext", STEXT, 0L);
 }
 
+/*
+ * Code is pc-relative, but initialized data holds absolute
+ * pointers, baked for the link address.  Define _reloc, which the
+ * start-up code calls first, with R3 set, to store their run-time
+ * addresses, computed pc-relative or off R3: then a program or a
+ * kernel runs wherever it is loaded.  Running it twice is harmless.
+ */
+static Prog*
+relins(Prog *l, int as)
+{
+	Prog *q;
+
+	q = prg();
+	q->as = as;
+	q->line = l->line;
+	q->pc = pc++;
+	l->link = q;
+	return q;
+}
+
+void
+relocode(void)
+{
+	Prog *p, *q;
+	Sym *s;
+
+	s = lookup("_reloc", 0);
+	if(s->type != 0 && s->type != SXREF) {
+		diag("redefinition: %s", s->name);
+		return;
+	}
+	s->type = STEXT;
+	s->value = pc;
+	for(q = firstp; q->link != P; q = q->link)
+		;
+	q = relins(q, ATEXT);
+	q->from.type = D_OREG;
+	q->from.name = D_EXTERN;
+	q->from.sym = s;
+	q->reg = NOPROF;
+	q->to.type = D_CONST;
+	q->to.offset = -ptrsize;
+	if(textp == P)
+		textp = q;
+	else
+		etextp->cond = q;
+	etextp = q;
+
+	for(p = datap; p != P; p = p->link) {
+		if(p->to.type != D_CONST && p->to.type != D_VCONST || p->to.sym == S)
+			continue;
+		switch(p->to.sym->type) {
+		default:
+			continue;
+		case STEXT:
+		case SDATA:
+		case SBSS:
+		case SXREF:	/* etext, edata, end: defined by dodata */
+			break;
+		}
+		if(p->reg != ptrsize) {
+			diag("bad pointer datum\n%P", p);
+			continue;
+		}
+		q = relins(q, AMOV);
+		q->from = p->to;
+		if(p->to.type == D_VCONST) {
+			q->from.type = D_CONST;
+			q->from.offset = *p->to.vval;
+			if(q->from.offset != *p->to.vval)
+				diag("pointer offset too large\n%P", p);
+		}
+		q->to.type = D_REG;
+		q->to.reg = REGLOWALLOC;	/* not R8: _tos in _main */
+		q = relins(q, AMOV);
+		q->from.type = D_REG;
+		q->from.reg = REGLOWALLOC;
+		q->to = p->from;
+		q->to.type = D_OREG;
+	}
+	relins(q, ARET);
+}
+
 void
 undef(void)
 {

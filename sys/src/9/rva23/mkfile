@@ -2,14 +2,14 @@ CONF=rva23
 CONFLIST=rva23 rva23cpuwait
 
 # loadaddr is the link address (-T), but the kernel runs in place
-# wherever kexec/booti put it, fixing up its data pointers from the
-# jl -u relocation table and binding memory layout to _start runtime address.
+# wherever kexec/booti put it: _start calls _reloc (see 2l(1)) and
+# the memory layout hangs off the run-time address of _start.
 # CPU type		RAM base
 # qemu-virt		0x80000000
 # BPI-F3 2/4GB  0x40000000; some lower RAM reserved for firmware
 # BPI-F3 > 4GB	ditto, plus second block at 0x100000000
 # K3 (all)		0x100000000, all available
-loadaddr=0x102202000 # could probably be 0x100200000: maybe skip reloc on K3
+loadaddr=0x102202000
 
 objtype=riscv64
 </$objtype/mkfile
@@ -55,7 +55,6 @@ OBJ=\
 	l.$O\
 	cas.$O\
 	timecmp.$O\
-	reloc.$O\
 	archrv.$O\
 	cbo.$O\
 	bootargs.$O\
@@ -115,11 +114,11 @@ rva23cpuwait: rva23
 	cp $prereq $target
 
 $p$CONF $p$CONF.elf $p$CONF.elf.sym:D:	$OBJ $CONF.$O $LIB
-	$LD -s -l -u -o $p$CONF -H6 -R0x1000 -T$loadaddr $prereq
+	$LD -s -l -o $p$CONF -H6 -R0x1000 -T$loadaddr $prereq
 	# ELF for kexec
-	$LD -s -l -u -o $p$CONF.elf -H5 -R4 -T$loadaddr $prereq
+	$LD -s -l -o $p$CONF.elf -H5 -R4 -T$loadaddr $prereq
 	# ELF with symbols, for source-level gdb-on-qemu
-	$LD -l -u -o $p$CONF.elf.sym -H5 -R4 -T$loadaddr $prereq
+	$LD -l -o $p$CONF.elf.sym -H5 -R4 -T$loadaddr $prereq
 
 s$p$CONF:D:	$OBJ $CONF.$O $LIB
 	$LD -l -o $target -R0x1000 -T$loadaddr $prereq

@@ -51,8 +51,8 @@ TEXT	_start(SB), 1, $-4
 	 * code0 jumps 64 bytes forward, past the header, into the relocator below.
 	 * ELF entry is _start for bootelf and kexec: start at code0 and take the jump.
 	 *
-	 * The kernel runs in place wherever the loader put it and fixes up
-	 * its data pointers via the jl -u relocation table (relocfixup),
+	 * The kernel runs in place wherever the loader put it, storing the
+	 * run-time addresses of its data pointers (_reloc, made by jl),
 	 * so text_offset only steers the loader, it is not a promise.
 	 */
 	WORD $0x040000ef	/* code0: jal x1, +64 */
@@ -74,6 +74,7 @@ TEXT	_start(SB), 1, $-4
 
 	MOV	$setSB(SB), R3
 	JAL	R1, mmudisable<>(SB)
+	JAL	R1, _reloc(SB)		/* leaves R10, R11 */
 	/*
 	 * The memory layout hangs off the runtime address of _start
 	 * (== ktzero): Mach pages grow down from it, one per hart, and
@@ -84,18 +85,6 @@ TEXT	_start(SB), 1, $-4
 	MOV	$_start(SB), R2
 	MOV	$((MAXMACH+1)*MACHSIZE), R8
 	SUB	R8, R2
-	/*
-	 * fix up absolute pointers in initialized data if we are not
-	 * running at the linked address (jl -u relocation table).
-	 * a0/a1 survive in stack slots above the call's argument area.
-	 */
-	ADD	$-48, R2
-	MOV	R10, 32(R2)
-	MOV	R11, 40(R2)
-	JAL	R1, relocfixup(SB)
-	MOV	32(R2), R10
-	MOV	40(R2), R11
-	ADD	$48, R2
 	// clear out UP and set MACH.
 	MOV $0, R6
 	MOV	$_start(SB), R7

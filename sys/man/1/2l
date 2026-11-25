@@ -196,6 +196,14 @@ is the address of the end of the data segment;
 and
 .B end
 is the address of the end of the bss segment, and of the program.
+.PP
+.I Jl
+also defines
+.BR _reloc ,
+a function that stores into initialized data the run-time addresses
+of the pointers there.
+Its code, like all RISC-V code, is position independent, so the start-up
+code calls it to run a program or kernel at any address.
 .SH FILES
 .TF /$objtype/lib
 .TP
