@@ -390,7 +390,7 @@ sysexec(va_list list)
 		n = devtab[tc->type]->read(tc, u.buf, sizeof(u.buf), 0);
 		if(n >= sizeof(Exec)) {
 			magic = beswal(u.ehdr.magic);
-			if(magic == AOUT_MAGIC)
+			if((magic & ~DYN_MAGIC) == AOUT_MAGIC)
 				break; /* for binary */
 		}
 
@@ -445,6 +445,11 @@ sysexec(va_list list)
 	} else {
 		entry = beswal(u.ehdr.entry);
 		text = UTZERO+sizeof(Exec);
+	}
+	if(magic & DYN_MAGIC) {
+		/* position independent, linked at 0 */
+		magic &= ~DYN_MAGIC;
+		entry += UTZERO;
 	}
 	if(entry < text)
 		error(Ebadexec);
