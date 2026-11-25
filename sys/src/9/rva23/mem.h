@@ -48,16 +48,15 @@
 #define TRAPFRAMESIZE	(38*8)
 
 /*
- * The kernel runs in place wherever the loader put it and fixes up
- * its data pointers from the jl -u relocation table, so the memory
- * layout is bound at boot rather than at link time: KTZERO is the
- * runtime address of _start and VDRAM the base of the claimed region,
+ * The kernel runs in place wherever the loader put it (see _reloc
+ * in 2l(1)), so the memory layout is bound at boot rather than at
+ * link time: KTZERO is the run-time address of _start, which code
+ * computes pc-relative, and VDRAM the base of the claimed region,
  * 2 MB below it (where every loader we boot from puts the kernel
- * relative to DRAM).  Both are set in relocfixup(), before any other
- * C runs; l.s derives its own addresses from _start directly.
+ * relative to DRAM).
  */
-#define VDRAM		vdram
-#define	KTZERO		ktzero		/* kernel text start */
+#define VDRAM		(KTZERO-0x200000)
+#define	KTZERO		((uintptr)_start)	/* kernel text start */
 
 #define	KZERO		(0x0000000000000000ULL)	/* 0x00000000 - kernel address space */
 #define KLIMIT 		klimit

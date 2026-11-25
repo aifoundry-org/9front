@@ -246,7 +246,7 @@ struct
 
 #define MACHP(n)	((Mach*)MACHADDR(n))
 
-extern uintptr ktzero, vdram;		/* runtime memory layout; set in relocfixup */
+extern void _start(void);		/* KTZERO */
 
 extern register Mach* m;			/* R7 */
 extern register Proc* up;			/* R6 */

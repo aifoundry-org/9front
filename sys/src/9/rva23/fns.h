@@ -338,7 +338,6 @@ void	putsts(uintptr);
 void*	putstvec(void *);
 
 /* reloc */
-void	relocfixup(void);
 
 int	peekb(void*);
 int peekl(void *addr, u32int *dst, int numwords);
