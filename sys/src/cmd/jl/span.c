@@ -253,6 +253,14 @@ aclass(Adr *a)
 					a->sym->name, TNAME);
 				a->sym->type = SDATA;
 			}
+			switch(t){
+			case STEXT:
+			case SLEAF:
+			case SSTRING:
+				/* not SB-relative; cases 12 and 13 add INITDAT+BIG */
+				instoffset = a->sym->value + INITTEXT + a->offset - INITDAT - BIG;
+				return C_LEXT;
+			}
 			instoffset = a->sym->value + a->offset - BIG;
 			if(instoffset >= -BIG && instoffset < BIG)
 				return C_SEXT;
