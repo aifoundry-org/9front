@@ -24,6 +24,8 @@ static Intvec vec[32];
 static void*
 cfgaddr(int tbdf, int rno)
 {
+	if(ecam == nil)
+		return nil;
 	return ecam + (BUSBNO(tbdf)<<20 | BUSDNO(tbdf)<<15 | BUSFNO(tbdf)<<12) + rno;
 }
 
@@ -167,9 +169,12 @@ pcicfginit(void)
 		pcihinv(pciroot);
 }
 
+/* the fixed ECAM and MMIO windows are QEMU virt's */
 void
 pciqemulink(void)
 {
+	if(!dtbsocmatch("riscv-virtio"))
+		return;
 	ecam = vmap(ECAMBASE, ECAMSIZE);
 	pcicfginit();
 }

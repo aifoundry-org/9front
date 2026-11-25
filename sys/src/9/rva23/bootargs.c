@@ -626,7 +626,7 @@ devtreeprop(char *path, char *key, void *val, int len)
 	if(strcmp(key, "compatible") == 0){
 		/*
 		 * Spot the SoC's external interrupt controller.  A "riscv,plic*"
-		 * compatible means plic.c can drive it; the PLIC's reg base is
+		 * or "sifive,plic-1.0.0" compatible means plic.c can drive it; the PLIC's reg base is
 		 * captured separately (see isintcnode branch below).  APLIC /
 		 * IMSIC / MSI-only parts (e.g. K3) need a different driver and
 		 * we leave dtbhasplic_ false for them.
@@ -636,7 +636,8 @@ devtreeprop(char *path, char *key, void *val, int len)
 		int n;
 		for(c = (char*)val; rem > 0; ){
 			int sl = strlen(c) + 1;
-			if(strncmp(c, "riscv,plic", 10) == 0){
+			if(strncmp(c, "riscv,plic", 10) == 0
+			|| strcmp(c, "sifive,plic-1.0.0") == 0){
 				dtbhasplic_ = 1;
 				n = strlen(path);
 				if(n >= (int)sizeof(dtbplicpath))
