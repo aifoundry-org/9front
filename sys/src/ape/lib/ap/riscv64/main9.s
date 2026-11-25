@@ -20,6 +20,7 @@ GLOBL	_tos(SB), $XLEN
 
 TEXT	_main(SB), 1, $0
 	MOV	$setSB(SB), R3
+	JAL	R1, _reloc(SB)	/* store data pointers; see 2l(1) */
 	MOV	R0, CSR(FCSR)
 
 	/* _tos = arg */

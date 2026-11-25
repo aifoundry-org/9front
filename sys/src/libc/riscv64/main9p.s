@@ -5,6 +5,7 @@
 
 TEXT	_mainp(SB), 1, $(4*XLEN + NPRIVATES*XLEN)
 	MOV	$setSB(SB), R3
+	JAL	R1, _reloc(SB)	/* store data pointers; see 2l(1) */
 	/* _tos = arg */
 	MOV	R8, _tos(SB)
 
