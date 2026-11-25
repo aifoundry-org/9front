@@ -151,8 +151,10 @@ socidentify(void)
 			if(soc.impl == 0x49772200)
 				soc.plic = (uchar*)0xe0000000;
 			break;
-		default:	/* QEMU-virt and unknown */
-			soc.plic = (uchar*)0x0c000000;
+		default:
+			/* QEMU virt; anywhere else a guess would be wrong */
+			if(dtbsocmatch("riscv-virtio"))
+				soc.plic = (uchar*)0x0c000000;
 			break;
 		}
 	}
