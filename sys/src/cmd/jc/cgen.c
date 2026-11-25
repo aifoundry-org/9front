@@ -1,5 +1,7 @@
 #include "gc.h"
 
+static int	symoff(Node*);
+
 void
 cgen(Node *n, Node *nn)
 {
@@ -321,7 +323,7 @@ cgen(Node *n, Node *nn)
 		}
 		o = reg[REGARG];
 		gargs(r, &nod, &nod1);
-		if(l->addable < INDEXED) {
+		if(l->addable < INDEXED || symoff(l)) {
 			reglcgen(&nod, l, Z);
 			gopcode(OFUNC, Z, Z, &nod);
 			regfree(&nod);
@@ -666,6 +668,19 @@ fboolzerofree(Node *nod1, Node *n)
 {
 	if(n->type->etype == TFLOAT)
 		regfree(nod1);
+}
+
+/*
+ * A direct JAL can only name a symbol;
+ * calls to symbol+offset go through a register.
+ */
+static int
+symoff(Node *n)
+{
+	Adr a;
+
+	naddr(n, &a);
+	return a.sym != S && a.offset != 0;
 }
 
 /*
