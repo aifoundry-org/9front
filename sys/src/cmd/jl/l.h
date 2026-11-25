@@ -244,6 +244,7 @@ EXTERN	Opcross	opcross[10];
 EXTERN	Oprang	oprange[ALAST];
 EXTERN	char*	outfile;
 EXTERN	long	pc;
+EXTERN	int	pie;
 EXTERN	int	ptrsize;
 EXTERN	uchar	repop[ALAST];
 EXTERN	long	symsize;

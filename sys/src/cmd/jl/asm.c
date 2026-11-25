@@ -142,6 +142,8 @@ asmb(void)
 		break;
 	case 2:
 		t = thechar == 'j'? B_MAGIC: Y_MAGIC;
+		if(pie)
+			t |= DYN_MAGIC;
 		lput(t);
 		lput(textsize);			/* sizes */
 		lput(datsize);

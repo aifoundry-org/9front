@@ -166,6 +166,12 @@ its own boot header if it needs one.
 .BI -T t
 The text segment starts at address
 .IR t .
+Without it,
+.I jl
+links executables position independent, at 0, for
+.IR exec (2)
+to load at the start of user space (see
+.IR a.out (6)).
 .TP
 .BI -D d
 The data segment starts at address

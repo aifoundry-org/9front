@@ -132,6 +132,10 @@ main(int argc, char *argv[])
 		HEADR = 32L;
 		if (thechar == 'j')
 			HEADR += sizeof(vlong);	/* for virtual entry addr. */
+		if(INITTEXT == -1 && thechar == 'j') {
+			pie = 1;	/* exec puts it at UTZERO; see _reloc */
+			INITTEXT = HEADR;
+		}
 		if(INITTEXT == -1)
 			INITTEXT = 0x1000000000ULL + HEADR;
 		if(INITDAT == -1)

@@ -308,6 +308,19 @@ incremented by the current
 .IR ra .
 Then, the value in the module at the working address is modified as
 specified by the relocation mode.
+.PP
+A riscv64 executable with
+.B DYN_MAGIC
+set has no relocation data: it is linked as if loaded at 0, its text
+following the header, and its code is position independent.
+.IR Exec (2)
+loads it at the start of user space,
+which the kernel may choose at boot,
+and its start-up code calls
+.B _reloc
+(see
+.IR 2l (1))
+to fix the pointers in its initialized data.
 .SH "SEE ALSO"
 .IR db (1), 
 .IR acid (1), 
