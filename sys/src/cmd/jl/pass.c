@@ -505,6 +505,9 @@ patch(void)
 				s->type = STEXT;
 				s->value = vexit;
 			}
+			if(p->to.offset != 0)
+				diag("branch to %s%+ld not supported\n%P",
+					s->name, p->to.offset, p);
 			p->to.offset = s->value;
 			p->to.type = D_BRANCH;
 		}
