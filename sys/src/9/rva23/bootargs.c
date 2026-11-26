@@ -383,6 +383,7 @@ findorallocether(char *path)
 	e->txphase = -1;
 	e->rxphase = -1;
 	e->rstpin = -1;
+	e->rstactive = 0;
 	return e;
 }
 
@@ -586,6 +587,14 @@ devtreeprop(char *path, char *key, void *val, int len)
 		} else if(strcmp(key, "emac,reset-gpio") == 0 && len >= 12){
 			/* <phandle pin flags> — the PHY's reset line */
 			e->rstpin = beget4(p + 4);
+			e->rstactive = beget4(p + 8) & 1;
+		} else if(strcmp(key, "snps,reset-gpios") == 0 && len >= 16){
+			/*
+			 * <&gpio bank offset flags> — K3's gpio controller has
+			 * #gpio-cells = 3, so the pin is bank*32 + offset.
+			 */
+			e->rstpin = beget4(p + 4)*32 + beget4(p + 8);
+			e->rstactive = beget4(p + 12) & 1;
 		}
 		return;
 	}

@@ -339,7 +339,8 @@ struct Dtbether {
 	int	hasmac;
 	int	txphase;	/* SpacemiT "tx-phase": RGMII delay, degrees; -1 unset */
 	int	rxphase;	/* SpacemiT "rx-phase" */
-	int	rstpin;		/* "emac,reset-gpio" pin for the PHY; -1 unset */
+	int	rstpin;		/* PHY reset GPIO pin; -1 unset */
+	int	rstactive;		/* PHY reset line is active low */
 };
 
 /*

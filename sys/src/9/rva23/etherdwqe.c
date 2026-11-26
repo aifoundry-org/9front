@@ -39,6 +39,40 @@ enum {
 	ApmuPhys	= 0xd4282800UL,
 	ApmuSize	= 0x400,
 
+	MpmuPhys	= 0xd4050000UL,	/* PLL lock status lives here */
+	MpmuSize	= 0x1000,
+	MpmuPosr	= 0x10/4,
+	Pll2Lock	= 1U << 25,
+
+	PllPhys		= 0xd4090000UL,	/* spacemit,k3-pll (APBS) */
+	PllSize		= 0x1000,
+	Pll2Swcr2	= 0x11c/4,	/* APBS_PLL2_SWCR2 */
+	Pll2Enable	= 1U << 16,	/* type-A PLL enable */
+	Pll2D3Gate	= 1U << 2,	/* pll2_d3 output gate */
+
+	ApbcPhys	= 0xd4015000UL,
+	ApbcSize	= 0x1000,
+	ApbcAib		= 0x3c/4,	/* APBC_AIB_CLK_RST */
+	ApbcBusEn	= 1U << 0,
+	ApbcFuncEn	= 1U << 1,
+	ApbcReset	= 1U << 2,
+	ApbcAsfar	= 0x50/4,	/* AIB secure access unlock */
+	ApbcAssar	= 0x54/4,
+	ApbcAsfarKey	= 0xbaba,
+	ApbcAssarKey	= 0xeb10,
+
+	PwrDomainOff	= 0x800,	/* IO power-domain window in the pinctrl */
+	PwrV18En	= 1U << 2,
+
+	PinctrlPhys	= 0xd401e000UL,
+	PinctrlSize	= 0x1000,
+	PadMux		= 7,		/* pad register bits [2:0] */
+	PadDriveShift	= 9,		/* K3 drive strength, bits [12:9] */
+	PadDriveMask	= 0xf << PadDriveShift,
+	PadPullMask	= 7U << 13,	/* pull enable/up/down, bits [15:13] */
+	PadDrive9mA	= 4,		/* 1.8V table: 9mA */
+	PadDrive25mA	= 10,		/* 1.8V table: 25mA */
+
 	DwqeRxDelay	= 100,
 	DwqeTxDelay	= 100,
 };
@@ -282,6 +316,10 @@ struct Ctlr {
 	Block	**rxs, **txs;
 	int	rxprodi, rxconsi, txi;
 	u32int	rxdelay, txdelay;
+	int	phyaddr;		/* MDIO address of the PHY */
+	int	mdiocr;		/* MDIO CSR-clock-range divider */
+	int	rstpin;		/* PHY reset GPIO; -1 if none */
+	int	rstactive;		/* reset line asserted by a low level */
 	int	txcons;
 	int	attach;
 	int	dmarunning;
@@ -826,6 +864,120 @@ dwqectl(Ether *edev, void *buf, long n)
 	return n;
 }
 
+/*
+ * GMAC pad groups.  The pads are normally muxed by the boot loader, but
+ * it only sets up the port it booted through; a cold boot to Plan 9 has
+ * no Ethernet at all until we do it.  K3 pad N is at pinctrl + 4*N and
+ * function 1 is the GMAC function on every port.
+ */
+static u32int *pinctrl;
+
+/*
+ * Set mux, drive strength and bias.  The GMAC pad groups ask for 9mA
+ * and bias-disable; the reset line asks for the maximum drive.  RX
+ * works without this (the PHY drives those pads) but TX does not.
+ */
+static void
+dwqepadcfg(uint pin, uint func, uint drive)
+{
+	u32int v;
+
+	if(pinctrl == nil || pin >= 128)
+		return;
+	v = pinctrl[pin];
+	v &= ~(PadMux | PadDriveMask | PadPullMask);
+	v |= (func & PadMux) | ((drive & 0xf) << PadDriveShift);
+	pinctrl[pin] = v;
+}
+
+static void
+dwqepads(Ctlr *c, uvlong base)
+{
+	static u32int *apbc;
+	uint lo, hi, pdoff, i, n;
+	u32int v;
+
+	switch(base){
+	case Gmac0Phys:		lo = 0;  hi = 20; pdoff = 0x04; break;
+	case 0xcac82000UL:	lo = 21; hi = 35; pdoff = 0x0c; break;
+	case 0xcac8e000UL:	lo = 42; hi = 58; pdoff = 0; break;
+	case 0xa0000000UL:	lo = 59; hi = 75; pdoff = 0; break;
+	default:
+		return;
+	}
+
+	if(apbc == nil)
+		apbc = vmap(ApbcPhys, ApbcSize);
+	if(apbc != nil){
+		apbc[ApbcAib] = (apbc[ApbcAib] & ~ApbcReset)
+			| ApbcBusEn | ApbcFuncEn;
+		coherence();
+	}
+	if(pinctrl == nil)
+		pinctrl = vmap(PinctrlPhys, PinctrlSize);
+	if(pinctrl == nil)
+		return;
+
+	/*
+	 * The GMAC pads share an IO-power domain that the device tree
+	 * runs at 1.8V.  A cold boot may leave it at 3.3V, which breaks
+	 * the RGMII/MDIO levels (RX can still work).  The domain
+	 * registers are protected: unlock via ASFAR/ASSAR for each access.
+	 */
+	if(apbc != nil && pdoff != 0){
+		u32int *pd = &pinctrl[(PwrDomainOff + pdoff)/4];
+		u32int before;
+
+		apbc[ApbcAsfar] = ApbcAsfarKey;
+		apbc[ApbcAssar] = ApbcAssarKey;
+		before = *pd;
+		apbc[ApbcAsfar] = ApbcAsfarKey;
+		apbc[ApbcAssar] = ApbcAssarKey;
+		*pd = PwrV18En;
+		coherence();
+		print("dwqe: IO domain %#ux: %#ux -> 1.8V\n", pdoff, before);
+	}
+
+	n = 0;
+	for(i = lo; i <= hi; i++){
+		v = pinctrl[i];
+		dwqepadcfg(i, 1, PadDrive9mA);
+		if(v != pinctrl[i])
+			n++;
+	}
+	/* the PHY reset line is a GPIO, not a GMAC pad */
+	if(c->rstpin >= 0)
+		dwqepadcfg(c->rstpin, 0, PadDrive25mA);
+	if(n)
+		print("dwqe: configured %ud GMAC pads for %#llux\n", n, base);
+}
+
+/*
+ * Release the PHY reset and give it time to start its receive clock.
+ * The DMA soft reset below will not complete until that clock runs.
+ */
+static void
+dwqephyreset(Ctlr *c)
+{
+	int assertlvl, releaselvl;
+
+	if(c->rstpin < 0 || c->rstpin >= 128)
+		return;
+	gpiok3init();		/* map and clock the GPIO block; idempotent */
+	if(c->rstactive){
+		assertlvl = 0;
+		releaselvl = 1;
+	}else{
+		assertlvl = 1;
+		releaselvl = 0;
+	}
+	gpioout(c->rstpin, assertlvl);
+	microdelay(20000);
+	gpioout(c->rstpin, releaselvl);
+	microdelay(100000);
+	print("dwqe: PHY reset released on gpio%d\n", c->rstpin);
+}
+
 /* Core bring-up ------------------------------------------------------------ */
 
 static int
@@ -948,6 +1100,14 @@ ethinit(Ether *edev)
 			return -1;
 		}
 	}
+
+	/*
+	 * Cold boot: the boot loader may not have touched this port.  Mux
+	 * its pads and release the PHY reset first; the DMA soft reset
+	 * needs the PHY's receive clock to complete.
+	 */
+	dwqepads(c, edev->port);
+	dwqephyreset(c);
 
 	/* DMA software reset -- polled */
 	wreg(c->regs, DmaBusMode, rd32(c->regs, DmaBusMode) | DmaBusModeSwr);
@@ -1122,6 +1282,10 @@ etherpnp(Ether *edev)
 		irq      = de->irq;
 		ct->apmuctrloff  = de->ctrlregoff  ? de->ctrlregoff/4  : 0x3e4/4;
 		ct->apmudlineoff = de->dlineregoff ? de->dlineregoff/4 : 0x3e8/4;
+		ct->rstpin       = de->rstpin;
+		ct->rstactive    = de->rstactive;
+		ct->phyaddr      = PhyAddr;
+		ct->mdiocr       = MdioCrVal;
 		/*
 		 * The fallbacks above are EMAC0's APMU registers.  Driving
 		 * another port's MAC with them leaves it gated, and the
@@ -1143,6 +1307,9 @@ etherpnp(Ether *edev)
 		irq      = Gmac0Irq;
 		ct->apmuctrloff  = 0x3e4/4;
 		ct->apmudlineoff = 0x3e8/4;
+		ct->rstpin       = -1;
+		ct->phyaddr      = PhyAddr;
+		ct->mdiocr       = MdioCrVal;
 		print("dwqe: no DTB, using K3 ether0 defaults\n");
 	} else {
 		dprint("dwqe: no DTB entry for ether%d\n", edev->ctlrno);
