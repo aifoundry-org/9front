@@ -400,6 +400,7 @@ static int
 reset(Hci *hp)
 {
     static Xhci *ctlr;
+    Dtbnode *n;
     u32int *apmureg;
     u32int *apbsparereg;
     u32int *phymmio;
@@ -408,7 +409,12 @@ reset(Hci *hp)
     if(ctlr != nil)
         return -1;
 
-    if(!dtbsocmatch("spacemit,k3-com260-ifx"))
+    /*
+     * usb3_portb, when the board wires it to the combo PHY as USB3;
+     * otherwise the lane may be PCIe's, and step 1 would take it.
+     */
+    n = dtbfind("spacemit,k3", Xhcibase);
+    if(n == nil || !n->ok || !dtblisthas(n->phynames, n->phynameslen, "usb3-phy"))
         return -1;
     print("usbxhcicom260: reset called\n");
 

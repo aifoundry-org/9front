@@ -494,7 +494,8 @@ i2clinkbuses(void)
 void
 i2ck3link(void)
 {
-	if(!dtbsocmatch("spacemit,k3"))
-		return; /* the K1 also has this hardware block */
+	/* the bus table is the K3's; the K1 has the same block elsewhere */
+	if(dtbfind("spacemit,k3", 0xD4010800) == nil)
+		return;
 	i2clinkbuses();
 }

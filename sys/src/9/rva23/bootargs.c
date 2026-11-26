@@ -68,6 +68,11 @@ static int ndtbethers;
 				 * enum of the same name in sdufs.c. */
 static Dtbufs dtbufss[MAXDTBUFS];
 static int ndtbufs;
+
+#define MAXDTBNODES 384
+static Dtbnode dtbnodes[MAXDTBNODES];
+static int ndtbnodes;
+static Dtbnode dtbcur;			/* node being parsed */
 static char dtbalias[MAXDTBUARTS][64];	/* serial<N> -> DT node path */
 static char dtbethalias[MAXDTBETHERS][64]; /* ethernet<N> -> DT node path */
 static char dtbstdout[64];
@@ -446,11 +451,78 @@ findorallocuart(char *path)
 	return u;
 }
 
+/* does the NUL-separated list have an entry starting with s? */
+int
+dtblisthas(char *list, int len, char *s)
+{
+	char *e;
+	int n;
+
+	n = strlen(s);
+	for(e = list+len; list < e; list += strlen(list)+1)
+		if(strncmp(list, s, n) == 0)
+			return 1;
+	return 0;
+}
+
+/*
+ * the first node, in DT order, with a compatible starting with
+ * compat and, unless base is 0, registers at base; nil if none.
+ * The caller checks ok.
+ */
+Dtbnode*
+dtbfind(char *compat, uvlong base)
+{
+	Dtbnode *n;
+
+	for(n = dtbnodes; n < dtbnodes+ndtbnodes; n++)
+		if(dtblisthas(n->compatible, n->compatlen, compat)
+		&& (base == 0 || n->base == base))
+			return n;
+	return nil;
+}
+
+static void
+dtbstrs(char *d, int dlen, int *np, void *val, int len)
+{
+	if(len >= dlen)
+		len = dlen-1;
+	memmove(d, val, len);
+	d[len] = 0;
+	*np = len;
+}
+
+static void
+dtbnodeprop(char *key, uchar *p, int len)
+{
+	Dtbnode *n;
+
+	n = &dtbcur;
+	if(strcmp(key, "compatible") == 0)
+		dtbstrs(n->compatible, sizeof n->compatible, &n->compatlen, p, len);
+	else if(strcmp(key, "phy-names") == 0)
+		dtbstrs(n->phynames, sizeof n->phynames, &n->phynameslen, p, len);
+	else if(strcmp(key, "status") == 0)
+		n->ok = len >= 5 && strcmp((char*)p, "okay") == 0;
+	else if(strcmp(key, "reg") == 0){
+		/* #address-cells and #size-cells both 2, or both 1 */
+		if(len >= 16){
+			n->base = (uvlong)beget4(p)<<32 | beget4(p+4);
+			n->size = (uvlong)beget4(p+8)<<32 | beget4(p+12);
+		}else if(len == 8){
+			n->base = beget4(p);
+			n->size = beget4(p+4);
+		}
+	}
+}
+
 static void
 devtreeprop(char *path, char *key, void *val, int len)
 {
 	uvlong addr;
 	uchar *p = val;
+
+	dtbnodeprop(key, p, len);
 
 	if(path[0] == 0 && strcmp(key, "compatible") == 0){
 		/* root node: says which SoC/board this tree describes */
@@ -773,6 +845,8 @@ devtreenode(Devtree *t, uchar *p, char *cp)
 	memmove(cp - n, (char*)p, n);
 	*cp = 0;
 	p += (n + 4) & ~3;
+	memset(&dtbcur, 0, sizeof dtbcur);
+	dtbcur.ok = 1;
 	while(p+12 <= e && beget4(p) == DtProp){
 		n = beget4(p+4);
 		if(p + 12 + n > e)
@@ -783,6 +857,12 @@ devtreenode(Devtree *t, uchar *p, char *cp)
 			return nil;
 		devtreeprop(t->path, s, p+12, n);
 		p += 12 + ((n + 3) & ~3);
+	}
+	if(dtbcur.compatlen > 0){
+		if(ndtbnodes < nelem(dtbnodes))
+			dtbnodes[ndtbnodes++] = dtbcur;
+		else
+			print("dtb: node table full\n");
 	}
 	while(p+4 <= e && beget4(p) == DtBeginNode){
 		*cp = '/';

@@ -329,6 +329,7 @@ static int
 reset(Hci *hp)
 {
 	static Xhci *ctlr;
+	Dtbnode *n;
 	u32int *reg;
 	u32int *phy;
 	void *mmio;
@@ -337,14 +338,15 @@ reset(Hci *hp)
 		return -1;
 
 	/*
-	 * Unified kernel: this driver owns the K1's DWC3 USB3 controller.
-	 * Gate on the DTB root compatible so it stays quiet on any other
-	 * SoC (e.g. the K3, whose usbxhcirv64k3 handles USB instead).  The
-	 * K1's PMU register block and controller MMIO are not present, or
-	 * mean something else, on other SoCs -- poking them would wedge the
-	 * bus, so bail before the first vmap/write.
+	 * Only for an enabled K1 DWC3: the K3 has one at the same
+	 * address, and the PMU and PHY setup below is the K1's.
+	 * Mainline names the controller node spacemit,k1-dwc3; the
+	 * vendor tree puts spacemit,k1-x-dwc3 on a wrapper node.
 	 */
-	if(!dtbsocmatch("spacemit,k1"))
+	n = dtbfind("spacemit,k1", XhciPhys);
+	if(n == nil)
+		n = dtbfind("spacemit,k1-x-dwc3", 0);
+	if(n == nil || !n->ok)
 		return -1;
 
 	/* 0. Power the port VBUS and the on-board USB hub via GPIO */

@@ -506,7 +506,8 @@ static Gpioifc k3gpio = {
 };
 
 /*
- * gpiok3init -- from the k3 module's init, in archinit.
+ * gpiok3init -- from the k3 module's init, in archinit, and earlier
+ * from etherdwqe, which resets its PHY through a pin; so idempotent.
  */
 void
 gpiok3init(void)
@@ -514,7 +515,7 @@ gpiok3init(void)
 	u32int *apbc;
 	u32int v;
 
-	if(gpioready || !dtbsocmatch("spacemit,k3"))
+	if(gpioready)
 		return;
 
 	gpiobase = (uintptr)vmap(GpioPhys, GpioSize);

@@ -315,6 +315,7 @@ typedef struct Sbiret Sbiret;
 typedef struct Dtbuart Dtbuart;
 typedef struct Dtbether Dtbether;
 typedef struct Dtbufs Dtbufs;
+typedef struct Dtbnode Dtbnode;
 
 struct Dtbuart {
 	char	path[64];	/* DT node path, e.g. "/soc/serial@d4017000" */
@@ -352,6 +353,17 @@ struct Dtbether {
  * Dtbether/Dtbuart by bootargs.c's isufsnode()/findorallocufs().
  * Consumed by sdufs.c's ufspnp().
  */
+/* a DT node with a compatible, for drivers to find their device */
+struct Dtbnode {
+	char	compatible[64];	/* NUL-separated list */
+	int	compatlen;
+	char	phynames[32];	/* phy-names, NUL-separated */
+	int	phynameslen;
+	uvlong	base;		/* first reg entry */
+	uvlong	size;
+	int	ok;		/* status = "okay" */
+};
+
 struct Dtbufs {
 	char	path[64];	/* DT node path, e.g. "/soc/ufshc@c0e00000" */
 	uvlong	base;		/* UFSHC MMIO physical base */

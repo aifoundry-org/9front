@@ -135,6 +135,7 @@ static int
 reset(Hci *hp)
 {
     static Xhci *ctlr;
+    Dtbnode *n;
     u32int *apmureg;
     u32int *phymmio;
     void *mmio;
@@ -142,12 +143,9 @@ reset(Hci *hp)
     if(ctlr != nil)
         return -1;
 
-    /*
-     * Unified kernel: this driver owns the K3's usb2_host DWC3
-     * controller.  Gate on the DTB root compatible so it stays quiet
-     * on any other SoC
-     */
-    if(!dtbsocmatch("spacemit,k3-pico-itx"))
+    /* the K3's usb2_host DWC3, when the board enables it */
+    n = dtbfind("spacemit,k3", Xhcibase);
+    if(n == nil || !n->ok)
         return -1;
     print("usbxhcipicoitx: reset called\n");
 
