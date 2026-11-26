@@ -1125,7 +1125,7 @@ ethinit(Ether *edev)
 {
 	Ctlr *c;
 	u32int v, txclk;
-	int timeout;
+	int i, timeout;
 
 	c = edev->ctlr;
 
@@ -1282,6 +1282,17 @@ ethinit(Ether *edev)
 	 */
 	dwqepads(c, edev->port);
 	dwqephyreset(c);
+
+	/*
+	 * Find the PHYs and bring them out of power-down before the DMA
+	 * reset: a PHY with no link may stop the RGMII receive clock,
+	 * and the reset waits for it.
+	 */
+	mdioscan(c, 0);
+	for(i = 0; i < c->nphy; i++){
+		c->phyidx = i;
+		physetup(c);
+	}
 
 	/* DMA software reset -- polled */
 	wreg(c->regs, DmaBusMode, rd32(c->regs, DmaBusMode) | DmaBusModeSwr);
