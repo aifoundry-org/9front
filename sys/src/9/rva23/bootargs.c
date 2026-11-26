@@ -954,6 +954,38 @@ inipreloaded(void)
 	return 0;
 }
 
+static char consoleidx[12];
+
+/*
+ * Firmware bootargs name the console the way the firmware's own
+ * kernel does (console=ttyS0,115200), but bootrc and the uart driver
+ * expect a Plan 9 serial index: bootrc turns $console into /dev/eiaN
+ * for kbdfs.  When the value isn't an index, substitute the serial
+ * alias of the uart the device tree picked as console.
+ */
+static void
+fixconsoleconf(void)
+{
+	int i, j;
+	char *v;
+
+	if((i = findconf("console")) < 0)
+		return;
+	v = confval[i];
+	if(*v >= '0' && *v <= '9')
+		return;
+	for(j = 0; j < ndtbuarts; j++){
+		if(!dtbuarts[j].isconsole)
+			continue;
+		snprint(consoleidx, sizeof consoleidx, "%d",
+			dtbuarts[j].aliasidx >= 0 ? dtbuarts[j].aliasidx : 32 + j);
+		print("bootargsinit: console %q is not a serial index, using eia%s\n",
+			v, consoleidx);
+		confval[i] = consoleidx;
+		break;
+	}
+}
+
 void
 bootargsinit(void)
 {
@@ -986,6 +1018,7 @@ bootargsinit(void)
 			nconf, preloadedini? "plan9.ini": "DTB /chosen/bootargs",
 			ndtbuarts, ndtbethers, ndtbufs, ndis);
 	}
+	fixconsoleconf();
 }
 
 char*
