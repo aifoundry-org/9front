@@ -260,6 +260,7 @@ extern Dtbether *dtbether(int);
 extern int dtbnufs(void);
 extern Dtbufs *dtbufs(int);
 extern int dtbsocmatch(char*);
+extern int dtbmodelmatch(char*);
 
 // new
 void wsatp(u64int);

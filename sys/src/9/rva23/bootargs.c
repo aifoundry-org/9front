@@ -74,6 +74,7 @@ static char dtbstdout[64];
 static int dtbhasplic_;			/* root interrupt controller is a PLIC */
 static char dtbrootcompat[128];		/* root "compatible": NUL-separated list */
 static int dtbrootcompatlen;
+static char dtbrootmodel[96];		/* root "model" */
 
 /*
  * Interrupt-controller node candidates harvested during the DTB walk.
@@ -171,6 +172,16 @@ dtbsocmatch(char *prefix)
 		sl = strlen(c) + 1;
 	}
 	return 0;
+}
+
+/*
+ * Boards sharing a compatible string (the CoM260 module is used on more
+ * than one carrier) are told apart by the root "model" instead.
+ */
+int
+dtbmodelmatch(char *s)
+{
+	return dtbrootmodel[0] != 0 && strstr(dtbrootmodel, s) != nil;
 }
 
 Dtbether*
@@ -448,6 +459,15 @@ devtreeprop(char *path, char *key, void *val, int len)
 			dtbrootcompatlen = sizeof(dtbrootcompat) - 1;
 		memmove(dtbrootcompat, val, dtbrootcompatlen);
 		dtbrootcompat[dtbrootcompatlen] = 0;
+		return;
+	}
+	if(path[0] == 0 && strcmp(key, "model") == 0){
+		int n = len;
+
+		if(n > (int)sizeof(dtbrootmodel) - 1)
+			n = sizeof(dtbrootmodel) - 1;
+		memmove(dtbrootmodel, val, n);
+		dtbrootmodel[n] = 0;
 		return;
 	}
 	if((strncmp(path, "/memory", 7) == 0 || strncmp(path, "/memory@0", 9) == 0)

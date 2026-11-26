@@ -307,6 +307,21 @@ static Pinname com260pins[] = {
 {78,	"PCIeE_CLKREQn"},	/* 10,21: GPIO[4]_78, M.2 Key-E (WiFi/BT) CLKREQ#, in */
 };
 
+/*
+ * AIBOX-K3 carrier: front-panel power and boot buttons, the three
+ * gpio-leds, and the poweroff request to the PMIC.  Buttons are active
+ * low; the LEDs are active high.  Its compatible string is the shared
+ * CoM260 one, so this table is selected by the root model.
+ */
+static Pinname aiboxpins[] = {
+{56,	"PWR_LED"},		/* front power LED, out */
+{57,	"USER_LED"},		/* front work LED, out */
+{69,	"BOOTKEY"},		/* boot button, in, active low */
+{84,	"PWRKEY"},		/* power button, in, active low */
+{88,	"PWROFF"},		/* drive low to cut power */
+{103,	"RED_LED"},		/* front red LED, out */
+};
+
 static char *gpiotable[Ngpiopin];	/* filled in by gpioinit() */
 
 static Rendez rend;
@@ -403,6 +418,9 @@ gpioinit(void)
 	} else if(dtbsocmatch("spacemit,k3-com260-ifx")){
 		for(i = 0; i < nelem(com260pins); i++)
 			gpiotable[com260pins[i].pin] = com260pins[i].name;
+	} else if(dtbmodelmatch("AIBOX")){
+		for(i = 0; i < nelem(aiboxpins); i++)
+			gpiotable[aiboxpins[i].pin] = aiboxpins[i].name;
 	} else
 		print("gpiok3: unrecognized k3 board, no pin files\n");
 }
