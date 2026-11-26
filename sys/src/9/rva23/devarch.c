@@ -19,6 +19,9 @@ enum {
 };
 
 typedef long Rdwrfn(Chan*, void*, long, vlong);
+extern Socmod* knownsoc[];
+Socmod *socmod;
+
 static void archinit(void);
 
 static Rdwrfn *readfn[Qmax];
@@ -243,9 +246,23 @@ pmctlwrite(Chan*, void *a, long n, vlong)
 	error(Ebadctl);
 }
 
+static long
+archctlread(Chan*, void *a, long n, vlong off)
+{
+	char buf[128];
+
+	if(socmod == nil)
+		snprint(buf, sizeof buf, "soc none\n");
+	else
+		snprint(buf, sizeof buf, "soc %s %s\n", socmod->id, socmod->compat);
+	return readstr(off, a, n, buf);
+}
+
 static void
 archinit(void)
 {
+	Socmod **p;
+
 	snprint(vendor, sizeof(vendor), "0x%016ullx", sbigetmvendorid());
 	snprint(arch, sizeof(arch), "0x%016ullx", sbigetmarchid());
 	snprint(impid, sizeof(impid), "0x%016ullx", sbigetmimpid());
@@ -255,8 +272,20 @@ archinit(void)
 	addarchfile("cputype", 0444, cputyperead, nil);
 	addarchfile("cpuid", 0444, cpuidread, nil);
 	addarchfile("pmctl", 0220, nil, pmctlwrite);
+	addarchfile("archctl", 0444, archctlread, nil);
 	sbiinit();
-	boardinit();
+
+	for(p = knownsoc; *p != nil; p++)
+		if(dtbsocmatch((*p)->compat)){
+			socmod = *p;
+			break;
+		}
+	if(socmod != nil){
+		print("soc: %s\n", socmod->id);
+		if(socmod->init != nil)
+			socmod->init();
+	}
+	screeninit();
 }
 
 static void
@@ -287,8 +316,8 @@ archreset(void)
 		prstackmax();
 	delay(20);
 iprint("arch-specific reset...");
-	if (rvreset)
-		rvreset();
+	if(socmod != nil && socmod->reset != nil)
+		socmod->reset();
 	if (!nosbi && m->machno == 0) {
 		if (soc.havesbisrst) {
 			iprint("sbi cold reboot...");

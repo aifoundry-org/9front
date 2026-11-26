@@ -46,6 +46,7 @@
 #include "mem.h"
 #include "dat.h"
 #include "fns.h"
+#include "k3fns.h"
 #include "../port/error.h"
 
 enum {

@@ -60,6 +60,8 @@ static uchar *fbraw;		/* K3 Pico-ITX's own DP1 framebuffer, made
 				 * dpuk3fbaddr() (screenpicoitx.c) via
 				 * mmuuncache() -- not a second mapping */
 static int fbstride;		/* its bytes per line */
+static uvlong fbpa;
+static void *fbva;
 
 static Memimage *conscol;
 static Memimage *back;
@@ -247,53 +249,37 @@ screensettilt(char *name)
 	return newscreen(fbstride/4, tilt & 1? Dx(gscreen->r): Dy(gscreen->r), t);
 }
 
+/* a board's display driver hands over its framebuffer here */
+void
+screenfb(uvlong pa, void *va)
+{
+	fbpa = pa;
+	fbva = va;
+}
+
 void
 screeninit(void)
 {
-	uvlong fbaddr;
 	int width, height, depth, stride;
 	char *p;
 
 	/*
-	 * K3 Pico-ITX: the framebuffer is our own, programmed from
-	 * scratch by screenpicoitx.c's dpuk3dp() (real DP1 link training,
-	 * MSA, the works -- confirmed showing a clean, stable image on
-	 * real hardware) -- not inherited from firmware, unlike the
-	 * reference version this file is adapted from. dpuk3fbaddr()
-	 * reserves (idempotent: a second call just returns the same
-	 * physical address) and marks that range non-cacheable in place
-	 * via mmuuncache(), same mechanism the reference screeninit()
-	 * used on its own firmware-inherited framebuffer -- see its own
-	 * comment in screenpicoitx.c. devarch.c calls this AFTER
-	 * dpuk3dp() has already finished, so the DP1 pipeline is live by
-	 * the time we get here, and the mode is the fixed 1920x1080@60
-	 * this whole codebase uses throughout (no EDID/mode negotiation
-	 * ported -- see this file's own header).
-	 *
-	 * dpuk3fbaddr() reserves on first call, so it can't be used as the
-	 * "is there a framebuffer" test: on a board neither driver claimed
-	 * (qemu, bpi-f3) it would reserve 8MB and hand devdraw a screen
-	 * that nothing scans out.  dpuk3fbkaddr() is nil until a board
-	 * driver has made the reservation, which is the test we want.
+	 * The mode is the fixed 1920x1080@60 the K3 DP1 driver sets up
+	 * before archinit calls us.
 	 */
-	if(dpuk3fbkaddr() == nil){
-		print("screeninit: no DP1 framebuffer\n");
+	if(fbva == nil){
+		print("screeninit: no framebuffer\n");
 		return;
 	}
-	fbaddr = dpuk3fbaddr();
 
 	width = 1920;
 	height = 1080;
 	depth = 32;
-	stride = width*depth/8;	/* 7680, matches dpuk3mode()'s own stride */
+	stride = width*depth/8;
 
 	memimageinit();
 
-	fbraw = dpuk3fbkaddr();
-	if(fbraw == nil){
-		print("screeninit: dpuk3fbkaddr() returned nil\n");
-		return;
-	}
+	fbraw = fbva;
 	fbstride = stride;
 
 	if(gscreen == nil && (p = newscreen(width, height, tilt)) != nil){
@@ -303,7 +289,7 @@ screeninit(void)
 
 	conf.monitor = 1;
 	print("screen: %dx%dx%d stride %d at %#llux\n",
-		width, height, depth, fbstride, fbaddr);
+		width, height, depth, fbstride, fbpa);
 
 	memdefont = getmemdefont();
 	screenwin();

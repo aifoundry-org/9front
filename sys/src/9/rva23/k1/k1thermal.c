@@ -19,6 +19,7 @@
 #include "fns.h"
 #include "../port/error.h"
 #include "k1.h"
+#include "k1fns.h"
 
 enum {
 	ApbcTsen	= 0x6C/4,		/* bit0 bus clk, bit1 core clk, bit2 reset */

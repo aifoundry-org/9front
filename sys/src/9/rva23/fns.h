@@ -199,39 +199,9 @@ extern int gpiopeek(uint pin);
 void gpiointrenable(uint pin, int mode, void (*f)(uint pin, void *a), void *a);
 void gpiointrdisable(uint pin);
 
-/* gpiok3 */
-extern void gpiok3init(void);
-
-/* k1reset */
-extern int k1pmicread(int reg);
-extern int k1pmicwrite(int reg, int val);
-
-/* k1thermal */
-extern void k1thermalinit(void);
-
-/* k3thermal */
-extern void k3thermalinit(void);
-
-/* espik3 -- eSPI controller + cros_ec host-command transport, board-gated and
-   lazily brought up on first call. Any future EC consumer uses these three */
-extern int k3espiready(void);
-extern int k3eccmd(int cmd, int ver, void *tx, int txlen, void *rx, int rxlen);
-extern int k3ecmemmapread(int off, void *buf, int n);
-
-/* espik3fan */
-extern void k3ecfaninit(void);
-extern void i2ck3faninit(void);
-/* screenpicoitx.c: DP1 framebuffer driver entry point plus the two
- * accessors screen.c's screeninit() needs (shared with screencom260.c). */
-extern void dpuk3(void);
-extern uvlong dpuk3fbaddr(void);
-extern void* dpuk3fbkaddr(void);
-/* screencom260.c: DP1 framebuffer driver entry point for the K3 CoM260
- * IFX carrier board -- see that file's own header for how it differs
- * from screenpicoitx.c's dpuk3(). */
-extern void dpuk3com260(void);
 /* screen.c */
 extern void screeninit(void);
+extern void screenfb(uvlong pa, void *va);
 
 /* devarch */
 extern Dirtab* addarchfile(char *name, int perm,
@@ -347,7 +317,6 @@ int peekl(void *addr, u32int *dst, int numwords);
 
 /* archrv */
 void calibrate(void);
-void boardinit(void);
 u64int *bootptpage(void);
 uint mach2context(Mach *);
 void cpuinit(int);

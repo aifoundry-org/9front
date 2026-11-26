@@ -12,6 +12,7 @@
 #include "fns.h"
 #include "io.h"
 #include "../port/sd.h"
+#include "k1fns.h"
 
 enum {
 	/* Standard SDHCI registers */
