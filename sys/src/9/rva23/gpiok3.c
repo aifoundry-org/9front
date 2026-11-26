@@ -424,6 +424,18 @@ gpioin(uint pin)
 }
 
 /*
+ * gpiopeek -- read a pin's level without changing its direction, so
+ * reading an output such as an LED leaves it driven.
+ */
+int
+gpiopeek(uint pin)
+{
+	if(!gpioready || pin >= Npin)
+		return -1;
+	return (gpior(pin, Plr) & (1<<(pin%Nport))) != 0;
+}
+
+/*
  * gpiointrenable -- mode is one of dat.h's GpioRising/GpioFalling/
  * GpioEdge (either edge); GpioLow/GpioHigh (level) are not
  * implementable on this IP (no level-detect registers exist in the

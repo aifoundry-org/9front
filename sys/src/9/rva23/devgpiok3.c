@@ -524,7 +524,7 @@ gpioread(Chan *c, void *va, long n, vlong off)
 			break;
 		}
 		pin = PIN_NUMBER(c->qid);
-		v = gpioin(pin);
+		v = gpiopeek(pin);
 		if(v < 0)
 			error(Eio);	/* gpiok3init() hasn't run, or wrong board */
 		a[0] = v? '1': '0';
