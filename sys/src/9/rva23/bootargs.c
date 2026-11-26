@@ -73,6 +73,21 @@ static int ndtbufs;
 static Dtbnode dtbnodes[MAXDTBNODES];
 static int ndtbnodes;
 static Dtbnode dtbcur;			/* node being parsed */
+
+/*
+ * each node's interrupts and the interrupt-parent it has or
+ * inherits, decoded once the APLIC is known
+ */
+typedef struct Dtbirq Dtbirq;
+struct Dtbirq {
+	u32int	parent;
+	u32int	cell[8];
+	int	ncell;
+};
+static Dtbirq dtbirqs[MAXDTBNODES];
+static int ndtbirqs;
+static Dtbirq dtbcurirq;		/* of the node being parsed */
+static uchar irqsense[1024];		/* APLIC source -> IRQ_TYPE flags */
 static char dtbalias[MAXDTBUARTS][64];	/* serial<N> -> DT node path */
 static char dtbethalias[MAXDTBETHERS][64]; /* ethernet<N> -> DT node path */
 static char dtbstdout[64];
@@ -516,6 +531,13 @@ dtbnodeprop(char *key, uchar *p, int len)
 		dtbstrs(n->phynames, sizeof n->phynames, &n->phynameslen, p, len);
 	else if(strcmp(key, "status") == 0)
 		n->ok = len >= 5 && strcmp((char*)p, "okay") == 0;
+	else if(strcmp(key, "interrupt-parent") == 0 && len == 4)
+		dtbcurirq.parent = beget4(p);
+	else if(strcmp(key, "interrupts") == 0){
+		for(dtbcurirq.ncell = 0; dtbcurirq.ncell < nelem(dtbcurirq.cell)
+		&& dtbcurirq.ncell*4+4 <= len; dtbcurirq.ncell++)
+			dtbcurirq.cell[dtbcurirq.ncell] = beget4(p + 4*dtbcurirq.ncell);
+	}
 	else if(strcmp(key, "ranges") == 0 && len <= sizeof n->ranges){
 		memmove(n->ranges, p, len);
 		n->rangeslen = len;
@@ -857,7 +879,7 @@ devtreeprop(char *path, char *key, void *val, int len)
 }
 
 static uchar*
-devtreenode(Devtree *t, uchar *p, char *cp)
+devtreenode(Devtree *t, uchar *p, char *cp, u32int iparent)
 {
 	uchar *e = (uchar*)t->stab;
 	char *s;
@@ -876,6 +898,7 @@ devtreenode(Devtree *t, uchar *p, char *cp)
 	*cp = 0;
 	p += (n + 4) & ~3;
 	memset(&dtbcur, 0, sizeof dtbcur);
+	memset(&dtbcurirq, 0, sizeof dtbcurirq);
 	dtbcur.ok = 1;
 	while(p+12 <= e && beget4(p) == DtProp){
 		n = beget4(p+4);
@@ -888,6 +911,12 @@ devtreenode(Devtree *t, uchar *p, char *cp)
 		devtreeprop(t->path, s, p+12, n);
 		p += 12 + ((n + 3) & ~3);
 	}
+	if(dtbcurirq.parent != 0)
+		iparent = dtbcurirq.parent;
+	if(dtbcurirq.ncell > 0 && ndtbirqs < nelem(dtbirqs)){
+		dtbcurirq.parent = iparent;
+		dtbirqs[ndtbirqs++] = dtbcurirq;
+	}
 	if(dtbcur.compatlen > 0){
 		if(ndtbnodes < nelem(dtbnodes))
 			dtbnodes[ndtbnodes++] = dtbcur;
@@ -896,7 +925,7 @@ devtreenode(Devtree *t, uchar *p, char *cp)
 	}
 	while(p+4 <= e && beget4(p) == DtBeginNode){
 		*cp = '/';
-		p = devtreenode(t, p, cp+1);
+		p = devtreenode(t, p, cp+1, iparent);
 		if(p == nil)
 			return nil;
 	}
@@ -929,6 +958,31 @@ plicsctx(Dtbintc *ic, u32int hart)
 				return j/2;
 	}
 	return -1;
+}
+
+/* the APLIC's #interrupt-cells is 2: <source IRQ_TYPE flags> */
+static void
+aplicsense(u32int phandle)
+{
+	Dtbirq *d;
+	int i;
+
+	for(d = dtbirqs; d < dtbirqs+ndtbirqs; d++){
+		if(d->parent != phandle)
+			continue;
+		for(i = 0; i+1 < d->ncell; i += 2)
+			if(d->cell[i] < nelem(irqsense))
+				irqsense[d->cell[i]] = d->cell[i+1];
+	}
+}
+
+/* IRQ_TYPE flags the DT gives APLIC source irq, or 0 */
+int
+dtbirqsense(int irq)
+{
+	if(irq < 0 || irq >= nelem(irqsense))
+		return 0;
+	return irqsense[irq];
 }
 
 static void
@@ -978,6 +1032,7 @@ finishdtbintc(void)
 		soc.aplic = (uchar*)(uintptr)ap->base;
 		soc.aplicsize = ap->size;
 		soc.naplicsrc = ap->nsrc;
+		aplicsense(ap->phandle);
 	}
 	if(im != nil){
 		soc.imsic = (uchar*)(uintptr)im->base;
@@ -1077,7 +1132,7 @@ parsedevtree(uchar *base)
 	t->stab = (char*)base + beget4(base+12);
 	if(t->stab >= (char*)t->end)
 		return -1;
-	devtreenode(t, base + beget4(base+8), t->path);
+	devtreenode(t, base + beget4(base+8), t->path, 0);
 	finishdtbintc();
 	finishdtbuarts();
 	if(preloadedini)
