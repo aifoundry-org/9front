@@ -1272,24 +1272,15 @@ etherpnp(Ether *edev)
 	}
 
 	/*
-	 * This driver only knows the K1's EMAC, pad mux, GPIO and APMU addresses.
-	 * Trust the DTB root compatible rather than sniffing MMIO, to avoid faulting
-	 * or hanging the bus.
-	 */
-	if(!dtbsocmatch("spacemit,k1")){
-		dprint("smte: not a K1, skipping\n");
-		return -1;
-	}
-
-	/*
-	 * Locate this controller in the DTB by alias index.  ether0 falls back
-	 * to K1 EMAC0 defaults if the DTB is missing; the secondary doesn't.
+	 * Locate this controller in the DTB by alias index.  The pad mux,
+	 * GPIO and AIB addresses are the K1's, so only a K1 EMAC will do.
 	 */
 	de = nil;
 	n = dtbnether();
 	for(i = 0; i < n; i++){
 		Dtbether *d = dtbether(i);
 		if(d != nil && d->ok && d->aliasidx == edev->ctlrno
+		    && strncmp(d->compatible, "spacemit,k1", 11) == 0
 		    && strstr(d->compatible, "emac") != nil){
 			de = d;
 			break;
@@ -1306,14 +1297,6 @@ etherpnp(Ether *edev)
 		print("smte: ether%d from DTB %s base=%#llux size=%#llux apmu=%#llux+{%#ux,%#ux} irq=%d\n",
 			edev->ctlrno, de->path, base, size, apmubase,
 			(uint)ct->apmuctrloff, (uint)ct->apmudlineoff, irq);
-	} else if(edev->ctlrno == 0 && n == 0){
-		base     = Emac0Phys;
-		size     = Emac0Size;
-		apmubase = ApmuPhys;
-		irq      = Emac0Irq;
-		ct->apmuctrloff  = ApmuEmacClkrstctrl;
-		ct->apmudlineoff = ApmuEmacRgmiidline;
-		print("smte: no DTB, using K1 ether0 defaults\n");
 	} else {
 		dprint("smte: no DTB entry for ether%d\n", edev->ctlrno);
 		return -1;

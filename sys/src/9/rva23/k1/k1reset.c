@@ -135,8 +135,6 @@ k1poweroff(void)
 {
 	int v;
 
-	if(!dtbsocmatch("spacemit,k1"))
-		return;
 	v = k1pmicread(PmicPwrctrl2);
 	if(v < 0)
 		return;
@@ -159,12 +157,6 @@ k1reset(void)
 	u32int *wdt, *mpmu, *apmu;
 	ulong v;
 
-	/*
-	 * every register this file touches (PMIC I2C, WDT, MPMU, APMU) sits at a
-	 * K1 address; on any other chip, fall through to exit()'s remaining SBI attempts.
-	 */
-	if(!dtbsocmatch("spacemit,k1"))
-		return;
 	k1pmicreset();
 	print("pmic reset failed; trying wdt\n");
 

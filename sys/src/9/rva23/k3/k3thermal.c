@@ -168,7 +168,5 @@ thermalinit(void)
 void
 k3thermalinit(void)
 {
-	if(!dtbsocmatch("spacemit,k3"))
-		return;
 	thermalinit();
 }

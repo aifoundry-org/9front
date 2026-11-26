@@ -2283,24 +2283,15 @@ ufspnp(void)
 	int irq, i, n;
 
 	/*
-	 * DTB-first attach, mirroring etherdwqe.c's etherpnp() pattern
-	 * for this same port: dtbsocmatch() to confirm we're on a K3,
-	 * then walk the "ufs"-class nodes bootargs.c now tracks
-	 * (isufsnode()/Dtbufs, added alongside the existing Dtbether
-	 * infrastructure), falling back to the manual's hardcoded
-	 * addresses if there's no matching DTB entry.  Like etherpnp(),
-	 * skip other SoCs: the K3 addresses are RAM or unmapped there.
+	 * the "ufshc@" nodes bootargs.c collects; the APMU and MPHY
+	 * sequences are the K3's, so only a K3 controller will do
 	 */
-	if(!dtbsocmatch("spacemit,k3")){
-		if(debug)
-			print("ufs: not a K3, skipping\n");
-		return nil;
-	}
 	du = nil;
 	n = dtbnufs();
 	for(i = 0; i < n; i++){
 		Dtbufs *d = dtbufs(i);
-		if(d != nil && d->ok){
+		if(d != nil && d->ok
+		&& strncmp(d->compatible, "spacemit,k3", 11) == 0){
 			du = d;
 			break;
 		}
@@ -2312,10 +2303,9 @@ ufspnp(void)
 		print("ufs: from DTB %s base=%#llux size=%#llux irq=%d\n",
 			du->path, base, size, irq);
 	} else {
-		base = UfshcPhys;
-		size = UfshcSize;
-		irq = UfsIrq;
-		print("ufs: no DTB entry, using K3 UM defaults\n");
+		if(debug)
+			print("ufs: no K3 UFS host controller in the DTB\n");
+		return nil;
 	}
 
 	c = malloc(sizeof(Ctlr));

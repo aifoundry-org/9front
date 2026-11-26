@@ -858,6 +858,15 @@ sdhbus(SDio *io, int width, int speed)
 	}
 }
 
+static int
+k1node(uvlong pa)
+{
+	Dtbnode *n;
+
+	n = dtbfind("spacemit,k1", pa);
+	return n != nil && n->ok;
+}
+
 void
 sdspacemitlink(void)
 {
@@ -896,12 +905,12 @@ sdspacemitlink(void)
 		.aux	 = &sd,
 	};
 	/*
-	 * All the addresses here (SDHCI, APMU, AIB, PMIC) are the K1's;
-	 * sdhinit writes them unconditionally, so don't register on any
-	 * other SoC — the probe itself faults or hangs the bus there.
+	 * The APMU, AIB and PMIC addresses sdhinit writes are the K1's,
+	 * so register a controller only for an enabled K1 node at its
+	 * address.
 	 */
-	if(!dtbsocmatch("spacemit,k1"))
-		return;
-	addmmcio(&ioemmc);
-	addmmcio(&iosd);
+	if(k1node(EmmcPhys))
+		addmmcio(&ioemmc);
+	if(k1node(SdPhys))
+		addmmcio(&iosd);
 }
