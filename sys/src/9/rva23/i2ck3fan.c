@@ -78,22 +78,16 @@
  * i2ck3faninit(): i2c6 exists long before this file's init ever runs,
  * with an entire scheduler start-up in between. No overlap possible.
  *
- * getfandev() below is still written lazily rather than doing the
- * i2cbus("i2c6") lookup once in i2ck3faninit() -- now confirmed
- * unnecessary for correctness on this boot path, but cheap to keep:
- * it's also what makes this file tolerant of i2ck3.c someday moving
- * its own bring-up later (a bus reset added to i2ck3link(), a retry
- * loop, whatever), without this file needing another look.
+ * i2ck3faninit() calls getfandev() once, eagerly, so the boot default
+ * applies before anything reads fan0ctl; i2c6 is confirmed to exist by
+ * then.  getfandev() still does its own lookup, which keeps this file
+ * tolerant of i2ck3.c moving its own bring-up later.
  *
- * TODO, flagged rather than silently assumed: manual-mode duty is
- * written to REG_PWM_VALUE as a raw 0-255 value on the assumption the
- * chip is in (or defaults to) 8-bit high-resolution PWM mode. In the
- * chip's low-resolution mode, REG_PWM_VALUE is instead a duty scaled
- * by REG_PWM_FREQ, and a raw 0-255 write here would not mean what the
- * comment above says it means. This driver does not read REG_PWM_FREQ or
- * touch REG_CONFIG_ENHANCED to force high-res mode -- confirm the
- * chip's power-on default on real hardware before trusting fan0ctl's
- * numbers.
+ * The duty register is scaled by REG_PWM_FREQ: twice that register is
+ * what means full speed, and the chip keeps only as many bits as its
+ * resolution allows, so fan0ctl converts through both rather than
+ * assuming 0-255.  The tachometer must be read low byte first, which
+ * latches the high byte; the other order yields mismatched pairs.
  */
 #include "u.h"
 #include "../port/lib.h"
@@ -124,7 +118,11 @@ enum {
 	ConfigFanManual		= 1<<5,		/* 1 = manual, REG_PWM_VALUE writable;
 						 * 0 = automatic, chip runs its own LUT */
 
-	PwmMax			= 255,		/* full duty */
+	PwmCap			= 255,		/* widest duty register value */
+	Fandefault		= 50,		/* percent, when the LUT can't be trusted */
+
+	Nlut			= 8,		/* LUT entries */
+	RegLutPwm		= 0x51,		/* first pwm entry, then every other byte */
 
 	TachStalled		= 0xFFFC,	/* the count the tach reads when the fan is not turning */
 };
@@ -142,12 +140,13 @@ static QLock fanlock;	/* protects fandev's one-time init AND the RegConfigFan re
 
 /*
  * fandev is nil until the first successful getfandev() call, then
- * stays pointing at fandevbuf forever -- see the BOOT ORDER comment
- * above for why this is looked up lazily instead of once, eagerly,
- * in i2ck3faninit().
+ * stays pointing at fandevbuf forever.  i2ck3faninit() calls it
+ * eagerly so the boot default applies before the first read.
  */
 static I2Cdev fandevbuf;
 static I2Cdev *fandev;
+static int pwmmax = PwmCap;	/* duty value that means full speed */
+static int lutempty;		/* LUT all zeroes: auto would stop the fan */
 
 /*
  * getfandev -- look up the CTF2301 on i2c6 and bring it up, once.
@@ -170,7 +169,7 @@ static I2Cdev*
 getfandev(void)
 {
 	I2Cbus *bus;
-	int cfg;
+	int cfg, freq, i, v;
 
 	if(fandev != nil)
 		return fandev;
@@ -187,16 +186,14 @@ getfandev(void)
 	memset(&fandevbuf, 0, sizeof fandevbuf);
 	fandevbuf.bus = bus;
 	fandevbuf.addr = Ctf2301Addr;
+	fandevbuf.subaddr = 1;	/* the chip's registers are one address byte */
 	addi2cdev(&fandevbuf);
 
 	/*
-	 * Bring-up, best-effort, same spirit as espik3fan.c's boot-time
-	 * ecsetfanauto(FanIdx0, 1): don't trust the chip's power-on
-	 * state, put it somewhere known instead. Runs once, here, on
-	 * first access rather than in i2ck3faninit() -- not because it
-	 * has to (see BOOT ORDER: i2c6 is confirmed to exist by the time
-	 * i2ck3faninit() runs), just because it's free insurance against
-	 * that ordering ever changing.
+	 * Bring-up, best-effort: don't trust the chip's power-on state,
+	 * put it somewhere known instead.  i2ck3faninit() calls this at
+	 * boot so the fan is already at its default before the first
+	 * fan0ctl read.
 	 *
 	 * Config1TachEn is forced on unconditionally here. That is only
 	 * right where the pin is wired to a fan tachometer: on a board
@@ -214,9 +211,53 @@ getfandev(void)
 	cfg = i2creadbyte(&fandevbuf, RegConfig1);
 	if(cfg >= 0 && (cfg & Config1TachEn) == 0)
 		i2cwritebyte(&fandevbuf, RegConfig1, cfg | Config1TachEn);
+	/*
+	 * Take manual control before probing the duty register: while
+	 * the chip is in auto that register is read-only.
+	 */
 	cfg = i2creadbyte(&fandevbuf, RegConfigFan);
-	if(cfg >= 0 && (cfg & ConfigFanManual) != 0)
-		i2cwritebyte(&fandevbuf, RegConfigFan, cfg & ~ConfigFanManual);
+	if(cfg < 0)
+		cfg = ConfigFanManual;
+	if((cfg & ConfigFanManual) == 0){
+		cfg |= ConfigFanManual;
+		i2cwritebyte(&fandevbuf, RegConfigFan, cfg);
+	}
+
+	/*
+	 * Full duty is twice REG_PWM_FREQ, and the register keeps only
+	 * the low bits of what it is given; probe both so percent means
+	 * the same thing going in and coming back out.
+	 */
+	freq = i2creadbyte(&fandevbuf, RegPwmFreq);
+	if(freq <= 0)
+		freq = 1;
+	pwmmax = 2*freq;
+	if(pwmmax > PwmCap)
+		pwmmax = PwmCap;
+	i2cwritebyte(&fandevbuf, RegPwmValue, 0xff);
+	v = i2creadbyte(&fandevbuf, RegPwmValue);
+	if(v > 0 && v < pwmmax)
+		pwmmax = v;
+	if(pwmmax < 2)
+		pwmmax = 2;
+
+	/*
+	 * An all-zero lookup table makes "auto" stop the fan, which is
+	 * worse than a fixed duty.  When the table is empty stay in
+	 * manual at a default that a governor or fan0ctl can change.
+	 */
+	lutempty = 1;
+	for(i = 0; i < Nlut; i++)
+		if(i2creadbyte(&fandevbuf, RegLutPwm + 2*i) > 0){
+			lutempty = 0;
+			break;
+		}
+	if(lutempty)
+		i2cwritebyte(&fandevbuf, RegPwmValue,
+			(Fandefault*pwmmax + 50)/100);
+	else
+		i2cwritebyte(&fandevbuf, RegConfigFan,
+			cfg & ~ConfigFanManual);
 
 	fandev = &fandevbuf;
 	qunlock(&fanlock);
@@ -243,19 +284,15 @@ fan0statusread(Chan*, void *a, long n, vlong off)
 	if(dev == nil)
 		error(Eio);
 	/*
-	 * MSB read before LSB, not the other way around: UNCONFIRMED
-	 * whether this chip latches the LSB on the MSB read the way many
-	 * dual-byte sensor registers do (nothing in either source cited
-	 * at the top of this file documents it either way), but MSB-
-	 * first is the overwhelmingly common convention for chips that
-	 * do latch, and costs nothing if this one doesn't -- pure
-	 * downside-free defensive ordering, not a confirmed fix.
+	 * Read the low byte first: that latches the high byte, so the
+	 * pair comes from one sample.  The low two bits are not part of
+	 * the count.
 	 */
-	msb = i2creadbyte(dev, RegTachCountMsb);
 	lsb = i2creadbyte(dev, RegTachCountLsb);
+	msb = i2creadbyte(dev, RegTachCountMsb);
 	if(lsb < 0 || msb < 0)
 		error(Eio);
-	reg = msb<<8 | lsb;
+	reg = msb<<8 | (lsb & 0xFC);
 	fanfmt(str, sizeof str, "rpm", tachtorpm(reg), 0);
 	return readstr(off, a, n, str);
 }
@@ -265,7 +302,7 @@ fan0ctlread(Chan*, void *a, long n, vlong off)
 {
 	char str[32];
 	I2Cdev *dev;
-	int cfg, pwm;
+	int cfg, pct, pwm;
 
 	dev = getfandev();
 	if(dev == nil)
@@ -279,8 +316,9 @@ fan0ctlread(Chan*, void *a, long n, vlong off)
 		pwm = i2creadbyte(dev, RegPwmValue);
 		if(pwm < 0)
 			error(Eio);
-		/* raw 0-PwmMax duty back to a rounded percent */
-		fanfmt(str, sizeof str, "%", (pwm*100 + PwmMax/2)/PwmMax, 0);
+		pct = pwm >= pwmmax ? 100 :
+			(pwm*100 + pwmmax/2)/pwmmax;
+		fanfmt(str, sizeof str, "%", pct, 0);
 	}
 	return readstr(off, a, n, str);
 }
@@ -302,8 +340,8 @@ fan0ctlwrite(Chan*, void *a, long n, vlong)
 		free(cb);
 		nexterror();
 	}
-	/* "auto" is the chip's own 12-point LUT; a number is a percent */
-	pct = fanparse(cb, "%", 1, &au);
+	/* "auto" is the chip's own LUT; a number is a percent */
+	pct = fanparse(cb, "%", !lutempty, &au);
 
 	qlock(&fanlock);
 	if(waserror()){
@@ -324,8 +362,9 @@ fan0ctlwrite(Chan*, void *a, long n, vlong)
 			pct = 0;
 		if(pct > 100)
 			pct = 100;
-		/* percent to the chip's raw 0-PwmMax duty, rounded */
-		pwm = (pct*PwmMax + 50)/100;
+		pwm = (pct*pwmmax + 50)/100;
+		if(pwm > pwmmax)
+			pwm = pwmmax;
 		cfg |= ConfigFanManual;
 		if(i2cwritebyte(dev, RegConfigFan, cfg) < 0)
 			error(Eio);
@@ -347,11 +386,10 @@ i2ck3faninit(void)
 		return;
 
 	/*
-	 * Deliberately does NOT call getfandev() here. Not required --
-	 * see BOOT ORDER: i2c6 is confirmed to exist by this point -- but
-	 * keeping file registration unconditional on just the board match
-	 * costs nothing and stays correct even if that ordering changes.
+	 * Bring the fan up now so the boot default applies before
+	 * anything reads fan0ctl.  i2c6 is registered here already.
 	 */
+	getfandev();
 	addarchfile("fan0status", 0444, fan0statusread, nil);
 	addarchfile("fan0ctl", 0664, fan0ctlread, fan0ctlwrite);
 }
