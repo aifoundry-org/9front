@@ -15,6 +15,7 @@ boardinit(void)
 	k1thermalinit();
 	k3thermalinit();
 	k3ecfaninit();
+	i2ck3faninit();
 
 	/* REVERTED: this sequence was briefly moved into archdevtab's own
 	 * "reset" slot (a separate archdevreset() function), on the

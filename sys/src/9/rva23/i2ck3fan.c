@@ -1,7 +1,8 @@
 /*
- * i2ck3fan.c -- fan control for k3-com260-ifx, over the Sensylink
- * CTF2301 (LM63-register-compatible temperature sensor + fan
- * controller) sitting on i2c6 at address 0x4c.
+ * i2ck3fan.c -- fan control for the K3 CoM260 module and the boards
+ * built around it, over the Sensylink CTF2301 (LM63-register-
+ * compatible temperature sensor + fan controller) sitting on i2c6
+ * at address 0x4c.
  *
  * This is the CoM260 analogue of espik3fan.c: i2ck3.c is the I2C bus
  * transport for this SoC (see port/i2c.h -- I2Cbus/I2Cdev, addi2cbus(),
@@ -342,7 +343,7 @@ fan0ctlwrite(Chan*, void *a, long n, vlong)
 void
 i2ck3faninit(void)
 {
-	if(!dtbsocmatch("spacemit,k3-com260-ifx"))
+	if(!dtbsocmatch("spacemit,k3-com260"))
 		return;
 
 	/*

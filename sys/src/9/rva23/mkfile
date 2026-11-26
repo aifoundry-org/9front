@@ -81,6 +81,7 @@ OBJ=\
 	fan.$O\
 	k1thermal.$O\
 	i2ck3.$O\
+	i2ck3fan.$O\
 	k3thermal.$O\
 	gpiok3.$O\
 	espik3.$O\

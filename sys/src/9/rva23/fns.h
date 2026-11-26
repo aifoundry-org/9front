@@ -219,6 +219,7 @@ extern int k3ecmemmapread(int off, void *buf, int n);
 
 /* espik3fan */
 extern void k3ecfaninit(void);
+extern void i2ck3faninit(void);
 /* screenpicoitx.c: DP1 framebuffer driver entry point plus the two
  * accessors screen.c's screeninit() needs (shared with screencom260.c). */
 extern void dpuk3(void);
