@@ -229,7 +229,6 @@ struct Mach
 
 	/* from Geoff's port. */
 	uvlong boottsc;
-	uint plicctxt;
 	uchar	clockintrsok;	/* flag: safe to call timerintr */
 	ulong	ipiwait;	/* flag: cpu is idling, wake it with an ipi */
 	int	clockintrdepth;
@@ -395,6 +394,9 @@ struct Soc {
 	uvlong	aplicsize;
 	uvlong	imsicsize;
 	u32int	naplicsrc;	/* wired sources the APLIC domain has */
+	uvlong	plicsize;
+	u32int	nplicsrc;	/* riscv,ndev */
+	int	plicsctx;	/* PLIC context for the boot hart's S mode, or -1 */
 	uchar	*l2cache;	/* sifive l2 cache controller */
 //	uchar	*pl2caches[HARTMAX]; /* sifive per-hart l2 cache controllers */
 	uchar	*l3cache;	/* sifive l3 cache controller */
@@ -410,14 +412,7 @@ struct Soc {
 				/* when kern addr spc for ram < ram size */
 
 	/* hardware and firmware choices and bugs */
-	/*
-	 * plic contexts are machine-dependent, but are usually hartid*2 +
-	 * mode.  if there's a cut-down management hart at hartid 0 (i.e.,
-	 * it's hobbled), they may instead be 1 + 2*(hartid-1) + mode, as
-	 * on the icicle.
-	 */
 	uchar	hobbled; /* # puny visible mgmt harts (often only M context) */
-	uchar	context0;	/* M context of first non-mgmt hart */
 	uchar	dwuart;		/* flag: workaround synopsys 8250 */
 	uchar	xscaleuart;	/* flag: workaround xscale uart */
 	uchar	c910;		/* flag; workaround c910 bugs */
@@ -510,10 +505,6 @@ uintptr	uartregs[]; /* from kernel config; not yet used for anything significant
 
 enum {
 	Ncontexts = 31*512,
-};
-enum Cpumodes {			/* plic context offsets for priv modes */
-	Machine, Super,		/* order matters, see plic contexts */
-	Hyper, User,		/* these are optional */
 };
 typedef struct Plic Plic;
 typedef struct Plictxt Plictxt;

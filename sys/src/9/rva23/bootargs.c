@@ -107,14 +107,26 @@ struct Dtbintc {
 	uvlong	size;
 	u32int	phandle;
 	u32int	msiparent;	/* phandle of the IMSIC this APLIC sends MSIs to */
-	u32int	nsrc;		/* riscv,num-sources (APLIC) / riscv,num-ids (IMSIC) */
+	u32int	nsrc;		/* riscv,ndev (PLIC) / riscv,num-sources (APLIC) / riscv,num-ids (IMSIC) */
 	int	haschildren;	/* has riscv,children: an M-level APLIC domain */
 	int	extcause;	/* local cause from interrupts-extended; 9 = S external */
+	u32int	ext[2*128];	/* interrupts-extended: <cpu-intc cause> per context */
+	int	next;		/* cells in ext */
 	int	ok;		/* status = "okay" (firmware may disable M-level nodes) */
 };
 static Dtbintc dtbintc[MAXDTBINTC];
 static int ndtbintc;
 static char dtbplicpath[64];		/* path of the node whose compatible = riscv,plic* */
+
+/* each hart's cpu interrupt controller, to read the PLIC's contexts */
+typedef struct Cpuintc Cpuintc;
+struct Cpuintc {
+	u32int	hart;
+	u32int	phandle;
+};
+static Cpuintc cpuintc[64];
+static int ncpuintc;
+static u32int dtbcurhart;		/* reg of the /cpus/cpu@ node being parsed */
 
 int
 dtbnuart(void)
@@ -561,6 +573,16 @@ devtreeprop(char *path, char *key, void *val, int len)
 	}
 	if(strncmp(path, "/cpus/cpu", 9) == 0 && strcmp(key, "reg") == 0){
 		hartcnt++;		/* count harts the DTB lists (see confinit) */
+		dtbcurhart = len >= 8? beget4(p+4): beget4(p);
+		return;
+	}
+	if(strncmp(path, "/cpus/cpu@", 10) == 0 && strstr(path, "/interrupt-controller") != nil
+	&& strcmp(key, "phandle") == 0 && len >= 4){
+		if(ncpuintc < nelem(cpuintc)){
+			cpuintc[ncpuintc].hart = dtbcurhart;
+			cpuintc[ncpuintc].phandle = beget4(p);
+			ncpuintc++;
+		}
 		return;
 	}
 	/*
@@ -788,6 +810,8 @@ devtreeprop(char *path, char *key, void *val, int len)
 			ic->phandle = beget4(p);
 		} else if(strcmp(key, "msi-parent") == 0 && len >= 4){
 			ic->msiparent = beget4(p);
+		} else if(strcmp(key, "riscv,ndev") == 0 && len >= 4){
+			ic->nsrc = beget4(p);
 		} else if(strcmp(key, "riscv,num-sources") == 0 && len >= 4){
 			ic->nsrc = beget4(p);
 		} else if(strcmp(key, "riscv,num-ids") == 0 && len >= 4){
@@ -795,8 +819,10 @@ devtreeprop(char *path, char *key, void *val, int len)
 		} else if(strcmp(key, "riscv,children") == 0){
 			ic->haschildren = 1;
 		} else if(strcmp(key, "interrupts-extended") == 0 && len >= 8){
-			/* <cpu-intc-phandle cause> pairs; every pair has the same cause */
+			/* <cpu-intc-phandle cause> pairs, one per context */
 			ic->extcause = beget4(p + 4);
+			for(ic->next = 0; ic->next < nelem(ic->ext) && ic->next*4 < len; ic->next++)
+				ic->ext[ic->next] = beget4(p + 4*ic->next);
 		} else if(strcmp(key, "status") == 0){
 			ic->ok = (len >= 5 && strcmp((char*)val, "okay") == 0);
 		}
@@ -900,6 +926,22 @@ devtreenode(Devtree *t, uchar *p, char *cp)
  * riscv,children is at least not the M-level domain.  M-level nodes the
  * firmware marked disabled are skipped throughout.
  */
+/* the PLIC context raising supervisor external interrupts on hart, or -1 */
+static int
+plicsctx(Dtbintc *ic, u32int hart)
+{
+	int i, j;
+
+	for(i = 0; i < ncpuintc; i++){
+		if(cpuintc[i].hart != hart)
+			continue;
+		for(j = 0; j+1 < ic->next; j += 2)
+			if(ic->ext[j] == cpuintc[i].phandle && ic->ext[j+1] == 9)
+				return j/2;
+	}
+	return -1;
+}
+
 static void
 finishdtbintc(void)
 {
@@ -907,11 +949,16 @@ finishdtbintc(void)
 	int i;
 
 	if(dtbhasplic_ && dtbplicpath[0] != 0){
-		for(i = 0; i < ndtbintc; i++)
-			if(strcmp(dtbintc[i].path, dtbplicpath) == 0){
-				soc.plic = (uchar*)(uintptr)dtbintc[i].base;
+		for(i = 0; i < ndtbintc; i++){
+			ic = &dtbintc[i];
+			if(strcmp(ic->path, dtbplicpath) == 0){
+				soc.plic = (uchar*)(uintptr)ic->base;
+				soc.plicsize = ic->size;
+				soc.nplicsrc = ic->nsrc;
+				soc.plicsctx = plicsctx(ic, m->hartid);
 				return;
 			}
+		}
 	}
 
 	im = nil;
@@ -953,8 +1000,8 @@ finishdtbintc(void)
  * After the whole tree is walked, link each Dtbuart back to its serial<N>
  * alias and mark the entry that /chosen/stdout-path picks as the console.
  * soc.plic/soc.aplic/soc.imsic end up set (by finishdtbintc) if and only
- * if the DTB says where they are; otherwise socidentify() falls back to
- * a vendor-specific default.
+ * if the DTB says where they are; otherwise intrinit() runs without
+ * external interrupts.
  */
 static void
 finishdtbuarts(void)
