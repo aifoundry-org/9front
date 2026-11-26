@@ -255,6 +255,7 @@ screenfb(uvlong pa, void *va)
 {
 	fbpa = pa;
 	fbva = va;
+	screeninit();
 }
 
 void
@@ -265,7 +266,7 @@ screeninit(void)
 
 	/*
 	 * The mode is the fixed 1920x1080@60 the K3 DP1 driver sets up
-	 * before archinit calls us.
+	 * before it calls screenfb.
 	 */
 	if(fbva == nil){
 		print("screeninit: no framebuffer\n");
