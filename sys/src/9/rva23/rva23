@@ -22,7 +22,7 @@ dev
 	mouse	screen swcursor
 	usb
 	i2c
-	gpiok3
+	gpio	gpio
 #	rtc
 	pci	pci
 	sd

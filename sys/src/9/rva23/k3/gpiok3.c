@@ -199,23 +199,12 @@
  *     CPMASK_REG -- masking a pin's interrupt to the RCPU would be
  *     RCPU's call to make, not this driver's.
  *
- * Pin numbering: pin = bank*32 + offset, bank 0..3, offset 0..31 --
- * i.e. exactly fns.h's existing GPIO_PIN(n, m) macro. This isn't a
- * new convention invented for this file: GPIO_PIN(), and the
- * gpioout()/gpioin()/gpiointrenable()/gpiointrdisable() prototypes
- * this file implements, were ALREADY declared in fns.h before this
- * file existed (matching the imx8 gpio.c example's API, not the BCM
- * example's gpiosel()/gpiopull()/gpioselevent()/gpiomeminit() API --
- * so that choice of API shape was made upstream of this file, not by
- * it). The GpioLow/GpioHigh/GpioRising/GpioFalling/GpioEdge mode
- * constants gpiointrenable() takes were likewise already defined in
- * dat.h. This driver only supports the two edge modes this IP
- * actually has, GpioRising/GpioFalling/GpioEdge(=both); GpioLow/
- * GpioHigh (level-triggered) have no equivalent in the K3 GPIO block
- * -- gpiointrenable() silently does nothing for those, same as
- * gpioout()/gpioin() silently doing nothing before gpiok3init() has
- * run or on a non-K3 board (mirrors gpioin() returning -1 / gpioout()
- * returning early on ctlr==nil in the imx8 example).
+ * Pin numbering: pin = bank*32 + offset, bank 0..3, offset 0..31,
+ * i.e. fns.h's GPIO_PIN(n, m).  The driver is registered with
+ * addgpio() as the controller behind gpio.c's gpioout()/gpioin()/
+ * gpiointrenable()/gpiointrdisable().  Only the edge modes exist on
+ * this IP (GpioRising, GpioFalling, GpioEdge); level modes are
+ * ignored.
  */
 #include "u.h"
 #include "../port/lib.h"
@@ -377,7 +366,7 @@ gpiointerrupt(Ureg*, void*)
 }
 
 /*
- * gpioout -- fns.h/imx8-example API: drive pin high or low, flipping
+ * k3gpioout -- drive pin high or low, flipping
  * it to an output first if it wasn't already one (mirrors the imx8
  * gpio.c example's enable()+gpioout() pattern: direction follows use,
  * callers don't need a separate "set direction" call).
@@ -392,8 +381,8 @@ gpiointerrupt(Ureg*, void*)
  * scope on the net, or a visible downstream effect) is still
  * pending -- see the STATUS note at the top of this file.
  */
-void
-gpioout(uint pin, int set)
+static void
+k3gpioout(uint pin, int set)
 {
 	ulong bit, pdr;
 
@@ -407,11 +396,11 @@ gpioout(uint pin, int set)
 }
 
 /*
- * gpioin -- read a pin, flipping it to an input first if it was
+ * k3gpioin -- read a pin, flipping it to an input first if it was
  * configured as an output (same direction-follows-use pattern).
  */
-int
-gpioin(uint pin)
+static int
+k3gpioin(uint pin)
 {
 	ulong bit, pdr;
 
@@ -425,11 +414,11 @@ gpioin(uint pin)
 }
 
 /*
- * gpiopeek -- read a pin's level without changing its direction, so
+ * k3gpiopeek -- read a pin's level without changing its direction, so
  * reading an output such as an LED leaves it driven.
  */
-int
-gpiopeek(uint pin)
+static int
+k3gpiopeek(uint pin)
 {
 	if(!gpioready || pin >= Npin)
 		return -1;
@@ -437,15 +426,15 @@ gpiopeek(uint pin)
 }
 
 /*
- * gpiointrenable -- mode is one of dat.h's GpioRising/GpioFalling/
+ * k3gpiointrenable -- mode is one of dat.h's GpioRising/GpioFalling/
  * GpioEdge (either edge); GpioLow/GpioHigh (level) are not
  * implementable on this IP (no level-detect registers exist in the
  * manual's register set) and are silently ignored -- callers wanting
  * level-triggered behaviour on K3 need a different approach (e.g.
  * poll gpioin(), there's no hardware level IRQ here to give them).
  */
-void
-gpiointrenable(uint pin, int mode, void (*f)(uint pin, void *a), void *a)
+static void
+k3gpiointrenable(uint pin, int mode, void (*f)(uint pin, void *a), void *a)
 {
 	ulong bit, rer, fer;
 
@@ -488,8 +477,8 @@ gpiointrenable(uint pin, int mode, void (*f)(uint pin, void *a), void *a)
 	iunlock(&gpiolk);
 }
 
-void
-gpiointrdisable(uint pin)
+static void
+k3gpiointrdisable(uint pin)
 {
 	ulong bit;
 
@@ -506,12 +495,18 @@ gpiointrdisable(uint pin)
 	iunlock(&gpiolk);
 }
 
+static Gpioifc k3gpio = {
+	"k3",
+	Npin,
+	k3gpioout,
+	k3gpioin,
+	k3gpiopeek,
+	k3gpiointrenable,
+	k3gpiointrdisable,
+};
+
 /*
- * gpiok3init -- call once at boot (see devarch.c's archinit(), same
- * place k1thermalinit()/k3thermalinit()/k3ecfaninit() are called
- * from). Gated on dtbsocmatch("spacemit,k3"), same string k3thermal.c
- * and i2ck3.c gate on -- no point mapping and poking these registers
- * if we're not actually running on this SoC.
+ * gpiok3init -- from the k3 module's init, in archinit.
  */
 void
 gpiok3init(void)
@@ -545,4 +540,5 @@ gpiok3init(void)
 	gpioready = 1;
 
 	intrenable(GpioIrq, gpiointerrupt, nil, BUSUNKNOWN, "gpio");
+	addgpio(&k3gpio);
 }
