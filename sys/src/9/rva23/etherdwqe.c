@@ -352,22 +352,34 @@ wreg(u32int *base, uintptr reg, u32int v)
 
 /* MDIO -- GMAC4-style GOC field */
 
+static int
+mdiobusy(Ctlr *c)
+{
+	int i;
+
+	for(i = 0; i < 1000; i++){
+		if((rd32(c->regs, GmacMdioAddr) & MdioGbusy) == 0)
+			return 0;
+		microdelay(10);
+	}
+	return -1;
+}
+
 static void
 mdwrite(Ctlr *c, int reg, u16int v)
 {
 	u32int addr;
 
-	while(rd32(c->regs, GmacMdioAddr) & MdioGbusy)
-		tsleep(&up->sleep, return0, nil, 1);
+	if(mdiobusy(c) < 0)
+		return;
 	wreg(c->regs, GmacMdioData, v);
-	addr = (PhyAddr & 0x1f) << MdioPaShift
+	addr = (c->phyaddr & 0x1f) << MdioPaShift
 		| (reg & 0x1f) << MdioGrShift
-		| MdioCrVal << MdioCrShift
+		| c->mdiocr << MdioCrShift
 		| MdioWrite
 		| MdioGbusy;
 	wreg(c->regs, GmacMdioAddr, addr);
-	while(rd32(c->regs, GmacMdioAddr) & MdioGbusy)
-		tsleep(&up->sleep, return0, nil, 1);
+	mdiobusy(c);
 }
 
 static u16int
@@ -375,17 +387,74 @@ mdread(Ctlr *c, int reg)
 {
 	u32int addr;
 
-	while(rd32(c->regs, GmacMdioAddr) & MdioGbusy)
-		tsleep(&up->sleep, return0, nil, 1);
-	addr = (PhyAddr & 0x1f) << MdioPaShift
+	if(mdiobusy(c) < 0)
+		return 0xffff;
+	addr = (c->phyaddr & 0x1f) << MdioPaShift
 		| (reg & 0x1f) << MdioGrShift
-		| MdioCrVal << MdioCrShift
+		| c->mdiocr << MdioCrShift
 		| MdioRead
 		| MdioGbusy;
 	wreg(c->regs, GmacMdioAddr, addr);
-	while(rd32(c->regs, GmacMdioAddr) & MdioGbusy)
-		tsleep(&up->sleep, return0, nil, 1);
+	if(mdiobusy(c) < 0)
+		return 0xffff;
 	return rd32(c->regs, GmacMdioData) & MdioGdMask;
+}
+
+/*
+ * The DTB names phy@1, but if the straps or the board differ no one
+ * answers there.  Scan all clause-22 addresses and report what we find.
+ */
+static int
+mdioscan(Ctlr *c)
+{
+	int a, found;
+	u16int s1, s2;
+
+	found = -1;
+	for(a = 0; a < 32; a++){
+		c->phyaddr = a;
+		s1 = mdread(c, Phyidr1);
+		if(s1 == 0xffff || s1 == 0)
+			continue;
+		s2 = mdread(c, Phyidr2);
+		if(s2 == 0xffff)
+			continue;
+		print("dwqe: MDIO addr %d id %04x%04x\n", a, s1, s2);
+		if(found < 0)
+			found = a;
+	}
+	if(found < 0)
+		print("dwqe: no PHY answers on MDIO (scan 0-31)\n");
+	print("dwqe: MDIO addrreg=%#08ux datareg=%#08ux\n",
+		rd32(c->regs, GmacMdioAddr), rd32(c->regs, GmacMdioData));
+	return found;
+}
+
+/*
+ * RTL8211F RGMII internal delays.  The board describes the interface
+ * as plain "rgmii": the MAC's delay lines provide the timing, so the
+ * PHY's own 2ns TX/RX delays must be off.  They are strapping-default
+ * controlled and are commonly on; leaving them on doubles the skew and
+ * corrupts TX while RX can still work.
+ *
+ * The page register takes the whole page number in one write.
+ */
+static void
+rtl8211fdly(Ctlr *c)
+{
+	u16int page, txcr, rxcr;
+
+	page = mdread(c, 0x1f);
+	mdwrite(c, 0x1f, 0x0d08);	/* RGMII configuration page */
+	txcr = mdread(c, 0x11);
+	rxcr = mdread(c, 0x15);
+	if(txcr & 0x0100)
+		mdwrite(c, 0x11, txcr & ~0x0100);
+	if(rxcr & 0x0008)
+		mdwrite(c, 0x15, rxcr & ~0x0008);
+	mdwrite(c, 0x1f, page);		/* restore page */
+	print("dwqe: PHY RTL8211F internal delays off (txcr=%#04ux rxcr=%#04ux)\n",
+		txcr, rxcr);
 }
 
 /*
@@ -455,10 +524,26 @@ ethproc(void *ved)
 	edev = ved;
 	c    = edev->ctlr;
 
+	{
+		u32int aclk = rd32(c->apmu, 0x388/4);
+		int found;
+
+		print("dwqe: ACLK ctrl=%#08ux mux=%ud div=%ud CR=%d\n",
+			aclk, aclk & 1, ((aclk >> 1) & 3) + 1, c->mdiocr);
+		found = mdioscan(c);
+		if(found >= 0)
+			c->phyaddr = found;
+		else
+			c->phyaddr = PhyAddr;
+	}
+
 	id1 = mdread(c, Phyidr1);
 	id2 = mdread(c, Phyidr2);
-	dprint("dwqe: PHY addr=%d oui=0x%06ux model=0x%02ux rev=0x%01ux\n",
-		PhyAddr, ((u32int)id1 << 6) | (id2 >> 10), (id2 >> 4) & 0x3f, id2 & 0xf);
+	print("dwqe: PHY %d id %04x%04x (oui=0x%06ux model=0x%02ux rev=0x%01ux)\n",
+		c->phyaddr, id1, id2,
+		((u32int)id1 << 6) | (id2 >> 10), (id2 >> 4) & 0x3f, id2 & 0xf);
+	if(id1 == 0x001c && ((id2 >> 4) & 0x3f) == 0x11)
+		rtl8211fdly(c);
 
 	mdwrite(c, Mscr, Mscr1000TFD | Mscr1000THD);
 	mdwrite(c, Bmcr, BmcrAne | BmcrRan);
@@ -535,7 +620,9 @@ ethproc(void *ved)
 			| DmaIntrRie | DmaIntrRbu
 			| DmaIntrAie | DmaIntrFbe);
 
-		print("dwqe: %s link up %dMbps %s\n", edev->name, speed, dup);
+		print("dwqe: %s link up %dMbps %s "
+			"(bmsr=%#04ux lpa=%#04ux mssr=%#04ux)\n",
+			edev->name, speed, dup, bmsr, lpa, gbsr);
 		ethersetspeed(edev, speed);
 		ethersetlink(edev, 1);
 
