@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ROOT, KERNEL, MEM (e.g. 512M), SMP, SERIAL and SERVICE override the defaults.
 set -e
-cd "$(dirname "$0")/.."
+cd "$(dirname "$0")/../.."
 
 root=${ROOT:-$PWD}
 mem=${MEM:-512M}
@@ -35,14 +35,14 @@ while [ $# -gt 0 ]; do
 		scale=1
 		if [ $# -gt 1 ] && [[ $2 != -* ]]; then
 			if [[ ! $2 =~ ^[0-8]$ ]]; then
-				echo 'boot/qemu: -x takes an integer from 0 to 8' >&2
+				echo '.github/ci/qemu: -x takes an integer from 0 to 8' >&2
 				exit 1
 			fi
 			scale=$2; shift
 		fi
 		;;
 	*)
-		echo 'usage: boot/qemu [-386 | -amd64 | -arm64 | -riscv64] [-cpuwait] [-nonet] [-smp n] [-vga | -kitty | -kitty-uart] [-emu] [-x [n]]' >&2
+		echo 'usage: .github/ci/qemu [-386 | -amd64 | -arm64 | -riscv64] [-cpuwait] [-nonet] [-smp n] [-vga | -kitty | -kitty-uart] [-emu] [-x [n]]' >&2
 		exit 1
 		;;
 	esac
@@ -50,11 +50,11 @@ while [ $# -gt 0 ]; do
 done
 
 if $emu && ! $kitty; then
-	echo 'boot/qemu: -emu needs -kitty or -kitty-uart' >&2
+	echo '.github/ci/qemu: -emu needs -kitty or -kitty-uart' >&2
 	exit 1
 fi
 if [ "$scale" != 0 ] && ! $kitty; then
-	echo 'boot/qemu: -x needs -kitty or -kitty-uart' >&2
+	echo '.github/ci/qemu: -x needs -kitty or -kitty-uart' >&2
 	exit 1
 fi
 
@@ -69,9 +69,9 @@ forward=
 if $cpuwait; then
 	case $arch in
 	amd64|riscv64)	base=${base}cpuwait ;;
-	*) echo 'boot/qemu: cpuwait is available for amd64 and riscv64' >&2; exit 1 ;;
+	*) echo '.github/ci/qemu: cpuwait is available for amd64 and riscv64' >&2; exit 1 ;;
 	esac
-	$net || { echo 'boot/qemu: cpuwait needs networking' >&2; exit 1; }
+	$net || { echo '.github/ci/qemu: cpuwait needs networking' >&2; exit 1; }
 	append='console=0 user=glenda service=cpu nobootprompt=cpuwait'
 	forward=',hostfwd=tcp:127.0.0.1:17019-:17019'
 fi
@@ -82,13 +82,13 @@ if $kitty; then
 	386|amd64) ;;
 	arm64|riscv64)
 		if $kittyuart; then
-			echo 'boot/qemu: -kitty-uart needs an x86 COM2; use -kitty on ARM64 or RISC-V' >&2
+			echo '.github/ci/qemu: -kitty-uart needs an x86 COM2; use -kitty on ARM64 or RISC-V' >&2
 			exit 1
 		fi
 		;;
 	esac
 	if $vga || $cpuwait; then
-		echo 'boot/qemu: -kitty needs a terminal kernel without -vga' >&2
+		echo '.github/ci/qemu: -kitty needs a terminal kernel without -vga' >&2
 		exit 1
 	fi
 	serial=${SERIAL:-file:$root/.qemu.console.log}
@@ -109,7 +109,7 @@ gfx=(-display none)
 if $vga; then
 	case $arch in
 	386|amd64) ;;
-	*) echo 'boot/qemu: -vga is for x86 kernels' >&2; exit 1 ;;
+	*) echo '.github/ci/qemu: -vga is for x86 kernels' >&2; exit 1 ;;
 	esac
 	gfx=(-vga std)
 	append="$append monitor=vesa vgasize=1920x1080x32 mouseport=ps2intellimouse"
@@ -118,7 +118,7 @@ args=(-m "$mem" -smp "$smp" "${gfx[@]}" -monitor none -serial "$serial" -no-rebo
 # Public test credentials; not for production.
 # authid=glenda authdom=front; dp9ik password='glen||glenda'.
 # No secstore or p9sk1 key.
-args+=(-drive "file=$PWD/boot/cpu.nvram,if=none,id=nvram,format=raw,readonly=on"
+args+=(-drive "file=$PWD/.github/ci/cpu.nvram,if=none,id=nvram,format=raw,readonly=on"
 	-device virtio-blk-pci,drive=nvram,disable-legacy=on)
 if $kitty; then
 	if $kittyuart; then
@@ -226,9 +226,9 @@ else
 	args+=(-nic none)
 fi
 if [ "$accel" = tcg ]; then
-	echo "boot/qemu: software emulation: TCG ($os/$host, guest $arch)" >&2
+	echo ".github/ci/qemu: software emulation: TCG ($os/$host, guest $arch)" >&2
 else
-	echo "boot/qemu: hardware acceleration: $accel ($os/$host, guest $arch)" >&2
+	echo ".github/ci/qemu: hardware acceleration: $accel ($os/$host, guest $arch)" >&2
 fi
 if $kitty; then
 	trap 'printf "\033[<u\033[?2048l\033[?2004l\033[?1004l\033[?1016l\033[?1006l\033[?1003l\033[?7h\033[?25h\033[?1049l"' EXIT

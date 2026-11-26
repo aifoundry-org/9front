@@ -4,11 +4,10 @@
 # checkout plus the amd64 binaries, and packs the result as ARCH.tar.gz.
 set -e
 
-# Make the checkout a root: binaries, the empty directories git cannot
-# track, a time zone, and a network database whose entry for the
-# launcher's NIC makes cpurc configure it.
+# Make the checkout a root: binaries and the empty directories git
+# cannot track, from the amd64 tarball, a time zone, and a network
+# database whose entry for the launcher's NIC makes cpurc configure it.
 tar -xf "$2"
-sh sys/lib/rootstub
 cp -R sys/lib/dist/ndb/. lib/ndb
 echo 'sys=9 dom=front ether=525400123456' >>lib/ndb/local
 cp adm/timezone/US_Pacific adm/timezone/local
@@ -21,10 +20,13 @@ echo "/usr/glenda/bin/rc/buildarch $1 && echo BATCH-PASS || echo BATCH-FAIL" >cf
 # The launcher's default of one CPU matters: build runs a mk job per CPU
 # and concurrent jobs stall the 9P root.
 SERVICE=cpu expect <<EOF
-spawn boot/qemu -amd64
+spawn .github/ci/qemu -amd64
 expect -timeout -1 BATCH-PASS {exit 0} BATCH-FAIL {exit 1} eof {exit 1}
 EOF
 
-# include and mkfile are tracked sources, not products.
+# include and mkfile are tracked sources, not products.  rootstub's
+# directories go in without their contents, so that unpacking the
+# tarball over a checkout makes a root.
 tar -czf "$1.tar.gz" --exclude="$1/include" --exclude="$1/mkfile" \
-	"$1" "acme/bin/$1" lib/ndb adm/timezone/local
+	"$1" "acme/bin/$1" lib/ndb adm/timezone/local \
+	--no-recursion $(sed -n 's/^mkdir -p //p' sys/lib/rootstub)
