@@ -283,7 +283,7 @@ enum {
 	Nrxd	= 512,
 	Ntxd	= 512,
 	Txirqevery = 64,
-	Ndwqe	= 1,		/* GMAC0 only for now; GMAC1/2 follow the same pattern */
+	Ndwqe	= 4,		/* GMAC0..3 */
 
 	Dcachelinesz = 64,	/* X60/C908 D-cache line size */
 };
@@ -1417,7 +1417,7 @@ etherpnp(Ether *edev)
 	Ctlr *ct;
 	Dtbether *de;
 	uvlong base, size, apmubase;
-	int irq, i, n;
+	int irq, i, k, n;
 
 	dprint("dwqe: etherpnp ctlrno=%d\n", edev->ctlrno);
 
@@ -1436,18 +1436,17 @@ etherpnp(Ether *edev)
 		return -1;
 	}
 
+	/* etherN is the Nth enabled gmac node, in device-tree order. */
 	de = nil;
 	n = dtbnether();
-	/* Walk through the array, but skip ones that are not ok.
-	 * So, e.g., if the first one in the array (0) is not marked
-	 * OK, don't count it: in one case we have, the second one (1)
-	 * becomes ether0. */
-	for(i = 0; i < n; i++){
+	for(i = k = 0; i < n; i++){
 		Dtbether *d = dtbether(i);
-		if(d != nil  && d->ok && strstr(d->compatible, "spacemit,k3-gmac") != nil) {
- 			d->aliasidx = edev->ctlrno;
-			de = d;
-			break;
+		if(d != nil && d->ok
+		   && strstr(d->compatible, "spacemit,k3-gmac") != nil){
+			if(k++ == edev->ctlrno){
+				de = d;
+				break;
+			}
 		}
 	}
 	if(de != nil){
