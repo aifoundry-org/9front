@@ -38,6 +38,7 @@ enum {
 
 	ApmuPhys	= 0xd4282800UL,
 	ApmuSize	= 0x400,
+	RcpuPhys	= 0xc0880000UL,	/* EMAC2/3 clock and reset */
 
 	MpmuPhys	= 0xd4050000UL,	/* PLL lock status lives here */
 	MpmuSize	= 0x1000,
@@ -1463,7 +1464,16 @@ etherpnp(Ether *edev)
 	if(de != nil){
 		base     = de->base;
 		size     = de->size ? de->size : Gmac0Size;
-		apmubase = de->apmubase ? de->apmubase : ApmuPhys;
+		/*
+		 * EMAC0/1 take their clock and reset from the APMU; EMAC2/3's
+		 * live in the RCPU syscon (K3 manual, clock and reset chapter).
+		 */
+		if(de->apmubase != 0)
+			apmubase = de->apmubase;
+		else if(base == 0xcac8e000UL || base == 0xa0000000UL)
+			apmubase = RcpuPhys;
+		else
+			apmubase = ApmuPhys;
 		irq      = de->irq;
 		ct->apmuctrloff  = de->ctrlregoff  ? de->ctrlregoff/4  : 0x3e4/4;
 		ct->apmudlineoff = de->dlineregoff ? de->dlineregoff/4 : 0x3e8/4;
