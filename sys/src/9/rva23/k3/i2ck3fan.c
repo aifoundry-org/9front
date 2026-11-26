@@ -382,9 +382,6 @@ fan0ctlwrite(Chan*, void *a, long n, vlong)
 void
 i2ck3faninit(void)
 {
-	if(!dtbsocmatch("spacemit,k3-com260"))
-		return;
-
 	/*
 	 * Bring the fan up now so the boot default applies before
 	 * anything reads fan0ctl.  i2c6 is registered here already.

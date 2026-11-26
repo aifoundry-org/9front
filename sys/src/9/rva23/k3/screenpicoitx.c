@@ -749,26 +749,11 @@ enum {
 	FbReserve	= 8*1024*1024,
 };
 
-/*
- * ADDENDUM: single entry point for the whole DP1 pipeline, matching
- * how riscv64-video-branch's own devarch.c calls its dpuinit() --
- * one plain call, no condition visible in devarch.c at all, with the
- * board check living inside this function instead (same pattern as
- * that reference dpuinit()'s own
- * "if(!dtbsocmatch(...)) { print(...); return; }" at its very start).
- * devarch.c's own archinit() just calls dpuk3() then screeninit() in
- * sequence, unconditionally, exactly like that reference kernel does
- * with "dpuinit(); v2dinit(); screeninit();".
- */
+/* the whole DP1 pipeline, from the Pico-ITX module's init */
 void
 dpuk3(void)
 {
 	uvlong fbaddr;
-
-	if(!dtbsocmatch("spacemit,k3-pico-itx")){
-		print("dpuk3: not a K3 Pico-ITX board, DP1 skipping\n");
-		return;
-	}
 
 	dpuk3pwron();
 	/* dpuk3hpdgpiotest() removed: GPIO2_24 is MUX_MODE6 ("dp1_hpd"

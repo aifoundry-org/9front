@@ -276,7 +276,8 @@ archinit(void)
 	sbiinit();
 
 	for(p = knownsoc; *p != nil; p++)
-		if(dtbsocmatch((*p)->compat)){
+		if(dtbsocmatch((*p)->compat)
+		&& ((*p)->model == nil || dtbmodelmatch((*p)->model))){
 			socmod = *p;
 			break;
 		}

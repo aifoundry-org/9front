@@ -656,8 +656,6 @@ k3espiready(void)
 		return ready;
 	done = 1;
 
-	if(!dtbsocmatch("spacemit,k3-pico-itx"))
-		return ready = 0;
 	if(espiinit() < 0)
 		return ready = 0;
 	if(!ecidok()){

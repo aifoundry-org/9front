@@ -1,6 +1,6 @@
 /* k3 */
+extern void k3init(void);
 extern void gpiok3init(void);
-extern void k3poweroff(void);
 extern void k3thermalinit(void);
 
 /* eSPI and cros_ec host commands, brought up on first use */

@@ -441,7 +441,8 @@ int	hartcnt;
 uintptr	memtotal;	/* sum of all banks */
 /*
  * SoC support module, listed in the conf as misc soc*;
- * archinit picks the first whose compat prefixes a DT root compatible.
+ * archinit picks the first whose compat prefixes a DT root compatible
+ * and, if model is set, whose root model contains it.
  */
 struct Socmod {
 	char	*id;
@@ -449,6 +450,7 @@ struct Socmod {
 	void	(*init)(void);		/* from archinit */
 	void	(*reset)(void);		/* return to fall back on SBI */
 	void	(*poweroff)(void);
+	char	*model;		/* boards that share a compatible */
 };
 
 extern Socmod *socmod;

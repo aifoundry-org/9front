@@ -56,8 +56,12 @@ ip
 	igmp
 	ipmux
 misc
+# soc modules: boards before their SoC, the first match is used
 	sock1	k1reset k1thermal
-	sock3	gpiok3 k3thermal espik3 espik3fan i2ck3fan screenpicoitx screencom260
+	sockpicoitx	espik3 espik3fan screenpicoitx
+	sockaibox	i2ck3fan
+	sockcom260	i2ck3fan screencom260 screenpicoitx
+	sock3	gpiok3 k3thermal
 #	gic
 	uarti8250
 	sdvirtio10	pci sdscsi

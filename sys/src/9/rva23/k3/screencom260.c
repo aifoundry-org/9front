@@ -697,23 +697,13 @@ enum {
 };
 
 /*
- * Single entry point for the whole DP1 pipeline, called unconditionally
- * from devarch.c's archinit() alongside dpuk3() (screenpicoitx.c) --
- * this checks the board itself via dtbsocmatch() and does nothing on
- * any other board. Named dpuk3com260(), not dpuk3(), since both files
- * are linked into the same kernel and a second global dpuk3() would
- * collide. fbaddr comes from dpuk3fbaddr(), shared with and defined
- * once in screenpicoitx.c.
+ * the whole DP1 pipeline, from the CoM260 module's init;
+ * the framebuffer is screenpicoitx.c's dpuk3fbaddr()
  */
 void
 dpuk3com260(void)
 {
 	uvlong fbaddr;
-
-	if(!dtbsocmatch("spacemit,k3-com260-ifx")){
-		print("dpuk3com260: not a K3 CoM260 IFX board, DP1 skipping\n");
-		return;
-	}
 
 	/* dp1_hpd is GPIO2_24, MUX_MODE6 -- see dpuk3dp()'s HpdInStatus
 	 * read/force-assert logic below. No FUSB301/Type-C step: this
