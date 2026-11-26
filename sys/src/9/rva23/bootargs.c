@@ -505,6 +505,10 @@ dtbnodeprop(char *key, uchar *p, int len)
 		dtbstrs(n->phynames, sizeof n->phynames, &n->phynameslen, p, len);
 	else if(strcmp(key, "status") == 0)
 		n->ok = len >= 5 && strcmp((char*)p, "okay") == 0;
+	else if(strcmp(key, "ranges") == 0 && len <= sizeof n->ranges){
+		memmove(n->ranges, p, len);
+		n->rangeslen = len;
+	}
 	else if(strcmp(key, "reg") == 0){
 		/* #address-cells and #size-cells both 2, or both 1 */
 		if(len >= 16){
