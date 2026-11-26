@@ -360,6 +360,8 @@ struct Dtbnode {
 	int	compatlen;
 	char	phynames[32];	/* phy-names, NUL-separated */
 	int	phynameslen;
+	uchar	ranges[3*7*4];	/* raw, if it fits; e.g. 3 PCI windows */
+	int	rangeslen;
 	uvlong	base;		/* first reg entry */
 	uvlong	size;
 	int	ok;		/* status = "okay" */

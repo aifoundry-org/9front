@@ -62,6 +62,7 @@ misc
 	sockaibox	i2ck3fan
 	sockcom260	i2ck3fan screencom260 screenpicoitx
 	sock3	gpiok3 k3thermal
+	socvirt
 #	gic
 	uarti8250
 	sdvirtio10	pci sdscsi

@@ -6,9 +6,7 @@
 #include "io.h"
 #include "../port/pci.h"
 
-#define MMIOBASE 0x40000000
-#define ECAMBASE 0x30000000
-#define ECAMSIZE 0x01000000
+#define ECAMSIZE 0x01000000	/* map at most 16 buses */
 
 typedef struct Intvec Intvec;
 
@@ -19,14 +17,19 @@ struct Intvec {
 };
 
 static uchar *ecam;
+static ulong ecamsize;
+static uvlong mmiobase;
 static Intvec vec[32];
 
 static void*
 cfgaddr(int tbdf, int rno)
 {
-	if(ecam == nil)
+	ulong off;
+
+	off = BUSBNO(tbdf)<<20 | BUSDNO(tbdf)<<15 | BUSFNO(tbdf)<<12;
+	if(ecam == nil || off >= ecamsize)
 		return nil;
-	return ecam + (BUSBNO(tbdf)<<20 | BUSDNO(tbdf)<<15 | BUSFNO(tbdf)<<12) + rno;
+	return ecam + off + rno;
 }
 
 int
@@ -162,19 +165,56 @@ pcicfginit(void)
 	pciintrinit();
 
 	ioa = 0;
-	base = MMIOBASE;
+	base = mmiobase;
 	pcibusmap(pciroot, &base, &ioa, 1);
 
 	if(getconf("*pcihinv"))
 		pcihinv(pciroot);
 }
 
-/* the fixed ECAM and MMIO windows are QEMU virt's */
+static uvlong
+be8(uchar *p)
+{
+	return (uvlong)(p[0]<<24 | p[1]<<16 | p[2]<<8 | p[3])<<32
+		| (u32int)(p[4]<<24 | p[5]<<16 | p[6]<<8 | p[7]);
+}
+
+/*
+ * the 32-bit memory window from ranges: <space pci.hi pci.lo
+ * cpu.hi cpu.lo size.hi size.lo>; bus and cpu addresses must agree
+ */
+static uvlong
+mem32window(Dtbnode *n)
+{
+	uchar *p;
+
+	for(p = n->ranges; p+28 <= n->ranges+n->rangeslen; p += 28)
+		if((p[0] & 3) == 2 && be8(p+4) == be8(p+12) && be8(p+20) != 0)
+			return be8(p+12);
+	return 0;
+}
+
+/*
+ * QEMU virt's host bridge; the INTx lines are virt's too
+ */
 void
 pciqemulink(void)
 {
-	if(!dtbsocmatch("riscv-virtio"))
+	Dtbnode *n;
+
+	n = dtbfind("pci-host-ecam-generic", 0);
+	if(n == nil || !n->ok || n->base == 0)
 		return;
-	ecam = vmap(ECAMBASE, ECAMSIZE);
+	mmiobase = mem32window(n);
+	if(mmiobase == 0){
+		print("pci: %#llux: no 32-bit memory window\n", n->base);
+		return;
+	}
+	ecamsize = n->size;
+	if(ecamsize == 0 || ecamsize > ECAMSIZE)
+		ecamsize = ECAMSIZE;
+	ecam = vmap(n->base, ecamsize);
+	if(ecam == nil)
+		return;
 	pcicfginit();
 }
