@@ -322,7 +322,6 @@ int peekl(void *addr, u32int *dst, int numwords);
 /* archrv */
 void calibrate(void);
 u64int *bootptpage(void);
-uint mach2context(Mach *);
 void cpuinit(int);
 void clintipitohart(int hart);
 int ipitohart(int hart);
