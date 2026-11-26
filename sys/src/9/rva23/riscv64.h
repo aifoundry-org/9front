@@ -325,6 +325,7 @@ enum {				/* [MS]ENVCFG */
 
 /* SBI stuff */
 #define HSM	0x48534dLL
+#define SBITIME	0x54494d45	/* "TIME" */
 #define HSMSUSP	3
 #define SRST	0x53525354	/* ('S'<<24|'R'<<16|'S'<<8|'T') */
 #define SRSTSHUT 0

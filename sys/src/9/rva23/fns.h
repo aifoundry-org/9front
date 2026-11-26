@@ -278,7 +278,6 @@ void	putmsts(uintptr);
 void*	putmtvec(void *);
 uvlong	rdtime(void);
 uvlong	rdtsc(void);
-void	sbisettimer(uvlong);
 
 /* SBI */
 vlong	sbicall(uvlong, uvlong, uvlong, Sbiret *, uvlong *);

@@ -140,11 +140,25 @@ sbiremotesfencevma(uvlong *hartmask, uvlong start, uvlong size)
 	return sbicall(6, 0, (uintptr)hartmask, nil, xargs);
 }
 
+/*
+ * set_timer: the TIME extension, or the legacy call if the SBI
+ * lacks it.  RV64 passes the absolute deadline in a0.
+ */
 void
-_sbisettimer(uvlong tm)
+sbisettimer(uvlong tm)
 {
-	USED(tm);
-	panic("sbisettimer");
+	static int legacy = -1;
+	vlong err;
+
+	if(legacy < 0)
+		legacy = sbiprobeext(SBITIME) == 0;
+	if(legacy){
+		sbicall(0, 0, tm, nil, nil);
+		return;
+	}
+	err = sbicall(SBITIME, 0, tm, nil, nil);
+	if(err != 0)
+		panic("sbisettimer: SBI TIME error %lld", err);
 }
 
 void
