@@ -12,6 +12,7 @@
 #include "dat.h"
 #include "fns.h"
 #include "io.h"
+#include "k3fns.h"
 #include "../port/netif.h"
 #include "../port/etherif.h"
 #include "../port/ethermii.h"

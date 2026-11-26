@@ -43,6 +43,8 @@ collect && section == "misc"{
 	misc[nmisc++] = $1;
 	if($1 ~ "^arch.*")
 		arch[narch++] = $1;
+	else if($1 ~ "^soc.*")
+		soc[nsoc++] = $1;
 	else if($1 ~ "^ad.*")
 		adifc[nadifc++] = $1;
 	else if($1 ~ "^sd.*"){
@@ -123,6 +125,15 @@ END{
 		printf "PCArch* knownarch[] = {\n";
 		for(i = 0; i < narch; i++)
 			printf "\t&%s,\n", arch[i];
+		printf "\tnil,\n};\n\n";
+	}
+
+	if(nsoc || objtype ~ "riscv64"){
+		for(i = 0; i < nsoc; i++)
+			printf "extern Socmod %s;\n", soc[i];
+		printf "Socmod* knownsoc[] = {\n";
+		for(i = 0; i < nsoc; i++)
+			printf "\t&%s,\n", soc[i];
 		printf "\tnil,\n};\n\n";
 	}
 

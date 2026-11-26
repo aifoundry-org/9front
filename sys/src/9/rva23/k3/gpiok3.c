@@ -223,6 +223,7 @@
 #include "mem.h"
 #include "dat.h"
 #include "fns.h"
+#include "k3fns.h"
 #include "io.h"
 
 enum {
@@ -438,10 +439,10 @@ gpiopeek(uint pin)
 
 /*
  * AIBOX carriers cut power when their poweroff line is driven low; the
- * PMIC takes a few seconds.  Hooked in as rvpoweroff so pmctl and the
- * power button path work like the K1's PMIC shutdown.
+ * PMIC takes a few seconds.  sock3's poweroff, so pmctl and the power
+ * button path work like the K1's PMIC shutdown.
  */
-static void
+void
 k3poweroff(void)
 {
 	if(!dtbmodelmatch("AIBOX"))
@@ -557,8 +558,6 @@ gpiok3init(void)
 	}
 
 	gpioready = 1;
-	if(dtbmodelmatch("AIBOX"))
-		rvpoweroff = k3poweroff;
 
 	intrenable(GpioIrq, gpiointerrupt, nil, BUSUNKNOWN, "gpio");
 }

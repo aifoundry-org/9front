@@ -28,6 +28,7 @@
 #include "mem.h"
 #include "dat.h"
 #include "fns.h"
+#include "k3fns.h"
 #include "../port/error.h"
 #include "../port/i2c.h"
 
@@ -2315,6 +2316,7 @@ dpuk3fbaddr(void)
 
 	fbkaddr = v;
 	fbaddr = PADDR(v);
+	screenfb(fbaddr, fbkaddr);
 	print("dpuk3fb: reserved %d bytes, kaddr %#p paddr %#llux\n",
 		FbReserve, v, fbaddr);
 	return fbaddr;
