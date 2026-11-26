@@ -276,6 +276,7 @@ enum {
 enum {
 	PhyAddr		= 1,	/* where the RTL8211F answers on this board */
 	Linkdelay	= 500,
+	Linktries	= 20,	/* 10s per PHY before trying the next address */
 };
 
 enum {
@@ -324,6 +325,11 @@ struct Ctlr {
 	u32int	rxdelay, txdelay;
 	int	phyaddr;		/* MDIO address of the PHY */
 	int	mdiocr;		/* MDIO CSR-clock-range divider */
+	int	phyaddrs[32];	/* addresses that answered the MDIO scan */
+	int	nphy;
+	int	phyidx;
+	int	phycur;
+	u32int	phydone;	/* PHYs already identified and configured */
 	int	rstpin;		/* PHY reset GPIO; -1 if none */
 	int	rstactive;		/* reset line asserted by a low level */
 	int	txcons;
@@ -407,16 +413,18 @@ mdread(Ctlr *c, int reg)
 }
 
 /*
- * The DTB names phy@1, but if the straps or the board differ no one
- * answers there.  Scan all clause-22 addresses and report what we find.
+ * Clause-22 scan.  The device tree names one PHY address, but a board
+ * may carry more than one PHY on the shared MDIO lines and the one that
+ * drives the connected port is not always the one the tree lists.  Keep
+ * every address that answers so ethproc can try them in turn.
  */
 static int
-mdioscan(Ctlr *c)
+mdioscan(Ctlr *c, int verbose)
 {
-	int a, found;
+	int a;
 	u16int s1, s2;
 
-	found = -1;
+	c->nphy = 0;
 	for(a = 0; a < 32; a++){
 		c->phyaddr = a;
 		s1 = mdread(c, Phyidr1);
@@ -425,15 +433,16 @@ mdioscan(Ctlr *c)
 		s2 = mdread(c, Phyidr2);
 		if(s2 == 0xffff)
 			continue;
-		print("dwqe: MDIO addr %d id %04x%04x\n", a, s1, s2);
-		if(found < 0)
-			found = a;
+		if(verbose)
+			print("dwqe: MDIO %d id %04x%04x\n", a, s1, s2);
+		c->phyaddrs[c->nphy++] = a;
+		if(c->nphy == nelem(c->phyaddrs))
+			break;
 	}
-	if(found < 0)
-		print("dwqe: no PHY answers on MDIO (scan 0-31)\n");
-	print("dwqe: MDIO addrreg=%#08ux datareg=%#08ux\n",
-		rd32(c->regs, GmacMdioAddr), rd32(c->regs, GmacMdioData));
-	return found;
+	if(c->nphy == 0)
+		print("dwqe: no PHY answers on MDIO\n");
+	c->phyaddr = c->nphy ? c->phyaddrs[0] : PhyAddr;
+	return c->nphy;
 }
 
 /*
@@ -517,57 +526,85 @@ txreset(Ctlr *c)
 }
 
 /* PHY / link kproc -- same RTL8211F sequence as ethersmte.c */
+static int
+physetup(Ctlr *c)
+{
+	u16int id1, id2;
+
+	c->phyaddr = c->phyaddrs[c->phyidx];
+	id1 = mdread(c, Phyidr1);
+	id2 = mdread(c, Phyidr2);
+	if(id1 == 0xffff || id1 == 0)
+		return -1;
+	if((c->phydone & (1U << c->phyidx)) == 0){
+		c->phydone |= 1U << c->phyidx;
+		print("dwqe: PHY %d id %04x%04x (oui=0x%06ux model=0x%02ux rev=0x%01ux)\n",
+			c->phyaddr, id1, id2,
+			((u32int)id1 << 6) | (id2 >> 10), (id2 >> 4) & 0x3f, id2 & 0xf);
+		if(id1 == 0x001c && ((id2 >> 4) & 0x3f) == 0x11)
+			rtl8211fdly(c);
+	}
+
+	mdwrite(c, Mscr, Mscr1000TFD | Mscr1000THD);
+	mdwrite(c, Bmcr, BmcrAne | BmcrRan);
+	return 0;
+}
+
+/* wait for link, but not forever: let ethproc move on to the next PHY */
+static int
+waitlink(Ctlr *c)
+{
+	int i;
+
+	for(i = 0; i < Linktries; i++){
+		if(mdread(c, Bmsr) & BmsrLs)
+			return 0;
+		tsleep(&up->sleep, return0, nil, Linkdelay);
+	}
+	return -1;
+}
+
 static void
 ethproc(void *ved)
 {
 	Ether *edev;
 	Ctlr *c;
-	u16int bmsr, lpa, gbsr, id1, id2;
+	u16int bmsr, lpa, gbsr;
 	u32int cfg, v;
-	int speed;
+	int i, speed;
 	char *dup;
 
 	edev = ved;
 	c    = edev->ctlr;
 
-	{
-		u32int aclk = rd32(c->apmu, 0x388/4);
-		int found;
-
-		print("dwqe: ACLK ctrl=%#08ux mux=%ud div=%ud CR=%d\n",
-			aclk, aclk & 1, ((aclk >> 1) & 3) + 1, c->mdiocr);
-		found = mdioscan(c);
-		if(found >= 0)
-			c->phyaddr = found;
-		else
-			c->phyaddr = PhyAddr;
+	mdioscan(c, 0);
+	if(c->nphy == 0){
+		c->phyaddrs[0] = PhyAddr;
+		c->nphy = 1;
 	}
-
-	id1 = mdread(c, Phyidr1);
-	id2 = mdread(c, Phyidr2);
-	print("dwqe: PHY %d id %04x%04x (oui=0x%06ux model=0x%02ux rev=0x%01ux)\n",
-		c->phyaddr, id1, id2,
-		((u32int)id1 << 6) | (id2 >> 10), (id2 >> 4) & 0x3f, id2 & 0xf);
-	if(id1 == 0x001c && ((id2 >> 4) & 0x3f) == 0x11)
-		rtl8211fdly(c);
-
-	mdwrite(c, Mscr, Mscr1000TFD | Mscr1000THD);
-	mdwrite(c, Bmcr, BmcrAne | BmcrRan);
+	c->phyidx = 0;
+	c->phycur = -1;
 
 	for(;;){
-		bmsr = mdread(c, Bmsr);
-		if((bmsr & BmsrLs) == 0){
-			print("dwqe: %s link down (BMSR=0x%04ux)\n", edev->name, bmsr);
-			ethersetlink(edev, 0);
-			wreg(c->regs, GmacConfig, rd32(c->regs, GmacConfig)
-				& ~(GmacConfigTe | GmacConfigRe));
-			txreset(c);
-			while((mdread(c, Bmsr) & BmsrLs) == 0)
-				tsleep(&up->sleep, return0, nil, Linkdelay);
+		if(c->phycur != c->phyidx){
+			c->phycur = c->phyidx;
+			if(physetup(c) < 0){
+				c->phycur = -1;
+				goto nextphy;
+			}
 		}
+		if(waitlink(c) < 0)
+			goto nextphy;
 
-		while((mdread(c, Bmsr) & BmsrAnc) == 0)
+		/* let autonegotiation finish, then read BMSR afresh */
+		for(i = 0; i < Linktries; i++){
+			bmsr = mdread(c, Bmsr);
+			if(bmsr & BmsrAnc)
+				break;
 			tsleep(&up->sleep, return0, nil, Linkdelay);
+		}
+		if((bmsr & (BmsrAnc|BmsrLs)) != (BmsrAnc|BmsrLs))
+			goto nextphy;
 
 		lpa  = mdread(c, Anlpar);
 		gbsr = mdread(c, Mssr);
@@ -626,14 +663,24 @@ ethproc(void *ved)
 			| DmaIntrRie | DmaIntrRbu
 			| DmaIntrAie | DmaIntrFbe);
 
-		print("dwqe: %s link up %dMbps %s "
+		print("dwqe: %s link up %dMbps %s on PHY %d "
 			"(bmsr=%#04ux lpa=%#04ux mssr=%#04ux)\n",
-			edev->name, speed, dup, bmsr, lpa, gbsr);
+			edev->name, speed, dup, c->phyaddr, bmsr, lpa, gbsr);
 		ethersetspeed(edev, speed);
 		ethersetlink(edev, 1);
 
 		while((mdread(c, Bmsr) & BmsrLs) != 0)
 			tsleep(&up->sleep, return0, nil, Linkdelay);
+
+		print("dwqe: %s link down\n", edev->name);
+		ethersetlink(edev, 0);
+		wreg(c->regs, GmacConfig, rd32(c->regs, GmacConfig)
+			& ~(GmacConfigTe | GmacConfigRe));
+		txreset(c);
+		continue;
+
+nextphy:
+		c->phyidx = (c->phyidx + 1) % c->nphy;
 	}
 }
 
@@ -1245,6 +1292,7 @@ ethinit(Ether *edev)
 	}
 	if(timeout == 1000){
 		print("dwqe: ERROR DmaBusMode software reset timed out\n");
+		mdioscan(c, 1);
 		return -1;
 	}
 	dprint("dwqe: DMA reset done after %d ms\n", timeout);
