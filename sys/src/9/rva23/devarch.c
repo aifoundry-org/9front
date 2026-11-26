@@ -286,7 +286,6 @@ archinit(void)
 		if(socmod->init != nil)
 			socmod->init();
 	}
-	screeninit();
 }
 
 static void
