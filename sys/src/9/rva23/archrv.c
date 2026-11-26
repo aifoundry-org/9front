@@ -131,6 +131,7 @@ void
 socidentify(void)
 {
 	vlong v, a, i;
+	ulong isa;
 
 	v = sbigetmvendorid();
 	a = sbigetmarchid();
@@ -160,6 +161,13 @@ socidentify(void)
 	}
 	print("socidentify: vendor %#ullx arch %#ullx impl %#ullx plic %#p aplic %#p imsic %#p\n",
 		soc.vendor, soc.arch, soc.impl, soc.plic, soc.aplic, soc.imsic);
+
+	/* before clocksanity: the first wrstimecmp */
+	isa = dtbisa();
+	soc.sstc = (isa & Isasstc) != 0;
+	soc.svpbmt = (isa & Isasvpbmt) != 0;
+	print("socidentify: %s, %s\n", soc.sstc? "sstc": "sbi timer",
+		soc.svpbmt? "svpbmt": "no svpbmt");
 }
 
 Mallocs
@@ -572,6 +580,29 @@ timerset(uvlong next)
 	wrstimecmp(m->timecmp);
 	clockenable();
 	splx(pl);
+}
+
+/*
+ * Without Sstc there is no stimecmp to read back, so the
+ * deadline last set is kept in m->timecmp.
+ */
+void
+wrstimecmp(u64int t)
+{
+	if(soc.sstc)
+		csrwrstimecmp(t);
+	else{
+		m->timecmp = t;
+		sbisettimer(t);
+	}
+}
+
+u64int
+rdstimecmp(void)
+{
+	if(soc.sstc)
+		return csrrdstimecmp();
+	return m->timecmp;
 }
 
 long ticktock;				/* set by M clock intr */

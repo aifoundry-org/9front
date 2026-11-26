@@ -354,6 +354,13 @@ struct Dtbether {
  * Dtbether/Dtbuart by bootargs.c's isufsnode()/findorallocufs().
  * Consumed by sdufs.c's ufspnp().
  */
+/* ISA extensions the DT lists for the harts; see dtbisa */
+enum {
+	Isasstc		= 1<<0,
+	Isazicbom	= 1<<1,
+	Isasvpbmt	= 1<<2,
+};
+
 /* a DT node with a compatible, for drivers to find their device */
 struct Dtbnode {
 	char	compatible[64];	/* NUL-separated list */
@@ -432,6 +439,7 @@ struct Soc {
 
 	/* other hardware extensions */
 	uchar	svpbmt;		/* Svpbmt extension present */
+	uchar	sstc;		/* flag: stimecmp, else the SBI timer */
 
 	/* software choices */
 	uchar	idlewake;	/* flag: wake idling cpus with ipis */

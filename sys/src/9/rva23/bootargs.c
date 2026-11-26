@@ -516,6 +516,128 @@ dtbnodeprop(char *key, uchar *p, int len)
 	}
 }
 
+/* the ISA extensions a /cpus/cpu@N node lists */
+typedef struct Dtbcpu Dtbcpu;
+struct Dtbcpu {
+	char	path[32];
+	uchar	ok;		/* status absent or "okay" */
+	uchar	src;		/* 0 none, 1 riscv,isa, 2 riscv,isa-extensions */
+	ulong	isa;
+};
+
+static Dtbcpu dtbcpus[64];
+static int ndtbcpus;
+
+static struct {
+	char	*name;
+	ulong	bit;
+} isanames[] = {
+	"sstc",		Isasstc,
+	"zicbom",	Isazicbom,
+	"svpbmt",	Isasvpbmt,
+};
+
+static ulong
+isabit(char *s, int n)
+{
+	int i;
+
+	for(i = 0; i < nelem(isanames); i++)
+		if(strlen(isanames[i].name) == n && cistrncmp(s, isanames[i].name, n) == 0)
+			return isanames[i].bit;
+	return 0;
+}
+
+/* riscv,isa: "rv64imafdc_zicbom_sstc"; multi-letter names follow a _ */
+static ulong
+isastring(char *s, int len)
+{
+	char *e, *t;
+	ulong isa;
+
+	isa = 0;
+	e = s + len;
+	for(;;){
+		while(s < e && *s != '_' && *s != 0)
+			s++;
+		if(s >= e || *s == 0)
+			return isa;
+		t = ++s;
+		while(s < e && *s != '_' && *s != 0)
+			s++;
+		isa |= isabit(t, s - t);
+	}
+}
+
+/* riscv,isa-extensions: a string list */
+static ulong
+isalist(char *s, int len)
+{
+	char *e, *z;
+	ulong isa;
+
+	isa = 0;
+	for(e = s+len; s < e; s = z+1){
+		if((z = memchr(s, 0, e - s)) == nil)
+			z = e;
+		isa |= isabit(s, z - s);
+	}
+	return isa;
+}
+
+static Dtbcpu*
+findorallocpu(char *path)
+{
+	Dtbcpu *c;
+
+	for(c = dtbcpus; c < dtbcpus+ndtbcpus; c++)
+		if(strcmp(c->path, path) == 0)
+			return c;
+	if(ndtbcpus == nelem(dtbcpus))
+		return nil;
+	c = &dtbcpus[ndtbcpus++];
+	strncpy(c->path, path, sizeof c->path - 1);
+	c->ok = 1;
+	return c;
+}
+
+static void
+dtbcpuprop(char *path, char *key, char *p, int len)
+{
+	Dtbcpu *c;
+
+	if(strncmp(path, "/cpus/cpu@", 10) != 0 || strchr(path+10, '/') != nil)
+		return;
+	if((c = findorallocpu(path)) == nil)
+		return;
+	if(strcmp(key, "status") == 0)
+		c->ok = len >= 5 && strcmp(p, "okay") == 0;
+	else if(strcmp(key, "riscv,isa-extensions") == 0){
+		c->isa = isalist(p, len);
+		c->src = 2;
+	}else if(strcmp(key, "riscv,isa") == 0 && c->src < 2){
+		c->isa = isastring(p, len);
+		c->src = 1;
+	}
+}
+
+/*
+ * The Isa* extensions every enabled hart has.  A DT that does not
+ * list the harts' extensions gets the RVA23 profile, which has them all.
+ */
+ulong
+dtbisa(void)
+{
+	Dtbcpu *c;
+	ulong isa;
+
+	isa = ~0UL;
+	for(c = dtbcpus; c < dtbcpus+ndtbcpus; c++)
+		if(c->ok && c->src != 0)
+			isa &= c->isa;
+	return isa;
+}
+
 static void
 devtreeprop(char *path, char *key, void *val, int len)
 {
@@ -523,6 +645,7 @@ devtreeprop(char *path, char *key, void *val, int len)
 	uchar *p = val;
 
 	dtbnodeprop(key, p, len);
+	dtbcpuprop(path, key, val, len);
 
 	if(path[0] == 0 && strcmp(key, "compatible") == 0){
 		/* root node: says which SoC/board this tree describes */
