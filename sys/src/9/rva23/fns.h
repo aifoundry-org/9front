@@ -152,6 +152,7 @@ extern int plicirq(Ureg*);
 extern void plicintrenable(int, void (*)(Ureg*, void*), void*, int, char*);
 extern void plicintrdisable(int, void (*)(Ureg*, void*), void*, int, char*);
 extern void aplicinit(void);
+extern int dtbirqsense(int);
 extern int aplicirq(Ureg*);
 extern void aplicintrenable(int, void (*)(Ureg*, void*), void*, int, char*);
 extern void aplicintrdisable(int, void (*)(Ureg*, void*), void*, int, char*);
