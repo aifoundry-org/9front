@@ -5,10 +5,10 @@
 set -e
 
 tar -xf "$3"
-mkdir -p tmp cfg/9
+mkdir -p cfg/9
 echo '/usr/glenda/bin/rc/smoke && echo BATCH-PASS || echo BATCH-FAIL' >cfg/9/cpustart
 
 SERVICE=cpu KERNEL=$1/$2 expect <<EOF
-spawn boot/qemu -$1
+spawn .github/ci/qemu -$1
 expect -timeout -1 BATCH-PASS {exit 0} BATCH-FAIL {exit 1} eof {exit 1}
 EOF
