@@ -223,7 +223,13 @@ enum {
 	Emac0ClkRefGate		= (1U << 14),	/* 1 = tx 25M refclk disable, 0 = enable */
 	Emac0PhyIntrEn		= (1U << 12),	/* 1 = PHY PMT intr mask enable */
 	Emac0LpiIntrEn		= (1U << 9),	/* 1 = LPI intr mask enable */
-	Emac0RgmiiTxcSrcSel		= (1U << 8),	/* RGMII only: 1 = TX clock from SoC, 0 = from RX clock */
+	/*
+	 * RGMII TX clock select/gate.  0 uses the PHY's RX clock, which
+	 * does not run until the PHY is out of reset; 1 uses the SoC PLL
+	 * 125MHz clock and also gates it on.  The K3 has no PHY reset
+	 * handling here, so the MAC needs the SoC clock.
+	 */
+	Emac0RgmiiTxcSrcSel		= (1U << 8),	/* RGMII only: 1 = SoC PLL, 0 = PHY RX clk */
 	EmacRxRefclkPhaseSel	= (1U << 7),	/* 1 = inverted, 0 = normal */
 	EmacRmiiTxRefclkPhaseSel	= (1U << 6),	/* RMII only, don't-care in RGMII */
 
@@ -1071,10 +1077,41 @@ static int
 ethinit(Ether *edev)
 {
 	Ctlr *c;
-	u32int v;
+	u32int v, txclk;
 	int timeout;
 
 	c = edev->ctlr;
+
+	/*
+	 * RGMII TX clock source: the SoC's PLL2 (pll2_d3 /8, gated in the
+	 * PLL controller) or the PHY's RX clock.  Firmware may not have
+	 * enabled the PLL path.  Use PLL2 only if it is locked; otherwise
+	 * fall back to the PHY clock, which the reset below makes sure is
+	 * running.
+	 */
+	{
+		u32int *mpmu, *pll;
+		u32int posr, swcr2;
+
+		mpmu = vmap(MpmuPhys, MpmuSize);
+		pll = vmap(PllPhys, PllSize);
+		posr = mpmu ? rd32(mpmu, MpmuPosr) : 0;
+		swcr2 = pll ? rd32(pll, Pll2Swcr2) : 0;
+		if((posr & Pll2Lock) && pll != nil){
+			if((swcr2 & (Pll2Enable|Pll2D3Gate))
+			   != (Pll2Enable|Pll2D3Gate))
+				wreg(pll, Pll2Swcr2,
+					swcr2 | Pll2Enable | Pll2D3Gate);
+			txclk = Emac0RgmiiTxcSrcSel;
+		}else
+			txclk = 0;
+		print("dwqe: RGMII TX clock from %s (posr=%#08ux swcr2=%#08ux)\n",
+			txclk ? "SoC PLL2" : "PHY RX clock", posr, swcr2);
+		if(mpmu)
+			vunmap(mpmu, MpmuSize);
+		if(pll)
+			vunmap(pll, PllSize);
+	}
 
 	/*
 	 * APMU: bring GMAC0 out of reset with clocks enabled, PHY interface
@@ -1123,18 +1160,21 @@ ethinit(Ether *edev)
 		/*
 		 * CLK_REF_GATE=0 (refclk enabled, unused in RGMII anyway),
 		 * PHY_INTR_EN=0 / LPI_INTR_EN=0 (no WoL/EEE handler exists),
-		 * *_PHASE_SEL=0 (no skew correction needed, RMII one is don't-care)
-		 * RGMII_TXC_SRC_SEL=0 (RX-clock-sourced TX clock)
+		 * *_PHASE_SEL=0 (no skew correction needed, RMII one is don't-care).
 		 */
-		wreg(c->apmu, c->apmuctrloff, preserve | physel);
+		wreg(c->apmu, c->apmuctrloff,
+			preserve | physel | txclk);
 		microdelay(10000);
-		wreg(c->apmu, c->apmuctrloff, preserve | physel | EmacBusEn | Emac1588ClkMux);
+		wreg(c->apmu, c->apmuctrloff,
+			preserve | physel | txclk | EmacBusEn | Emac1588ClkMux);
 		microdelay(10000);
-		wreg(c->apmu, c->apmuctrloff, preserve | physel | EmacBusEn | Emac1588ClkMux
-			| EmacBusRst | EmacAxiMstId);
+		wreg(c->apmu, c->apmuctrloff,
+			preserve | physel | txclk
+			| EmacBusEn | Emac1588ClkMux | EmacBusRst | EmacAxiMstId);
 		microdelay(10000);
-		print("dwqe: APMU CLK_RST[%#ux] %#ux -> %#ux (PHY_SELECT=RGMII, TXC_SRC_SEL=RXclk)\n",
-			c->apmuctrloff, origv, rd32(c->apmu, c->apmuctrloff));
+		print("dwqe: APMU CLK_RST[%#ux] %#ux -> %#ux (PHY_SELECT=RGMII, TXC_SRC_SEL=%s)\n",
+			c->apmuctrloff, origv, rd32(c->apmu, c->apmuctrloff),
+			txclk ? "SoC" : "RXclk");
 	}
 
 	/* RGMII delay lines */
