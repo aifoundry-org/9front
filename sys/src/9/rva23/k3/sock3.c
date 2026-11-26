@@ -1,5 +1,5 @@
 /*
- * SpacemiT K3: Pico-ITX and the CoM260 IFX carrier
+ * SpacemiT K3, common to its boards
  */
 #include "u.h"
 #include "../port/lib.h"
@@ -8,22 +8,15 @@
 #include "fns.h"
 #include "k3fns.h"
 
-static void
+void
 k3init(void)
 {
 	gpiok3init();
 	k3thermalinit();
-	k3ecfaninit();
-	/* each checks for its own carrier board */
-	i2ck3faninit();
-	dpuk3();
-	dpuk3com260();
 }
 
 Socmod sock3 = {
 	"k3",
 	"spacemit,k3",
 	k3init,
-	nil,
-	k3poweroff,
 };
