@@ -1,7 +1,7 @@
 #!/bin/sh
 # qemutest.sh [-o dir] KERNEL [test ...]
 # Boots a riscv64 kernel under qemu once per test in qemutest/*.t
-# (or the named ones) and drives its console with expect.
+# (or the named ones, which may be in subdirectories: maxion/smoke) and drives its console with expect.
 #
 # A test is a sh fragment that may set
 #	MACHINE	qemu -M value (default virt)
@@ -36,6 +36,7 @@ for t in "$@"; do
 		. "$ci/qemutest/$t.t"
 		q="qemu-system-riscv64 -M $MACHINE -smp $SMP -m $MEM -cpu $CPU"
 		dtb=
+		mkdir -p "$(dirname "$out/$t")"
 		if command -v dts >/dev/null; then
 			$q -display none -machine dumpdtb="$out/$t.base.dtb" >/dev/null 2>&1 || exit 1
 			dtc -q -I dtb -O dts "$out/$t.base.dtb" | dts >"$out/$t.dts" &&
