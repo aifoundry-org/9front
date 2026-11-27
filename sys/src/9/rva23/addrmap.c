@@ -27,66 +27,65 @@ mmu1init(void)
 	mmuswitch(nil, 0);
 }
 
-void
-kmapram(uintptr, uintptr limit)
+static int
+ramslot(uintptr pa)
 {
-	u64int i, j, n, pa;
+	Confmem *cm;
+
+	for(cm = conf.mem; cm < &conf.mem[nelem(conf.mem)]; cm++)
+		if(cm->npage != 0 && cm->base < pa + PGLSZ(2) && cm->limit > pa)
+			return 1;
+	return 0;
+}
+
+/*
+ * Identity-map [0, UZERO): GiB slots holding RAM through L2 tables
+ * of 2MiB leaves, the first 6 slots (devices) with 1GiB leaves; other
+ * slots stay unmapped.
+ */
+void
+kmapram(void)
+{
+	u64int i, j, pa;
 	u64int *l2;
 
 	sv57[0] = ((((u64int)sv48)>>2)) | 1;
-	if (Spew)print("%p is %p\n", sv57, sv57[0]);
 	sv48[0] = ((((u64int)sv39)>>2)) | 1;
-	/*
-	 * cover every GiB slot up to the end of RAM, not a fixed few:
-	 * pages the kernel can only reach through this identity map
-	 * (kaddr) fault if their slot is missing.  Keep at least the
-	 * first 6 slots for the low MMIO leaves, and stop at uzero,
-	 * where user space begins.
-	 * TODO: handle more complex memory topologies.
-	 */
-	n = (limit + 0x40000000ULL-1)/0x40000000ULL;
-	if(n < 6)
-		n = 6;
-	if(n > uzero/0x40000000ULL)
-		n = uzero/0x40000000ULL;
-	for(i = 0; i < n; i++){
-		pa = 0x40000000ULL*i;
-		/*
-		 * A slot counts as "DRAM" if it overlaps [VDRAM, limit) at
-		 * all, not just when its aligned start is >= VDRAM: VDRAM
-		 * (where the bootloader actually placed the kernel) is not
-		 * itself GiB-aligned in general, so the slot straddling it
-		 * would otherwise be misclassified as a plain 1GiB leaf --
-		 * even though conf.mem[0].base (and hence the very first
-		 * pages mainmem ever hands out) lives inside that same
-		 * slot, right above VDRAM.
-		 */
-		if(pa + 0x40000000ULL > VDRAM && pa < limit){
+	for(i = 0; i < UZERO/PGLSZ(2); i++){
+		pa = i*PGLSZ(2);
+		if(ramslot(pa)){
 			/*
-			 * DRAM: map with 2MiB leaves reached through a shared L2
-			 * table rather than a single 1GiB leaf.  Every hart's mmutop
-			 * is a by-value copy of sv39, so the shared L2 pointer means
-			 * a later mmuuncache() that edits an L2/L3 entry is seen by
-			 * all harts with only a TLB shootdown (see mmuuncache).
+			 * Every hart's mmutop is a by-value copy of sv39, so
+			 * the shared L2 table means a later mmuuncache() that
+			 * edits an L2/L3 entry is seen by all harts with only
+			 * a TLB shootdown (see mmuuncache).
 			 */
 			l2 = bootptpage();
 			for(j = 0; j < 512; j++)
 				l2[j] = PA2PTE(pa + j*PGLSZ(1)) | 0xcf;
 			sv39[i] = PA2PTE((uintptr)l2) | PTEVALID;
-		} else
-			/* below/above DRAM (includes MMIO): keep the 1GiB leaf */
+		} else if(i < 6)
 			sv39[i] = PA2PTE(pa) | 0xcf;
-		if (Spew)print("sv39:%p is %p\n", &sv39[i], sv39[i]);
 	}
 
 	wsatp(((uintptr)sv39>>12)|(8ULL<<60));
-
 }
 
 void*
-vmap(uvlong pa, vlong)
+vmap(uvlong pa, vlong size)
 {
-	return (void *)pa;
+	uvlong a;
+
+	if(size <= 0)
+		size = 1;
+	if(pa >= UZERO || size > UZERO - pa)
+		return nil;
+	if(sv39 == nil)
+		return (void*)pa;	/* paging still off */
+	for(a = pa; a < pa+size; a += PGLSZ(2) - a%PGLSZ(2))
+		if(sv39[a/PGLSZ(2)] == 0)
+			return nil;
+	return (void*)pa;
 }
 
 /*

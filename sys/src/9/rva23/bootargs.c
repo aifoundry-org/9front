@@ -28,7 +28,6 @@ uintptr dtbphys = -1;
 static char *confname[MAXCONF];
 static char *confval[MAXCONF];
 static int nconf;
-static char maxmem[32];
 static int bootargs_set = 0;
 static int preloadedini = 0;
 char *bootconf;			/* BOOTARGS; see mem.h */
@@ -76,6 +75,19 @@ static Dtbnode dtbcur;			/* node being parsed */
 static char dtbalias[MAXDTBUARTS][64];	/* serial<N> -> DT node path */
 static char dtbethalias[MAXDTBETHERS][64]; /* ethernet<N> -> DT node path */
 static char dtbstdout[64];
+
+/*
+ * Memory map properties of the node being parsed; see dtbmemnode.
+ * Two address and two size cells, as on every board we run on.
+ */
+static struct {
+	uchar	*reg;
+	int	reglen;
+	uchar	*alloc;		/* alloc-ranges */
+	int	alloclen;
+	int	nomap;
+} dtbmem;
+
 static int dtbhasplic_;			/* root interrupt controller is a PLIC */
 static char dtbrootcompat[128];		/* root "compatible": NUL-separated list */
 static int dtbrootcompatlen;
@@ -518,12 +530,72 @@ dtbnodeprop(char *key, uchar *p, int len)
 }
 
 static void
+dtbmemprop(char *key, uchar *p, int len)
+{
+	if(strcmp(key, "reg") == 0){
+		dtbmem.reg = p;
+		dtbmem.reglen = len;
+	}else if(strcmp(key, "alloc-ranges") == 0){
+		dtbmem.alloc = p;
+		dtbmem.alloclen = len;
+	}else if(strcmp(key, "no-map") == 0)
+		dtbmem.nomap = 1;
+}
+
+/* add the <base size> pairs of a reg or alloc-ranges to the memory map */
+static void
+dtbmemmap(uchar *p, int len, ulong type)
+{
+	for(; len >= 16; len -= 16, p += 16)
+		memmapadd((uvlong)beget4(p)<<32 | beget4(p+4),
+			(uvlong)beget4(p+8)<<32 | beget4(p+12), type);
+}
+
+/*
+ * The header's memory reservation block, <address size> pairs
+ * ending with a zero pair, such as a loader's entries for the DTB
+ * itself and an initrd.
+ */
+static void
+dtbmemrsv(uchar *p, uchar *e)
+{
+	uchar *q;
+
+	for(q = p; q+16 <= e; q += 16)
+		if((beget4(q) | beget4(q+4) | beget4(q+8) | beget4(q+12)) == 0)
+			break;
+	dtbmemmap(p, q - p, MemReserved);
+}
+
+/*
+ * At the end of a node's properties.  RAM is the reg of the
+ * /memory nodes.  Reserved are the fixed regions of /reserved-memory
+ * and its pools that must not be mapped (no-map), such as firmware
+ * and uncached aliases of RAM.  Plan 9 allocates no pools for their
+ * drivers, so the other pools are RAM to it.  Disabled nodes don't
+ * count.
+ */
+static void
+dtbmemnode(char *path)
+{
+	if(dtbcur.ok){
+		if(strncmp(path, "/reserved-memory/", 17) == 0){
+			dtbmemmap(dtbmem.reg, dtbmem.reglen, MemReserved);
+			if(dtbmem.nomap)
+				dtbmemmap(dtbmem.alloc, dtbmem.alloclen, MemReserved);
+		}else if(strcmp(path, "/memory") == 0 || strncmp(path, "/memory@", 8) == 0)
+			dtbmemmap(dtbmem.reg, dtbmem.reglen, MemRAM);
+	}
+	memset(&dtbmem, 0, sizeof dtbmem);
+}
+
+static void
 devtreeprop(char *path, char *key, void *val, int len)
 {
-	uvlong addr;
 	uchar *p = val;
 
 	dtbnodeprop(key, p, len);
+	dtbmemprop(key, p, len);
 
 	if(path[0] == 0 && strcmp(key, "compatible") == 0){
 		/* root node: says which SoC/board this tree describes */
@@ -541,18 +613,6 @@ devtreeprop(char *path, char *key, void *val, int len)
 			n = sizeof(dtbrootmodel) - 1;
 		memmove(dtbrootmodel, val, n);
 		dtbrootmodel[n] = 0;
-		return;
-	}
-	if((strncmp(path, "/memory", 7) == 0 || strncmp(path, "/memory@0", 9) == 0)
-	   && strcmp(key, "reg") == 0){
-		if(findconf("*maxmem") < 0 && len == 16){
-			/* <base size>, two BE cells each: limit = base + size */
-			addr = (uvlong)beget4(p)<<32 | beget4(p+4);
-			addr += (uvlong)beget4(p+8)<<32 | beget4(p+12);
-			snprint(maxmem, sizeof(maxmem), "%#llux", addr);
-			print("devtreeprop: maxmem %s\n", maxmem);
-			addconf("*maxmem", maxmem);
-		}
 		return;
 	}
 	if(strncmp(path, "/cpus/cpu", 9) == 0 && strcmp(key, "reg") == 0){
@@ -869,6 +929,7 @@ devtreenode(Devtree *t, uchar *p, char *cp)
 		devtreeprop(t->path, s, p+12, n);
 		p += 12 + ((n + 3) & ~3);
 	}
+	dtbmemnode(t->path);
 	if(dtbcur.compatlen > 0){
 		if(ndtbnodes < nelem(dtbnodes))
 			dtbnodes[ndtbnodes++] = dtbcur;
@@ -1037,6 +1098,7 @@ parsedevtree(uchar *base)
 	t->stab = (char*)base + beget4(base+12);
 	if(t->stab >= (char*)t->end)
 		return -1;
+	dtbmemrsv(base + beget4(base+16), t->end);
 	devtreenode(t, base + beget4(base+8), t->path);
 	finishdtbintc();
 	finishdtbuarts();

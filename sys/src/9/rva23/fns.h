@@ -77,7 +77,7 @@ extern void kmapinval(void);
 extern KMap *kmap(Page*);
 extern void kunmap(KMap*);
 extern uintptr mmukmap(uintptr, uintptr, usize);
-extern void kmapram(uintptr, uintptr);
+extern void kmapram(void);
 extern void* vmap(uvlong, vlong);
 extern void vunmap(void*, vlong);
 extern void mmu1init(void);

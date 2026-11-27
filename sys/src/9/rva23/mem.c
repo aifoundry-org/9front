@@ -44,6 +44,8 @@ mmu0init(uintptr *l1)
 #endif
 }
 
+uintptr uzero = 0x1000000000ULL;	/* until meminit */
+
 /*
  * User space starts above all RAM, on a root table slot boundary
  * and never below 4GiB.  *uzero moves it; RAM above it is not used.
@@ -78,35 +80,61 @@ setuzero(void)
 		}
 		if(cm->limit < cm->base)
 			cm->limit = cm->base;
+		cm->npage = (cm->limit - cm->base)/BY2PG;
+		if(cm->npage != 0)
+			print("meminit: bank %#p-%#p\n", cm->base, cm->limit);
 	}
 }
 
+/*
+ * RAM is what the DTB's /memory nodes describe, or 2GiB from VDRAM
+ * without them, less the reserved regions, anything at or above
+ * *maxmem and everything below the end of the kernel's area.
+ * Carve conf.mem from it in address order, as pc does.
+ */
 void
 meminit(void)
 {
+	Confmem *cm;
+	uvlong base, size, top;
 	char *p;
-	uintptr l = VDRAM + 2ULL * GiB;
 	extern u64int *sv57, *sv48, *sv39, *pGiB;
-	extern uintptr klimit;
 
-	klimit = uzero;
+	top = -1;
 	if(p = getconf("*maxmem"))
-		l = strtoull(p, 0, 0);
+		top = strtoull(p, 0, 0);
+	if(memmapnext(-1, MemRAM) == -1)
+		memmapadd(VDRAM, (top != -1 ? top : VDRAM + 2ULL*GiB) - VDRAM, MemRAM);
+	if(top != -1)
+		memmapadd(top, -top, MemReserved);
+	/* firmware, Mach pages, kernel and the boot page tables after end */
+	memmapadd(0, ROUND(PGROUND((uintptr)end - KTZERO) + (uintptr)(VDRAM+0x2fffff), 0x200000), MemReserved);
 
-	// leave a big hole after end, for now. We need it for this and that.
-	conf.mem[0].base = ROUND(PGROUND((uintptr)end - KTZERO) + (uintptr)(VDRAM+0x2fffff), 0x200000);
-	conf.mem[0].limit = l;
+	cm = conf.mem;
+	for(base = memmapnext(-1, MemRAM); base != -1; base = memmapnext(base, MemRAM)){
+		size = memmapsize(base, BY2PG) & ~(uvlong)(BY2PG-1);
+		if(size == 0)
+			continue;
+		if(cm >= &conf.mem[nelem(conf.mem)]){
+			print("meminit: out of entries, losing %#llux-%#llux\n", base, base+size);
+			continue;
+		}
+		base = memmapalloc(base, size, BY2PG, MemRAM);
+		if(base == -1)
+			continue;
+		cm->base = base;
+		cm->limit = base + size;
+		cm->npage = size/BY2PG;
+		cm++;
+	}
+	if(conf.mem[0].npage == 0)
+		panic("meminit: no memory");
 	setuzero();
-	klimit = uzero;
 
-	if(l > klimit)
-		l = klimit;
 	sv57 = (void *)PGROUND((uintptr)end);
 	sv48 = (void *)PGROUND((uintptr)sv57 + 1);
 	sv39 = (void *)PGROUND((uintptr)sv48 + 1);
 	pGiB = (void *)PGROUND((uintptr)sv39 + 1);
 	memset(sv57, 0, 16384);
-	kmapram(conf.mem[0].base, l);
-
-	conf.mem[0].npage = (conf.mem[0].limit - conf.mem[0].base)/BY2PG;
+	kmapram();
 }
