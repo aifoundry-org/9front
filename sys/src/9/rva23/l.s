@@ -24,7 +24,7 @@
 TEXT	_start(SB), 1, $-4
 	/*
 	 * S-mode entry state guaranteed by SBI, for both the cold-boot entry
-	 * and an HSM hart_start resumption (see sbihartstart):
+	 * and an HSM hart_start resumption (see below and sbihartstart):
 	 *   a0 (R10) = hartid of this hart
 	 *   a1 (R11) = cold boot: DTB physical address
 	 *              hart_start: the opaque value the starter passed (we
@@ -72,6 +72,35 @@ TEXT	_start(SB), 1, $-4
 	WORD $0x05435352	/* magic2 = "RSC\5" */
 	WORD $0			/* res3 */
 
+	/*
+	 * cpu0 is the lowest hart that SBI will start.  The hart SBI
+	 * booted starts each lower hart here in turn; once one starts,
+	 * it stops without touching memory, since both would run on
+	 * the boot stack below.  If none will, it is cpu0 itself.
+	 * SBI preserves all but a0 and a1.
+	 */
+	MOV	R10, R13		/* hartid */
+	MOV	R11, R12		/* the DTB, a1 of the hart started */
+	MOV	$0, R14
+_tryhart:
+	BEQ	R14, R13, _boot1
+	MOV	R14, R10
+	MOV	$_start(SB), R11
+	MOV	$0x48534d, R17		/* HSM hart_start(R14, _start, dtb) */
+	MOV	$0, R16
+	ECALL
+	BEQ	R10, _hartstop
+	ADD	$1, R14
+	JMP	_tryhart
+_hartstop:
+	MOV	$0x48534d, R17		/* HSM hart_stop() */
+	MOV	$1, R16
+	ECALL
+	WFI
+	JMP	_hartstop
+_boot1:
+	MOV	R13, R10
+	MOV	R12, R11
 	MOV	$setSB(SB), R3
 	JAL	R1, mmudisable<>(SB)
 	JAL	R1, _reloc(SB)		/* leaves R10, R11 */
