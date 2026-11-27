@@ -235,6 +235,7 @@ extern Dtbufs *dtbufs(int);
 extern int dtbsocmatch(char*);
 extern int dtbmodelmatch(char*);
 extern Dtbnode *dtbfind(char*, uvlong);
+extern ulong dtbisa(void);
 extern int dtblisthas(char*, int, char*);
 
 // new
@@ -335,6 +336,8 @@ void cpustart(int);
 extern void cpumain(void);
 
 /* rva23: timecmp.s */
+void csrwrstimecmp(u64int);
+u64int csrrdstimecmp(void);
 void wrstimecmp(u64int);
 u64int rdstimecmp(void);
 
