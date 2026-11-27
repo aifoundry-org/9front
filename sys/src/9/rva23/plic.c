@@ -11,39 +11,25 @@
 #include "../port/error.h"
 
 enum {
-	PLICSIZE	= 0x04000000,
-
-	/*
-	 * S-mode context for the boot hart.  Both QEMU-virt (hart 0) and the
-	 * SpacemiT K1 (boot hart phandle 0x10, the first entry in the PLIC's
-	 * interrupts-extended) put M-mode at context 0 and S-mode at context 1.
-	 * If we ever boot a kernel on a non-zero hart this will need to come
-	 * from socidentify() or the DTB.
-	 */
-	Suctxt		= 1,
+	PLICSIZE	= 0x04000000,	/* the most the spec decodes */
+	Maxsrc		= 1024,		/* source ids 1..1023 */
 	Defprio		= 1,
-
-	/*
-	 * sources this driver touches (prio/enable writes at init and the
-	 * spurious/storm masking).  221 is the bound the K1 and qemu-virt
-	 * PLICs have been run with; Ngintr is larger now for the K3 APLIC,
-	 * and poking a PLIC's registers beyond what the silicon decodes
-	 * is not worth the risk.
-	 */
-	Nplicsrc	= 221,
 };
 
 extern uintptr setsie(uintptr);
 
 static Lock vctllock;
-static Vctl *vctl[Nplicsrc];
+static Vctl *vctl[Maxsrc];
 static Plic *plic;
+static uint nsrc;	/* 1 + riscv,ndev */
+static int sctx;	/* the boot hart's S-mode context */
 
 void
 plicinit(void)
 {
 	uint i;
 	uintptr base;
+	uvlong size;
 
 	/*
 	 * soc.plic was set by socidentify() to the SoC's PLIC physical base.
@@ -53,17 +39,27 @@ plicinit(void)
 	base = (uintptr)soc.plic;
 	if(base == 0)
 		panic("intrinit: soc.plic not set");
-	plic = (Plic*)vmap(base, PLICSIZE);
+	if(soc.nplicsrc == 0 || soc.nplicsrc >= Maxsrc)
+		panic("plic: riscv,ndev %ud", soc.nplicsrc);
+	if(soc.plicsctx < 0)
+		panic("plic: no S-mode context for hart %d", m->hartid);
+	nsrc = soc.nplicsrc + 1;
+	sctx = soc.plicsctx;
+	size = soc.plicsize;
+	if(size == 0 || size > PLICSIZE)
+		size = PLICSIZE;
+	print("plic: %ud sources, context %d\n", soc.nplicsrc, sctx);
+	plic = (Plic*)vmap(base, size);
 	if(plic == nil)
 		panic("intrinit: plic vmap");
 	soc.plic = (uchar*)plic;
 
 	/* mask every source */
-	for(i = Firstirq; i < Nplicsrc; i++){
+	for(i = Firstirq; i < nsrc; i++){
 		plic->prio[i] = 0;
-		plic->enabits[Suctxt][i/32] &= ~(1u << (i & 31));
+		plic->enabits[sctx][i/32] &= ~(1u << (i & 31));
 	}
-	plic->context[Suctxt].priothresh = 0;
+	plic->context[sctx].priothresh = 0;
 	coherence();
 
 	/* enable S-mode external interrupts in SIE CSR */
@@ -90,8 +86,8 @@ plicirq(Ureg *ureg)
 
 	m->intr++;
 	trips = 64;
-	while((id = plic->context[Suctxt].claimcompl) != 0){
-		if(id < Nplicsrc){
+	while((id = plic->context[sctx].claimcompl) != 0){
+		if(id < nsrc){
 			v = vctl[id];
 			if(v == nil){
 				/*
@@ -101,14 +97,14 @@ plicirq(Ureg *ureg)
 				 * can keep running and the report below is visible.
 				 */
 				plic->prio[id] = 0;
-				plic->enabits[Suctxt][id/32] &= ~(1u << (id & 31));
+				plic->enabits[sctx][id/32] &= ~(1u << (id & 31));
 				coherence();
 				iprint("plic: spurious irq %ud, masking\n", id);
 			} else
 				for(; v != nil; v = v->next)
 					v->f(ureg, v->a);
 		}
-		plic->context[Suctxt].claimcompl = id;
+		plic->context[sctx].claimcompl = id;
 		coherence();
 		if(--trips <= 0){
 			/*
@@ -117,9 +113,9 @@ plicirq(Ureg *ureg)
 			 * the rest of the system can keep running long enough to
 			 * print and reboot.
 			 */
-			if(id < Nplicsrc){
+			if(id < nsrc){
 				plic->prio[id] = 0;
-				plic->enabits[Suctxt][id/32] &= ~(1u << (id & 31));
+				plic->enabits[sctx][id/32] &= ~(1u << (id & 31));
 				coherence();
 			}
 			iprint("plic: irq %ud storm, masking source\n", id);
@@ -146,7 +142,7 @@ plicintrenable(int irq, void (*f)(Ureg*, void*), void *a, int tbdf, char *name)
 
 	if(tbdf != BUSUNKNOWN)
 		return;
-	if((uint)irq < Firstirq || (uint)irq >= Nplicsrc)
+	if((uint)irq < Firstirq || (uint)irq >= nsrc)
 		return;
 
 	v = mallocz(sizeof(Vctl), 1);
@@ -166,7 +162,7 @@ plicintrenable(int irq, void (*f)(Ureg*, void*), void *a, int tbdf, char *name)
 	vctl[irq] = v;
 
 	plic->prio[irq] = Defprio;
-	plic->enabits[Suctxt][irq/32] |= 1u << (irq & 31);
+	plic->enabits[sctx][irq/32] |= 1u << (irq & 31);
 	coherence();
 	unlock(&vctllock);
 }
