@@ -62,7 +62,7 @@ OBJ=\
 	main.$O\
 	mmu.$O\
 	mem.$O\
-	memmap.$O\
+	addrmap.$O\
 	plic.$O\
 	aplic.$O\
 	intr.$O\

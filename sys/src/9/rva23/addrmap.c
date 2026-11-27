@@ -2,7 +2,7 @@
  * The kernel's view of physical memory: the boot page tables that
  * identity-map it (kmapram), each hart's root table (mmu1init), device
  * mappings (vmap) and uncached DMA memory (mmuuncache).  A board
- * directory with a different address map supplies its own memmap.c.
+ * directory with a different address map supplies its own addrmap.c.
  */
 #include "u.h"
 #include "../port/lib.h"
