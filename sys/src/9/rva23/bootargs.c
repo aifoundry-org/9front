@@ -266,6 +266,7 @@ enum {
 	DtBeginNode	= 1,
 	DtEndNode	= 2,
 	DtProp		= 3,
+	DtNop		= 4,
 	DtEnd		= 9,
 };
 
@@ -827,6 +828,15 @@ devtreeprop(char *path, char *key, void *val, int len)
 	}
 }
 
+/* skip the NOPs that overwrite a removed node or property */
+static uchar*
+dtbnop(uchar *p, uchar *e)
+{
+	while(p+4 <= e && beget4(p) == DtNop)
+		p += 4;
+	return p;
+}
+
 static uchar*
 devtreenode(Devtree *t, uchar *p, char *cp)
 {
@@ -848,7 +858,7 @@ devtreenode(Devtree *t, uchar *p, char *cp)
 	p += (n + 4) & ~3;
 	memset(&dtbcur, 0, sizeof dtbcur);
 	dtbcur.ok = 1;
-	while(p+12 <= e && beget4(p) == DtProp){
+	for(p = dtbnop(p, e); p+12 <= e && beget4(p) == DtProp; p = dtbnop(p, e)){
 		n = beget4(p+4);
 		if(p + 12 + n > e)
 			return nil;
@@ -865,7 +875,7 @@ devtreenode(Devtree *t, uchar *p, char *cp)
 		else
 			print("dtb: node table full\n");
 	}
-	while(p+4 <= e && beget4(p) == DtBeginNode){
+	for(; p+4 <= e && beget4(p) == DtBeginNode; p = dtbnop(p, e)){
 		*cp = '/';
 		p = devtreenode(t, p, cp+1);
 		if(p == nil)
