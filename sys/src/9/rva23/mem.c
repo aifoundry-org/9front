@@ -46,6 +46,21 @@ mmu0init(uintptr *l1)
 
 uintptr uzero = 0x1000000000ULL;	/* until meminit */
 
+/* pages below the DMA limit, which the kernel's share must stay within */
+ulong
+dmapages(void)
+{
+	Confmem *cm;
+	uvlong lim, n;
+
+	lim = dtbdmalimit();
+	n = 0;
+	for(cm = conf.mem; cm < &conf.mem[nelem(conf.mem)]; cm++)
+		if(cm->npage != 0 && cm->base < lim)
+			n += ((cm->limit < lim ? cm->limit : lim) - cm->base)/BY2PG;
+	return n;
+}
+
 /*
  * User space starts above all RAM, on a root table slot boundary
  * and never below 4GiB.  *uzero moves it; RAM above it is not used.
@@ -130,6 +145,8 @@ meminit(void)
 	if(conf.mem[0].npage == 0)
 		panic("meminit: no memory");
 	setuzero();
+	if(dtbdmalimit() != ~0ULL)
+		print("meminit: dma limit %#llux\n", dtbdmalimit());
 
 	sv57 = (void *)PGROUND((uintptr)end);
 	sv48 = (void *)PGROUND((uintptr)sv57 + 1);

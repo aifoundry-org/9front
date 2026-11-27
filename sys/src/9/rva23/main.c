@@ -73,7 +73,7 @@ void
 confinit(void)
 {
 	int userpcnt;
-	ulong kpages;
+	ulong kpages, n;
 	char *p;
 	int i;
 
@@ -120,6 +120,10 @@ confinit(void)
 	 */
 	if(kpages > (2ULL*GiB)/BY2PG)
 		kpages = (2ULL*GiB)/BY2PG;
+	/* devices get the kernel's memory from xinit, lowest pages first */
+	n = dmapages();
+	if(kpages > n)
+		kpages = n;
 
 	conf.upages = conf.npage - kpages;
 	conf.ialloc = (kpages/2)*BY2PG;

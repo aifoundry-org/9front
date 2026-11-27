@@ -78,7 +78,8 @@ static char dtbstdout[64];
 
 /*
  * Memory map properties of the node being parsed; see dtbmemnode.
- * Two address and two size cells, as on every board we run on.
+ * reg and alloc-ranges have two address and two size cells, as on
+ * every board we run on.
  */
 static struct {
 	uchar	*reg;
@@ -86,7 +87,12 @@ static struct {
 	uchar	*alloc;		/* alloc-ranges */
 	int	alloclen;
 	int	nomap;
+	uchar	*dma;		/* dma-ranges */
+	int	dmalen;
+	int	acells;		/* #address-cells */
+	int	scells;		/* #size-cells */
 } dtbmem;
+static uvlong dmalimit = ~0ULL;
 
 static int dtbhasplic_;			/* root interrupt controller is a PLIC */
 static char dtbrootcompat[128];		/* root "compatible": NUL-separated list */
@@ -540,6 +546,13 @@ dtbmemprop(char *key, uchar *p, int len)
 		dtbmem.alloclen = len;
 	}else if(strcmp(key, "no-map") == 0)
 		dtbmem.nomap = 1;
+	else if(strcmp(key, "dma-ranges") == 0){
+		dtbmem.dma = p;
+		dtbmem.dmalen = len;
+	}else if(strcmp(key, "#address-cells") == 0 && len == 4)
+		dtbmem.acells = beget4(p);
+	else if(strcmp(key, "#size-cells") == 0 && len == 4)
+		dtbmem.scells = beget4(p);
 }
 
 /* add the <base size> pairs of a reg or alloc-ranges to the memory map */
@@ -568,6 +581,33 @@ dtbmemrsv(uchar *p, uchar *e)
 }
 
 /*
+ * Drivers give devices physical addresses, so DMA reaches only the
+ * 1:1 windows of a dma-ranges property: lower the limit to the end
+ * of the one holding the kernel.  Entries are <bus cpu size>, two
+ * cells each.
+ */
+static void
+dtbdmaranges(uchar *p, int len)
+{
+	uvlong b, a, e;
+
+	for(; len >= 24; len -= 24, p += 24){
+		b = (uvlong)beget4(p)<<32 | beget4(p+4);
+		a = (uvlong)beget4(p+8)<<32 | beget4(p+12);
+		e = b + ((uvlong)beget4(p+16)<<32 | beget4(p+20));
+		if(b == a && b <= VDRAM && VDRAM < e && e < dmalimit)
+			dmalimit = e;
+	}
+}
+
+/* RAM at or above this is out of DMA reach; ~0 if all is in reach */
+uvlong
+dtbdmalimit(void)
+{
+	return dmalimit;
+}
+
+/*
  * At the end of a node's properties.  RAM is the reg of the
  * /memory nodes.  Reserved are the fixed regions of /reserved-memory
  * and its pools that must not be mapped (no-map), such as firmware
@@ -585,6 +625,8 @@ dtbmemnode(char *path)
 				dtbmemmap(dtbmem.alloc, dtbmem.alloclen, MemReserved);
 		}else if(strcmp(path, "/memory") == 0 || strncmp(path, "/memory@", 8) == 0)
 			dtbmemmap(dtbmem.reg, dtbmem.reglen, MemRAM);
+		if(dtbmem.acells == 2 && dtbmem.scells == 2)
+			dtbdmaranges(dtbmem.dma, dtbmem.dmalen);
 	}
 	memset(&dtbmem, 0, sizeof dtbmem);
 }

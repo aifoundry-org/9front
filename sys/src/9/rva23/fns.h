@@ -92,6 +92,7 @@ extern void ucfree(void*);
 extern void mmuidmap(uintptr*);
 extern void mmu0init(uintptr*);
 extern void meminit(void);
+extern ulong dmapages(void);
 
 /* clock */
 extern void clockinit(void);
@@ -235,6 +236,7 @@ extern Dtbufs *dtbufs(int);
 extern int dtbsocmatch(char*);
 extern int dtbmodelmatch(char*);
 extern Dtbnode *dtbfind(char*, uvlong);
+extern uvlong dtbdmalimit(void);
 extern int dtblisthas(char*, int, char*);
 
 // new
