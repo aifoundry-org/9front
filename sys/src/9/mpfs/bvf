@@ -17,6 +17,7 @@ dev
 	uart
 	ether	netif
 	sd
+	rtc
 
 link
 	loopbackmedium
