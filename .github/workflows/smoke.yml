@@ -46,3 +46,18 @@ jobs:
 
       - name: Boot and test
         run: .github/ci/smoke.sh '${{ matrix.arch }}' '${{ matrix.kernel }}' "$RUNNER_TEMP/binaries/${{ matrix.arch }}.tar.gz"
+
+      - name: QEMU device tree tests
+        if: matrix.kernel == '9rva23'
+        run: |
+          sudo apt-get install -qy --no-install-recommends device-tree-compiler
+          tar -xf "$RUNNER_TEMP/binaries/riscv64.tar.gz" riscv64/9rva23
+          .github/ci/qemutest.sh -o "$RUNNER_TEMP/qemutest" riscv64/9rva23
+
+      - name: Upload QEMU test logs
+        if: failure() && matrix.kernel == '9rva23'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: qemutest-${{ github.sha }}
+          path: ${{ runner.temp }}/qemutest
+          retention-days: 14
