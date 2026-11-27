@@ -207,12 +207,11 @@ int once = 0;
 void
 main(u64int hartid, uintptr dtb)
 {
-	extern void _start(void);
 	extern uintptr dtbphys;
 
 	dtbphys = dtb;
 
-	if((hartid == 0) && !once){
+	if(!once){
 		uzero = 0x1000000000ULL;
 		/*
 		 * Zero every per-cpu Mach page, not just cpu0's.  The Mach
@@ -226,25 +225,6 @@ main(u64int hartid, uintptr dtb)
 		 * started yet (mpinit() runs much later).
 		 */
 		memset(MACHP(MAXMACH-1), 0, KTZERO-(uintptr)MACHP(MAXMACH-1));
-	}
-
-	if (hartid != 0) {
-		/*
-		 * SBI cold-booted a hart other than 0 (e.g. QEMU's OpenSBI
-		 * cold-boot lottery picks a random hart).  The kernel wires pid 1
-		 * to cpu0 == hart 0, so funnel the boot onto hart 0: HSM-start it
-		 * at _start past the 64-byte Image header, forwarding the DTB as
-		 * its a1, then stop ourselves.  hart 0 re-enters _start, finds the
-		 * kernel already relocated, and runs the real boot as main(0,dtb).
-		 * print() isn't up this early, so report via the SBI console.
-		 */
-		sbiputs("boot hart != 0; handing off to hart 0\r\n");
-		if (sbihartstart(0, PADDR(_start), dtb) < 0)
-			sbiputs("sbihartstart(hart 0) failed\r\n");
-		sbihartstop();			/* no return on success */
-		sbiputs("sbihartstop returned; hanging\r\n");
-		for(;;)
-			;
 	}
 
 	if (once) panic("main entered twice");
@@ -266,6 +246,7 @@ main(u64int hartid, uintptr dtb)
 		vfy = 0;
 	}
 	memset(edata, 0, end - edata);		/* zero bss */
+	m->hartid = hartid;
 	machinit();
 #ifdef XXX
 	if(m->machno){
