@@ -44,7 +44,7 @@ mmu0init(uintptr *l1)
 #endif
 }
 
-uintptr uzero = 0x1000000000ULL;	/* until meminit */
+uintptr uzero = USTKTOP;	/* until meminit: no user space */
 
 static void
 addbank(uvlong base, uvlong limit)
