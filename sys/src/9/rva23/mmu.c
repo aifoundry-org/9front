@@ -10,7 +10,7 @@ enum {
 
 #define INITMAP	(ROUND((uintptr)end + BY2PG, PGLSZ(1))-KZERO)
 
-uintptr klimit;
+uintptr klimit = 0x1000000000ULL;	/* until meminit */
 
 uintptr
 paddr(void *va)
