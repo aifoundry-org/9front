@@ -1,0 +1,68 @@
+# Procs for qemutest scripts.  Patterns are exact strings; a panic
+# fails the test unless it is the string being waited for.
+set timeout 60
+spawn -noecho sh -c "exec $env(QEMU) -append '$env(APPEND)'"
+
+proc fail {why} {
+	puts "\nFAIL: $why"
+	exit 1
+}
+
+proc pass {} {
+	puts "\nPASS"
+	exit 0
+}
+
+# wait for s; return what came before it
+proc want {s} {
+	expect {
+		-ex $s { return $expect_out(buffer) }
+		-re {panic: [^\r\n]*[\r\n]} { fail "unexpected [string trimright $expect_out(0,string)]" }
+		timeout { fail "timeout waiting for \"$s\"" }
+		eof { fail "eof waiting for \"$s\": [lindex [split [string trim $expect_out(buffer)] \n] end]" }
+	}
+}
+
+# s must not show up before t
+proc wantnot {s t} {
+	if {[string first $s [want $t]] >= 0} {
+		fail "\"$s\" before \"$t\""
+	}
+}
+
+# boot to a ramdisk shell
+proc rc {} {
+	want "bootargs is"
+	send "!rc\r"
+	want "% "
+}
+
+# run an rc command; return its output
+proc run {cmd} {
+	send "$cmd; echo E^ND\r"
+	want "E^ND"
+	set o [want "END"]
+	want "% "
+	return $o
+}
+
+# run cmd; each further argument must be in its output
+proc has {cmd args} {
+	set o [run $cmd]
+	foreach s $args {
+		if {[string first $s $o] < 0} {
+			fail "\"$cmd\" lacks \"$s\""
+		}
+	}
+}
+
+# run cmd; no further argument may be in its output
+proc lacks {cmd args} {
+	set o [run $cmd]
+	foreach s $args {
+		if {[string first $s $o] >= 0} {
+			fail "\"$cmd\" has \"$s\""
+		}
+	}
+}
+
