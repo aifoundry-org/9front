@@ -371,9 +371,9 @@ poweroff(void)
 		zeroprivatepages();
 		poolreset(secrmem);
 	}
-	sbireset(0, 0);		/* SRSTSHUT: works on QEMU; ignored on K1 */
 	if (rvpoweroff)
-		rvpoweroff();	/* board-specific, e.g. K1 PMIC shutdown */
+		rvpoweroff();	/* board-specific, e.g. K1 PMIC shutdown, AIBOX via GPIO */
+	sbireset(0, 0);		/* SRSTSHUT: works on QEMU; ignored on K1 */
 	sbishutdown();		/* legacy ext 8 */
 	for(;;)
 		;

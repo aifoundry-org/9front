@@ -229,6 +229,7 @@ enum {
 	Nbank		= 4,		/* confirmed: gpio-ranges 4x32, manual "up to 128 GPIOs" */
 	Nport		= 32,		/* pins per bank */
 	Npin		= Nbank*Nport,	/* 128 */
+	Pwroffpin	= 88,		/* AIBOX-K3: driving it low cuts power */
 
 	GpioPhys	= 0xD4019000ull,	/* confirmed: both dtbs, gpio@d4019000 */
 	GpioSize	= 0x100,		/* confirmed: both dtbs' reg size; == Nbank*BankStride */
@@ -424,6 +425,32 @@ gpioin(uint pin)
 }
 
 /*
+ * gpiopeek -- read a pin's level without changing its direction, so
+ * reading an output such as an LED leaves it driven.
+ */
+int
+gpiopeek(uint pin)
+{
+	if(!gpioready || pin >= Npin)
+		return -1;
+	return (gpior(pin, Plr) & (1<<(pin%Nport))) != 0;
+}
+
+/*
+ * AIBOX carriers cut power when their poweroff line is driven low; the
+ * PMIC takes a few seconds.  Hooked in as rvpoweroff so pmctl and the
+ * power button path work like the K1's PMIC shutdown.
+ */
+static void
+k3poweroff(void)
+{
+	if(!dtbmodelmatch("AIBOX"))
+		return;
+	gpioout(Pwroffpin, 0);
+	delay(3000);
+}
+
+/*
  * gpiointrenable -- mode is one of dat.h's GpioRising/GpioFalling/
  * GpioEdge (either edge); GpioLow/GpioHigh (level) are not
  * implementable on this IP (no level-detect registers exist in the
@@ -506,7 +533,7 @@ gpiok3init(void)
 	u32int *apbc;
 	u32int v;
 
-	if(!dtbsocmatch("spacemit,k3"))
+	if(gpioready || !dtbsocmatch("spacemit,k3"))
 		return;
 
 	gpiobase = (uintptr)vmap(GpioPhys, GpioSize);
@@ -530,6 +557,8 @@ gpiok3init(void)
 	}
 
 	gpioready = 1;
+	if(dtbmodelmatch("AIBOX"))
+		rvpoweroff = k3poweroff;
 
 	intrenable(GpioIrq, gpiointerrupt, nil, BUSUNKNOWN, "gpio");
 }

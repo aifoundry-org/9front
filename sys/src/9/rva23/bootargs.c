@@ -74,6 +74,7 @@ static char dtbstdout[64];
 static int dtbhasplic_;			/* root interrupt controller is a PLIC */
 static char dtbrootcompat[128];		/* root "compatible": NUL-separated list */
 static int dtbrootcompatlen;
+static char dtbrootmodel[96];		/* root "model" */
 
 /*
  * Interrupt-controller node candidates harvested during the DTB walk.
@@ -171,6 +172,16 @@ dtbsocmatch(char *prefix)
 		sl = strlen(c) + 1;
 	}
 	return 0;
+}
+
+/*
+ * Boards sharing a compatible string (the CoM260 module is used on more
+ * than one carrier) are told apart by the root "model" instead.
+ */
+int
+dtbmodelmatch(char *s)
+{
+	return dtbrootmodel[0] != 0 && strstr(dtbrootmodel, s) != nil;
 }
 
 Dtbether*
@@ -383,6 +394,7 @@ findorallocether(char *path)
 	e->txphase = -1;
 	e->rxphase = -1;
 	e->rstpin = -1;
+	e->rstactive = 0;
 	return e;
 }
 
@@ -447,6 +459,15 @@ devtreeprop(char *path, char *key, void *val, int len)
 			dtbrootcompatlen = sizeof(dtbrootcompat) - 1;
 		memmove(dtbrootcompat, val, dtbrootcompatlen);
 		dtbrootcompat[dtbrootcompatlen] = 0;
+		return;
+	}
+	if(path[0] == 0 && strcmp(key, "model") == 0){
+		int n = len;
+
+		if(n > (int)sizeof(dtbrootmodel) - 1)
+			n = sizeof(dtbrootmodel) - 1;
+		memmove(dtbrootmodel, val, n);
+		dtbrootmodel[n] = 0;
 		return;
 	}
 	if((strncmp(path, "/memory", 7) == 0 || strncmp(path, "/memory@0", 9) == 0)
@@ -547,16 +568,23 @@ devtreeprop(char *path, char *key, void *val, int len)
 			e->apmubase = beget4(p);
 		} else if(strcmp(key, "spacemit,apmu") == 0 && len >= 12){
 			/*
-			 * K3 binding: spacemit,apmu = <&syscon_apmu ctrl-off
-			 * dline-off>; a phandle + 2 args, not the separate
-			 * bare ctrl-reg/dline-reg properties K1 uses.  We
-			 * don't resolve the phandle itself (there's only one
+			 * Older K3 binding: spacemit,apmu = <&syscon_apmu ctrl-off
+			 * dline-off>; a phandle plus the two APMU offsets.
+			 * Current K3 trees put those in the separate
+			 * spacemit,ctrl-offset/dline-offset properties handled below.
+			 * We don't resolve the phandle itself (there's only one
 			 * APMU syscon on this SoC family; apmubase keeps its
 			 * K3 default from etherpnp() unless k1x,apmu-base-reg
 			 * says otherwise), just the two offset cells.
 			 */
 			e->ctrlregoff = beget4(p + 4);
 			e->dlineregoff = beget4(p + 8);
+		} else if(strcmp(key, "spacemit,ctrl-offset") == 0 && len >= 4){
+			/* K3: per-EMAC APMU offset for clock/reset control. */
+			e->ctrlregoff = beget4(p);
+		} else if(strcmp(key, "spacemit,dline-offset") == 0 && len >= 4){
+			/* K3: per-EMAC APMU offset for the RGMII delay line. */
+			e->dlineregoff = beget4(p);
 		} else if(strcmp(key, "ctrl-reg") == 0 && len >= 4){
 			/* SpacemiT extension: per-EMAC offset into APMU for
 			 * clock/reset control.  K1 binding name. */
@@ -579,6 +607,14 @@ devtreeprop(char *path, char *key, void *val, int len)
 		} else if(strcmp(key, "emac,reset-gpio") == 0 && len >= 12){
 			/* <phandle pin flags> — the PHY's reset line */
 			e->rstpin = beget4(p + 4);
+			e->rstactive = beget4(p + 8) & 1;
+		} else if(strcmp(key, "snps,reset-gpios") == 0 && len >= 16){
+			/*
+			 * <&gpio bank offset flags> — K3's gpio controller has
+			 * #gpio-cells = 3, so the pin is bank*32 + offset.
+			 */
+			e->rstpin = beget4(p + 4)*32 + beget4(p + 8);
+			e->rstactive = beget4(p + 12) & 1;
 		}
 		return;
 	}
@@ -947,6 +983,38 @@ inipreloaded(void)
 	return 0;
 }
 
+static char consoleidx[12];
+
+/*
+ * Firmware bootargs name the console the way the firmware's own
+ * kernel does (console=ttyS0,115200), but bootrc and the uart driver
+ * expect a Plan 9 serial index: bootrc turns $console into /dev/eiaN
+ * for kbdfs.  When the value isn't an index, substitute the serial
+ * alias of the uart the device tree picked as console.
+ */
+static void
+fixconsoleconf(void)
+{
+	int i, j;
+	char *v;
+
+	if((i = findconf("console")) < 0)
+		return;
+	v = confval[i];
+	if(*v >= '0' && *v <= '9')
+		return;
+	for(j = 0; j < ndtbuarts; j++){
+		if(!dtbuarts[j].isconsole)
+			continue;
+		snprint(consoleidx, sizeof consoleidx, "%d",
+			dtbuarts[j].aliasidx >= 0 ? dtbuarts[j].aliasidx : 32 + j);
+		print("bootargsinit: console %q is not a serial index, using eia%s\n",
+			v, consoleidx);
+		confval[i] = consoleidx;
+		break;
+	}
+}
+
 void
 bootargsinit(void)
 {
@@ -979,6 +1047,7 @@ bootargsinit(void)
 			nconf, preloadedini? "plan9.ini": "DTB /chosen/bootargs",
 			ndtbuarts, ndtbethers, ndtbufs, ndis);
 	}
+	fixconsoleconf();
 }
 
 char*

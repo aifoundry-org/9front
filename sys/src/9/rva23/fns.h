@@ -195,6 +195,7 @@ extern uint iomuxgpr(int gpr, uint set, uint mask);
 #define GPIO_PIN(n, m)	((n)<<5 | (m))
 extern void gpioout(uint pin, int set);
 extern int gpioin(uint pin);
+extern int gpiopeek(uint pin);
 void gpiointrenable(uint pin, int mode, void (*f)(uint pin, void *a), void *a);
 void gpiointrdisable(uint pin);
 
@@ -219,6 +220,7 @@ extern int k3ecmemmapread(int off, void *buf, int n);
 
 /* espik3fan */
 extern void k3ecfaninit(void);
+extern void i2ck3faninit(void);
 /* screenpicoitx.c: DP1 framebuffer driver entry point plus the two
  * accessors screen.c's screeninit() needs (shared with screencom260.c). */
 extern void dpuk3(void);
@@ -259,6 +261,7 @@ extern Dtbether *dtbether(int);
 extern int dtbnufs(void);
 extern Dtbufs *dtbufs(int);
 extern int dtbsocmatch(char*);
+extern int dtbmodelmatch(char*);
 
 // new
 void wsatp(u64int);

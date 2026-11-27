@@ -330,8 +330,8 @@ struct Dtbether {
 	uvlong	base;		/* MMIO physical base */
 	uvlong	size;		/* MMIO region size */
 	uvlong	apmubase;	/* SpacemiT "k1x,apmu-base-reg" if present */
-	u32int	ctrlregoff;	/* SpacemiT "ctrl-reg": APMU offset for clk/reset */
-	u32int	dlineregoff;	/* SpacemiT "dline-reg": APMU offset for RGMII delays */
+	u32int	ctrlregoff;	/* SpacemiT "spacemit,ctrl-offset"/"ctrl-reg": APMU clk/reset offset */
+	u32int	dlineregoff;	/* SpacemiT "spacemit,dline-offset"/"dline-reg": APMU RGMII delay offset */
 	int	irq;
 	int	ok;
 	int	aliasidx;	/* ethernet<N>; -1 if no alias */
@@ -339,7 +339,8 @@ struct Dtbether {
 	int	hasmac;
 	int	txphase;	/* SpacemiT "tx-phase": RGMII delay, degrees; -1 unset */
 	int	rxphase;	/* SpacemiT "rx-phase" */
-	int	rstpin;		/* "emac,reset-gpio" pin for the PHY; -1 unset */
+	int	rstpin;		/* PHY reset GPIO pin; -1 unset */
+	int	rstactive;		/* PHY reset line is active low */
 };
 
 /*

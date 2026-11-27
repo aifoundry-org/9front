@@ -38,6 +38,41 @@ enum {
 
 	ApmuPhys	= 0xd4282800UL,
 	ApmuSize	= 0x400,
+	RcpuPhys	= 0xc0880000UL,	/* EMAC2/3 clock and reset */
+
+	MpmuPhys	= 0xd4050000UL,	/* PLL lock status lives here */
+	MpmuSize	= 0x1000,
+	MpmuPosr	= 0x10/4,
+	Pll2Lock	= 1U << 25,
+
+	PllPhys		= 0xd4090000UL,	/* spacemit,k3-pll (APBS) */
+	PllSize		= 0x1000,
+	Pll2Swcr2	= 0x11c/4,	/* APBS_PLL2_SWCR2 */
+	Pll2Enable	= 1U << 16,	/* type-A PLL enable */
+	Pll2D3Gate	= 1U << 2,	/* pll2_d3 output gate */
+
+	ApbcPhys	= 0xd4015000UL,
+	ApbcSize	= 0x1000,
+	ApbcAib		= 0x3c/4,	/* APBC_AIB_CLK_RST */
+	ApbcBusEn	= 1U << 0,
+	ApbcFuncEn	= 1U << 1,
+	ApbcReset	= 1U << 2,
+	ApbcAsfar	= 0x50/4,	/* AIB secure access unlock */
+	ApbcAssar	= 0x54/4,
+	ApbcAsfarKey	= 0xbaba,
+	ApbcAssarKey	= 0xeb10,
+
+	PwrDomainOff	= 0x800,	/* IO power-domain window in the pinctrl */
+	PwrV18En	= 1U << 2,
+
+	PinctrlPhys	= 0xd401e000UL,
+	PinctrlSize	= 0x1000,
+	PadMux		= 7,		/* pad register bits [2:0] */
+	PadDriveShift	= 9,		/* K3 drive strength, bits [12:9] */
+	PadDriveMask	= 0xf << PadDriveShift,
+	PadPullMask	= 7U << 13,	/* pull enable/up/down, bits [15:13] */
+	PadDrive9mA	= 4,		/* 1.8V table: 9mA */
+	PadDrive25mA	= 10,		/* 1.8V table: 25mA */
 
 	DwqeRxDelay	= 100,
 	DwqeTxDelay	= 100,
@@ -189,7 +224,13 @@ enum {
 	Emac0ClkRefGate		= (1U << 14),	/* 1 = tx 25M refclk disable, 0 = enable */
 	Emac0PhyIntrEn		= (1U << 12),	/* 1 = PHY PMT intr mask enable */
 	Emac0LpiIntrEn		= (1U << 9),	/* 1 = LPI intr mask enable */
-	Emac0RgmiiTxcSrcSel		= (1U << 8),	/* RGMII only: 1 = TX clock from SoC, 0 = from RX clock */
+	/*
+	 * RGMII TX clock select/gate.  0 uses the PHY's RX clock, which
+	 * does not run until the PHY is out of reset; 1 uses the SoC PLL
+	 * 125MHz clock and also gates it on.  The K3 has no PHY reset
+	 * handling here, so the MAC needs the SoC clock.
+	 */
+	Emac0RgmiiTxcSrcSel		= (1U << 8),	/* RGMII only: 1 = SoC PLL, 0 = PHY RX clk */
 	EmacRxRefclkPhaseSel	= (1U << 7),	/* 1 = inverted, 0 = normal */
 	EmacRmiiTxRefclkPhaseSel	= (1U << 6),	/* RMII only, don't-care in RGMII */
 
@@ -236,13 +277,14 @@ enum {
 enum {
 	PhyAddr		= 1,	/* where the RTL8211F answers on this board */
 	Linkdelay	= 500,
+	Linktries	= 20,	/* 10s per PHY before trying the next address */
 };
 
 enum {
 	Nrxd	= 512,
 	Ntxd	= 512,
 	Txirqevery = 64,
-	Ndwqe	= 1,		/* GMAC0 only for now; GMAC1/2 follow the same pattern */
+	Ndwqe	= 4,		/* GMAC0..3 */
 
 	Dcachelinesz = 64,	/* X60/C908 D-cache line size */
 };
@@ -282,6 +324,15 @@ struct Ctlr {
 	Block	**rxs, **txs;
 	int	rxprodi, rxconsi, txi;
 	u32int	rxdelay, txdelay;
+	int	phyaddr;		/* MDIO address of the PHY */
+	int	mdiocr;		/* MDIO CSR-clock-range divider */
+	int	phyaddrs[32];	/* addresses that answered the MDIO scan */
+	int	nphy;
+	int	phyidx;
+	int	phycur;
+	u32int	phydone;	/* PHYs already identified and configured */
+	int	rstpin;		/* PHY reset GPIO; -1 if none */
+	int	rstactive;		/* reset line asserted by a low level */
 	int	txcons;
 	int	attach;
 	int	dmarunning;
@@ -314,22 +365,34 @@ wreg(u32int *base, uintptr reg, u32int v)
 
 /* MDIO -- GMAC4-style GOC field */
 
+static int
+mdiobusy(Ctlr *c)
+{
+	int i;
+
+	for(i = 0; i < 1000; i++){
+		if((rd32(c->regs, GmacMdioAddr) & MdioGbusy) == 0)
+			return 0;
+		microdelay(10);
+	}
+	return -1;
+}
+
 static void
 mdwrite(Ctlr *c, int reg, u16int v)
 {
 	u32int addr;
 
-	while(rd32(c->regs, GmacMdioAddr) & MdioGbusy)
-		tsleep(&up->sleep, return0, nil, 1);
+	if(mdiobusy(c) < 0)
+		return;
 	wreg(c->regs, GmacMdioData, v);
-	addr = (PhyAddr & 0x1f) << MdioPaShift
+	addr = (c->phyaddr & 0x1f) << MdioPaShift
 		| (reg & 0x1f) << MdioGrShift
-		| MdioCrVal << MdioCrShift
+		| c->mdiocr << MdioCrShift
 		| MdioWrite
 		| MdioGbusy;
 	wreg(c->regs, GmacMdioAddr, addr);
-	while(rd32(c->regs, GmacMdioAddr) & MdioGbusy)
-		tsleep(&up->sleep, return0, nil, 1);
+	mdiobusy(c);
 }
 
 static u16int
@@ -337,17 +400,77 @@ mdread(Ctlr *c, int reg)
 {
 	u32int addr;
 
-	while(rd32(c->regs, GmacMdioAddr) & MdioGbusy)
-		tsleep(&up->sleep, return0, nil, 1);
-	addr = (PhyAddr & 0x1f) << MdioPaShift
+	if(mdiobusy(c) < 0)
+		return 0xffff;
+	addr = (c->phyaddr & 0x1f) << MdioPaShift
 		| (reg & 0x1f) << MdioGrShift
-		| MdioCrVal << MdioCrShift
+		| c->mdiocr << MdioCrShift
 		| MdioRead
 		| MdioGbusy;
 	wreg(c->regs, GmacMdioAddr, addr);
-	while(rd32(c->regs, GmacMdioAddr) & MdioGbusy)
-		tsleep(&up->sleep, return0, nil, 1);
+	if(mdiobusy(c) < 0)
+		return 0xffff;
 	return rd32(c->regs, GmacMdioData) & MdioGdMask;
+}
+
+/*
+ * Clause-22 scan.  The device tree names one PHY address, but a board
+ * may carry more than one PHY on the shared MDIO lines and the one that
+ * drives the connected port is not always the one the tree lists.  Keep
+ * every address that answers so ethproc can try them in turn.
+ */
+static int
+mdioscan(Ctlr *c, int verbose)
+{
+	int a;
+	u16int s1, s2;
+
+	c->nphy = 0;
+	for(a = 0; a < 32; a++){
+		c->phyaddr = a;
+		s1 = mdread(c, Phyidr1);
+		if(s1 == 0xffff || s1 == 0)
+			continue;
+		s2 = mdread(c, Phyidr2);
+		if(s2 == 0xffff)
+			continue;
+		if(verbose)
+			print("dwqe: MDIO %d id %04x%04x\n", a, s1, s2);
+		c->phyaddrs[c->nphy++] = a;
+		if(c->nphy == nelem(c->phyaddrs))
+			break;
+	}
+	if(c->nphy == 0)
+		print("dwqe: no PHY answers on MDIO\n");
+	c->phyaddr = c->nphy ? c->phyaddrs[0] : PhyAddr;
+	return c->nphy;
+}
+
+/*
+ * RTL8211F RGMII internal delays.  The board describes the interface
+ * as plain "rgmii": the MAC's delay lines provide the timing, so the
+ * PHY's own 2ns TX/RX delays must be off.  They are strapping-default
+ * controlled and are commonly on; leaving them on doubles the skew and
+ * corrupts TX while RX can still work.
+ *
+ * The page register takes the whole page number in one write.
+ */
+static void
+rtl8211fdly(Ctlr *c)
+{
+	u16int page, txcr, rxcr;
+
+	page = mdread(c, 0x1f);
+	mdwrite(c, 0x1f, 0x0d08);	/* RGMII configuration page */
+	txcr = mdread(c, 0x11);
+	rxcr = mdread(c, 0x15);
+	if(txcr & 0x0100)
+		mdwrite(c, 0x11, txcr & ~0x0100);
+	if(rxcr & 0x0008)
+		mdwrite(c, 0x15, rxcr & ~0x0008);
+	mdwrite(c, 0x1f, page);		/* restore page */
+	print("dwqe: PHY RTL8211F internal delays off (txcr=%#04ux rxcr=%#04ux)\n",
+		txcr, rxcr);
 }
 
 /*
@@ -404,41 +527,85 @@ txreset(Ctlr *c)
 }
 
 /* PHY / link kproc -- same RTL8211F sequence as ethersmte.c */
+static int
+physetup(Ctlr *c)
+{
+	u16int id1, id2;
+
+	c->phyaddr = c->phyaddrs[c->phyidx];
+	id1 = mdread(c, Phyidr1);
+	id2 = mdread(c, Phyidr2);
+	if(id1 == 0xffff || id1 == 0)
+		return -1;
+	if((c->phydone & (1U << c->phyidx)) == 0){
+		c->phydone |= 1U << c->phyidx;
+		print("dwqe: PHY %d id %04x%04x (oui=0x%06ux model=0x%02ux rev=0x%01ux)\n",
+			c->phyaddr, id1, id2,
+			((u32int)id1 << 6) | (id2 >> 10), (id2 >> 4) & 0x3f, id2 & 0xf);
+		if(id1 == 0x001c && ((id2 >> 4) & 0x3f) == 0x11)
+			rtl8211fdly(c);
+	}
+
+	mdwrite(c, Mscr, Mscr1000TFD | Mscr1000THD);
+	mdwrite(c, Bmcr, BmcrAne | BmcrRan);
+	return 0;
+}
+
+/* wait for link, but not forever: let ethproc move on to the next PHY */
+static int
+waitlink(Ctlr *c)
+{
+	int i;
+
+	for(i = 0; i < Linktries; i++){
+		if(mdread(c, Bmsr) & BmsrLs)
+			return 0;
+		tsleep(&up->sleep, return0, nil, Linkdelay);
+	}
+	return -1;
+}
+
 static void
 ethproc(void *ved)
 {
 	Ether *edev;
 	Ctlr *c;
-	u16int bmsr, lpa, gbsr, id1, id2;
+	u16int bmsr, lpa, gbsr;
 	u32int cfg, v;
-	int speed;
+	int i, speed;
 	char *dup;
 
 	edev = ved;
 	c    = edev->ctlr;
 
-	id1 = mdread(c, Phyidr1);
-	id2 = mdread(c, Phyidr2);
-	dprint("dwqe: PHY addr=%d oui=0x%06ux model=0x%02ux rev=0x%01ux\n",
-		PhyAddr, ((u32int)id1 << 6) | (id2 >> 10), (id2 >> 4) & 0x3f, id2 & 0xf);
-
-	mdwrite(c, Mscr, Mscr1000TFD | Mscr1000THD);
-	mdwrite(c, Bmcr, BmcrAne | BmcrRan);
+	mdioscan(c, 0);
+	if(c->nphy == 0){
+		c->phyaddrs[0] = PhyAddr;
+		c->nphy = 1;
+	}
+	c->phyidx = 0;
+	c->phycur = -1;
 
 	for(;;){
-		bmsr = mdread(c, Bmsr);
-		if((bmsr & BmsrLs) == 0){
-			print("dwqe: %s link down (BMSR=0x%04ux)\n", edev->name, bmsr);
-			ethersetlink(edev, 0);
-			wreg(c->regs, GmacConfig, rd32(c->regs, GmacConfig)
-				& ~(GmacConfigTe | GmacConfigRe));
-			txreset(c);
-			while((mdread(c, Bmsr) & BmsrLs) == 0)
-				tsleep(&up->sleep, return0, nil, Linkdelay);
+		if(c->phycur != c->phyidx){
+			c->phycur = c->phyidx;
+			if(physetup(c) < 0){
+				c->phycur = -1;
+				goto nextphy;
+			}
 		}
+		if(waitlink(c) < 0)
+			goto nextphy;
 
-		while((mdread(c, Bmsr) & BmsrAnc) == 0)
+		/* let autonegotiation finish, then read BMSR afresh */
+		for(i = 0; i < Linktries; i++){
+			bmsr = mdread(c, Bmsr);
+			if(bmsr & BmsrAnc)
+				break;
 			tsleep(&up->sleep, return0, nil, Linkdelay);
+		}
+		if((bmsr & (BmsrAnc|BmsrLs)) != (BmsrAnc|BmsrLs))
+			goto nextphy;
 
 		lpa  = mdread(c, Anlpar);
 		gbsr = mdread(c, Mssr);
@@ -497,12 +664,24 @@ ethproc(void *ved)
 			| DmaIntrRie | DmaIntrRbu
 			| DmaIntrAie | DmaIntrFbe);
 
-		print("dwqe: %s link up %dMbps %s\n", edev->name, speed, dup);
+		print("dwqe: %s link up %dMbps %s on PHY %d "
+			"(bmsr=%#04ux lpa=%#04ux mssr=%#04ux)\n",
+			edev->name, speed, dup, c->phyaddr, bmsr, lpa, gbsr);
 		ethersetspeed(edev, speed);
 		ethersetlink(edev, 1);
 
 		while((mdread(c, Bmsr) & BmsrLs) != 0)
 			tsleep(&up->sleep, return0, nil, Linkdelay);
+
+		print("dwqe: %s link down\n", edev->name);
+		ethersetlink(edev, 0);
+		wreg(c->regs, GmacConfig, rd32(c->regs, GmacConfig)
+			& ~(GmacConfigTe | GmacConfigRe));
+		txreset(c);
+		continue;
+
+nextphy:
+		c->phyidx = (c->phyidx + 1) % c->nphy;
 	}
 }
 
@@ -826,16 +1005,161 @@ dwqectl(Ether *edev, void *buf, long n)
 	return n;
 }
 
+/*
+ * GMAC pad groups.  The pads are normally muxed by the boot loader, but
+ * it only sets up the port it booted through; a cold boot to Plan 9 has
+ * no Ethernet at all until we do it.  K3 pad N is at pinctrl + 4*N and
+ * function 1 is the GMAC function on every port.
+ */
+static u32int *pinctrl;
+
+/*
+ * Set mux, drive strength and bias.  The GMAC pad groups ask for 9mA
+ * and bias-disable; the reset line asks for the maximum drive.  RX
+ * works without this (the PHY drives those pads) but TX does not.
+ */
+static void
+dwqepadcfg(uint pin, uint func, uint drive)
+{
+	u32int v;
+
+	if(pinctrl == nil || pin >= 128)
+		return;
+	v = pinctrl[pin];
+	v &= ~(PadMux | PadDriveMask | PadPullMask);
+	v |= (func & PadMux) | ((drive & 0xf) << PadDriveShift);
+	pinctrl[pin] = v;
+}
+
+static void
+dwqepads(Ctlr *c, uvlong base)
+{
+	static u32int *apbc;
+	uint lo, hi, pdoff, i, n;
+	u32int v;
+
+	switch(base){
+	case Gmac0Phys:		lo = 0;  hi = 20; pdoff = 0x04; break;
+	case 0xcac82000UL:	lo = 21; hi = 35; pdoff = 0x0c; break;
+	case 0xcac8e000UL:	lo = 42; hi = 58; pdoff = 0; break;
+	case 0xa0000000UL:	lo = 59; hi = 75; pdoff = 0; break;
+	default:
+		return;
+	}
+
+	if(apbc == nil)
+		apbc = vmap(ApbcPhys, ApbcSize);
+	if(apbc != nil){
+		apbc[ApbcAib] = (apbc[ApbcAib] & ~ApbcReset)
+			| ApbcBusEn | ApbcFuncEn;
+		coherence();
+	}
+	if(pinctrl == nil)
+		pinctrl = vmap(PinctrlPhys, PinctrlSize);
+	if(pinctrl == nil)
+		return;
+
+	/*
+	 * The GMAC pads share an IO-power domain that the device tree
+	 * runs at 1.8V.  A cold boot may leave it at 3.3V, which breaks
+	 * the RGMII/MDIO levels (RX can still work).  The domain
+	 * registers are protected: unlock via ASFAR/ASSAR for each access.
+	 */
+	if(apbc != nil && pdoff != 0){
+		u32int *pd = &pinctrl[(PwrDomainOff + pdoff)/4];
+		u32int before;
+
+		apbc[ApbcAsfar] = ApbcAsfarKey;
+		apbc[ApbcAssar] = ApbcAssarKey;
+		before = *pd;
+		apbc[ApbcAsfar] = ApbcAsfarKey;
+		apbc[ApbcAssar] = ApbcAssarKey;
+		*pd = PwrV18En;
+		coherence();
+		print("dwqe: IO domain %#ux: %#ux -> 1.8V\n", pdoff, before);
+	}
+
+	n = 0;
+	for(i = lo; i <= hi; i++){
+		v = pinctrl[i];
+		dwqepadcfg(i, 1, PadDrive9mA);
+		if(v != pinctrl[i])
+			n++;
+	}
+	/* the PHY reset line is a GPIO, not a GMAC pad */
+	if(c->rstpin >= 0)
+		dwqepadcfg(c->rstpin, 0, PadDrive25mA);
+	if(n)
+		print("dwqe: configured %ud GMAC pads for %#llux\n", n, base);
+}
+
+/*
+ * Release the PHY reset and give it time to start its receive clock.
+ * The DMA soft reset below will not complete until that clock runs.
+ */
+static void
+dwqephyreset(Ctlr *c)
+{
+	int assertlvl, releaselvl;
+
+	if(c->rstpin < 0 || c->rstpin >= 128)
+		return;
+	gpiok3init();		/* map and clock the GPIO block; idempotent */
+	if(c->rstactive){
+		assertlvl = 0;
+		releaselvl = 1;
+	}else{
+		assertlvl = 1;
+		releaselvl = 0;
+	}
+	gpioout(c->rstpin, assertlvl);
+	microdelay(20000);
+	gpioout(c->rstpin, releaselvl);
+	microdelay(100000);
+	print("dwqe: PHY reset released on gpio%d\n", c->rstpin);
+}
+
 /* Core bring-up ------------------------------------------------------------ */
 
 static int
 ethinit(Ether *edev)
 {
 	Ctlr *c;
-	u32int v;
-	int timeout;
+	u32int v, txclk;
+	int i, timeout;
 
 	c = edev->ctlr;
+
+	/*
+	 * RGMII TX clock source: the SoC's PLL2 (pll2_d3 /8, gated in the
+	 * PLL controller) or the PHY's RX clock.  Firmware may not have
+	 * enabled the PLL path.  Use PLL2 only if it is locked; otherwise
+	 * fall back to the PHY clock, which the reset below makes sure is
+	 * running.
+	 */
+	{
+		u32int *mpmu, *pll;
+		u32int posr, swcr2;
+
+		mpmu = vmap(MpmuPhys, MpmuSize);
+		pll = vmap(PllPhys, PllSize);
+		posr = mpmu ? rd32(mpmu, MpmuPosr) : 0;
+		swcr2 = pll ? rd32(pll, Pll2Swcr2) : 0;
+		if((posr & Pll2Lock) && pll != nil){
+			if((swcr2 & (Pll2Enable|Pll2D3Gate))
+			   != (Pll2Enable|Pll2D3Gate))
+				wreg(pll, Pll2Swcr2,
+					swcr2 | Pll2Enable | Pll2D3Gate);
+			txclk = Emac0RgmiiTxcSrcSel;
+		}else
+			txclk = 0;
+		print("dwqe: RGMII TX clock from %s (posr=%#08ux swcr2=%#08ux)\n",
+			txclk ? "SoC PLL2" : "PHY RX clock", posr, swcr2);
+		if(mpmu)
+			vunmap(mpmu, MpmuSize);
+		if(pll)
+			vunmap(pll, PllSize);
+	}
 
 	/*
 	 * APMU: bring GMAC0 out of reset with clocks enabled, PHY interface
@@ -884,18 +1208,21 @@ ethinit(Ether *edev)
 		/*
 		 * CLK_REF_GATE=0 (refclk enabled, unused in RGMII anyway),
 		 * PHY_INTR_EN=0 / LPI_INTR_EN=0 (no WoL/EEE handler exists),
-		 * *_PHASE_SEL=0 (no skew correction needed, RMII one is don't-care)
-		 * RGMII_TXC_SRC_SEL=0 (RX-clock-sourced TX clock)
+		 * *_PHASE_SEL=0 (no skew correction needed, RMII one is don't-care).
 		 */
-		wreg(c->apmu, c->apmuctrloff, preserve | physel);
+		wreg(c->apmu, c->apmuctrloff,
+			preserve | physel | txclk);
 		microdelay(10000);
-		wreg(c->apmu, c->apmuctrloff, preserve | physel | EmacBusEn | Emac1588ClkMux);
+		wreg(c->apmu, c->apmuctrloff,
+			preserve | physel | txclk | EmacBusEn | Emac1588ClkMux);
 		microdelay(10000);
-		wreg(c->apmu, c->apmuctrloff, preserve | physel | EmacBusEn | Emac1588ClkMux
-			| EmacBusRst | EmacAxiMstId);
+		wreg(c->apmu, c->apmuctrloff,
+			preserve | physel | txclk
+			| EmacBusEn | Emac1588ClkMux | EmacBusRst | EmacAxiMstId);
 		microdelay(10000);
-		print("dwqe: APMU CLK_RST[%#ux] %#ux -> %#ux (PHY_SELECT=RGMII, TXC_SRC_SEL=RXclk)\n",
-			c->apmuctrloff, origv, rd32(c->apmu, c->apmuctrloff));
+		print("dwqe: APMU CLK_RST[%#ux] %#ux -> %#ux (PHY_SELECT=RGMII, TXC_SRC_SEL=%s)\n",
+			c->apmuctrloff, origv, rd32(c->apmu, c->apmuctrloff),
+			txclk ? "SoC" : "RXclk");
 	}
 
 	/* RGMII delay lines */
@@ -949,6 +1276,25 @@ ethinit(Ether *edev)
 		}
 	}
 
+	/*
+	 * Cold boot: the boot loader may not have touched this port.  Mux
+	 * its pads and release the PHY reset first; the DMA soft reset
+	 * needs the PHY's receive clock to complete.
+	 */
+	dwqepads(c, edev->port);
+	dwqephyreset(c);
+
+	/*
+	 * Find the PHYs and bring them out of power-down before the DMA
+	 * reset: a PHY with no link may stop the RGMII receive clock,
+	 * and the reset waits for it.
+	 */
+	mdioscan(c, 0);
+	for(i = 0; i < c->nphy; i++){
+		c->phyidx = i;
+		physetup(c);
+	}
+
 	/* DMA software reset -- polled */
 	wreg(c->regs, DmaBusMode, rd32(c->regs, DmaBusMode) | DmaBusModeSwr);
 	for(timeout = 0; timeout < 1000; timeout++){
@@ -958,6 +1304,7 @@ ethinit(Ether *edev)
 	}
 	if(timeout == 1000){
 		print("dwqe: ERROR DmaBusMode software reset timed out\n");
+		mdioscan(c, 1);
 		return -1;
 	}
 	dprint("dwqe: DMA reset done after %d ms\n", timeout);
@@ -1082,7 +1429,7 @@ etherpnp(Ether *edev)
 	Ctlr *ct;
 	Dtbether *de;
 	uvlong base, size, apmubase;
-	int irq, i, n;
+	int irq, i, k, n;
 
 	dprint("dwqe: etherpnp ctlrno=%d\n", edev->ctlrno);
 
@@ -1101,27 +1448,50 @@ etherpnp(Ether *edev)
 		return -1;
 	}
 
+	/* etherN is the Nth enabled gmac node, in device-tree order. */
 	de = nil;
 	n = dtbnether();
-	/* Walk through the array, but skip ones that are not ok.
-	 * So, e.g., if the first one in the array (0) is not marked
-	 * OK, don't count it: in one case we have, the second one (1)
-	 * becomes ether0. */
-	for(i = 0; i < n; i++){
+	for(i = k = 0; i < n; i++){
 		Dtbether *d = dtbether(i);
-		if(d != nil  && d->ok && strstr(d->compatible, "spacemit,k3-gmac") != nil) {
- 			d->aliasidx = edev->ctlrno;
-			de = d;
-			break;
+		if(d != nil && d->ok
+		   && strstr(d->compatible, "spacemit,k3-gmac") != nil){
+			if(k++ == edev->ctlrno){
+				de = d;
+				break;
+			}
 		}
 	}
 	if(de != nil){
 		base     = de->base;
 		size     = de->size ? de->size : Gmac0Size;
-		apmubase = de->apmubase ? de->apmubase : ApmuPhys;
+		/*
+		 * EMAC0/1 take their clock and reset from the APMU; EMAC2/3's
+		 * live in the RCPU syscon (K3 manual, clock and reset chapter).
+		 */
+		if(de->apmubase != 0)
+			apmubase = de->apmubase;
+		else if(base == 0xcac8e000UL || base == 0xa0000000UL)
+			apmubase = RcpuPhys;
+		else
+			apmubase = ApmuPhys;
 		irq      = de->irq;
 		ct->apmuctrloff  = de->ctrlregoff  ? de->ctrlregoff/4  : 0x3e4/4;
 		ct->apmudlineoff = de->dlineregoff ? de->dlineregoff/4 : 0x3e8/4;
+		ct->rstpin       = de->rstpin;
+		ct->rstactive    = de->rstactive;
+		ct->phyaddr      = PhyAddr;
+		ct->mdiocr       = MdioCrVal;
+		/*
+		 * The fallbacks above are EMAC0's APMU registers.  Driving
+		 * another port's MAC with them leaves it gated, and the
+		 * first MAC access then hangs the bus -- refuse instead.
+		 */
+		if((de->ctrlregoff == 0 || de->dlineregoff == 0)
+		   && base != Gmac0Phys){
+			print("dwqe: ether%d at %#llux: DTB has no APMU ctrl/dline offset\n",
+				edev->ctlrno, base);
+			return -1;
+		}
 		print("dwqe: ether%d from DTB %s base=%#llux size=%#llux apmu=%#llux+{%#ux,%#ux} irq=%d\n",
 			edev->ctlrno, de->path, base, size, apmubase,
 			ct->apmuctrloff, ct->apmudlineoff, irq);
@@ -1132,6 +1502,9 @@ etherpnp(Ether *edev)
 		irq      = Gmac0Irq;
 		ct->apmuctrloff  = 0x3e4/4;
 		ct->apmudlineoff = 0x3e8/4;
+		ct->rstpin       = -1;
+		ct->phyaddr      = PhyAddr;
+		ct->mdiocr       = MdioCrVal;
 		print("dwqe: no DTB, using K3 ether0 defaults\n");
 	} else {
 		dprint("dwqe: no DTB entry for ether%d\n", edev->ctlrno);
