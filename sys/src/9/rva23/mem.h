@@ -88,12 +88,13 @@
 
 #define	REBOOTADDR	(VDRAM-KZERO + 0x20000)
 
-// Sv39 max address is 1<<38-1. Choose 1<<36. (1<<32 for now)
-// This gives kernel a lot of memory, and over time,
-// user gets even more.
+/*
+ * user space is [UZERO, USTKTOP), above all the memory and devices the
+ * kernel maps; meminit chooses UZERO at boot.
+ */
 #define	UZERO		(uzero)			/* user segment */
 #define	UTZERO		(UZERO)		/* user text start */
-#define	USTKTOP		((UZERO<<1)-BY2PG)	/* user segment end +1 */
+#define	USTKTOP		((1ULL<<(EVASHIFT-1))-BY2PG)	/* user segment end +1 */
 #define	USTKSIZE	(16*1024*1024)		/* user stack size */
 
 #define BLOCKALIGN	64			/* only used in allocb.c */
