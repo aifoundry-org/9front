@@ -57,7 +57,7 @@ TEXT	_start(SB), 1, $-4
 	 */
 	WORD $0x040000ef	/* code0: jal x1, +64 */
 	WORD $0x00000013	/* code1: nop */
-	WORD $0x40200000	/* text_offset[31:0] (bianbu u-boot treats it absolute; spec-compliant loaders add their DRAM base) */
+	WORD $TEXTOFF		/* text_offset[31:0] (bianbu u-boot treats it absolute; spec-compliant loaders add their DRAM base) */
 	WORD $0			/* text_offset[63:32] */
 	WORD $0x01000000	/* image_size[31:0] = 16 MiB (upper bound; booti rejects 0) */
 	WORD $0			/* image_size[63:32] */

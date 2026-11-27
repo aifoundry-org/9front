@@ -73,6 +73,9 @@
 
 #define MACHADDR(n)	(KTZERO-((n)+1)*MACHSIZE)
 
+/* booti image header text_offset; see l.s */
+#define TEXTOFF		0x40200000
+
 #define CONFADDR	(VDRAM + 0x10000)	/* 0x40010000 on the bpi-f3 */
 
 /*
