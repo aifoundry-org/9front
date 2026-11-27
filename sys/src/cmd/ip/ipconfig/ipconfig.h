@@ -17,6 +17,7 @@ enum
 	Vtree,
 	Vpkt,
 	Vnull,
+	Vnetdev,
 };
 
 typedef struct Conf Conf;

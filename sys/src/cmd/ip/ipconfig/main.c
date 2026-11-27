@@ -182,6 +182,7 @@ parseverb(char *name)
 		[Vtree]		"tree",
 		[Vpkt]		"pkt",
 		[Vnull]		"null",
+		[Vnetdev]	"netdev",
 	};
 	int i;
 
@@ -227,6 +228,7 @@ parseargs(int argc, char **argv)
 		case Vtorus:
 		case Vtree:
 		case Vnull:
+		case Vnetdev:
 			conf.type = *argv++;
 			argc--;
 			if(argc > 0){
@@ -255,6 +257,7 @@ parseargs(int argc, char **argv)
 		case Vtree:
 		case Vpkt:
 		case Vnull:
+		case Vnetdev:
 			sysfatal("medium %s already specified", conf.type);
 		case Vadd:
 		case Vdel:
