@@ -44,6 +44,43 @@ mmu0init(uintptr *l1)
 #endif
 }
 
+/*
+ * User space starts above all RAM, on a root table slot boundary
+ * and never below 4GiB.  *uzero moves it; RAM above it is not used.
+ */
+static void
+setuzero(void)
+{
+	Confmem *cm;
+	uvlong top, min;
+	char *p;
+
+	min = 4ULL*GiB;
+	if(min < PADDR(end))
+		min = PADDR(end);
+	top = min;
+	for(cm = conf.mem; cm < &conf.mem[nelem(conf.mem)]; cm++)
+		if(cm->limit > top)
+			top = cm->limit;
+	if(p = getconf("*uzero"))
+		top = strtoull(p, 0, 0);
+	if(top < min)
+		top = min;
+	uzero = ROUND(top, PGLSZ(PTLEVELS-1));
+	if(uzero >= USTKTOP - USTKSIZE)
+		panic("meminit: uzero %#p beyond user space", uzero);
+	print("meminit: uzero %#p\n", uzero);
+	for(cm = conf.mem; cm < &conf.mem[nelem(conf.mem)]; cm++){
+		if(cm->limit > uzero){
+			print("meminit: ram %#p-%#p above uzero not used\n",
+				cm->base > uzero ? cm->base : uzero, cm->limit);
+			cm->limit = uzero;
+		}
+		if(cm->limit < cm->base)
+			cm->limit = cm->base;
+	}
+}
+
 void
 meminit(void)
 {
@@ -59,6 +96,8 @@ meminit(void)
 	// leave a big hole after end, for now. We need it for this and that.
 	conf.mem[0].base = ROUND(PGROUND((uintptr)end - KTZERO) + (uintptr)(VDRAM+0x2fffff), 0x200000);
 	conf.mem[0].limit = l;
+	setuzero();
+	klimit = uzero;
 
 	if(l > klimit)
 		l = klimit;
