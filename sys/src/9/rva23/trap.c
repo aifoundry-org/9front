@@ -86,7 +86,7 @@ void
 procsave(Proc *p)
 {
 if (0)	print("procsave what is it for? %p\n", p);
-//	fpuprocsave(p);
+	fpuprocsave(p);
 //	if(p->kp == 0)
 //		p->tpidr = sysrd(TPIDR_EL0);
 	putasid(p);	// release asid
@@ -95,9 +95,8 @@ if (0)	print("procsave what is it for? %p\n", p);
 void
 procrestore(Proc *p)
 {
-	USED(p);
 if (0)	print("procresotre what is it for %p\n", p);
-//	fpuprocrestore(p);
+	fpuprocrestore(p);
 }
 
 void
@@ -188,6 +187,8 @@ forkchild(Proc *p, Ureg *ureg)
 	 * the syscall.  ECALL has no compressed form, so it is 4 bytes.
 	 */
 	cureg->pc += 4;
+	/* the parent's registers are not live for the child */
+	cureg->status &= ~Fsst;
 }
 
 uintptr
@@ -858,8 +859,6 @@ if (0)sbiputc('T');
 		clockintr = (*handler)(ureg, &why);
 		if (TrapSpew) print("back from handler\n");
 		splhi();		/* minimise harm if handler went low */
-		if (up)
-			fpsts2ureg(ureg); /* propagate Fsst changes back to user mode */
 
 		/*
 		 * delaysched set (because we held a lock or because our
@@ -881,6 +880,8 @@ if (0)sbiputc('T');
 	if (0) if (up->pid == 5) {print("soft at end of trap\n"); soft();}
 	if (0)if (Trapdebug)
 		trapdbg(ureg, &why, 0);
+	if(why.user)
+		fpsts2ureg(ureg);
 	if (TrapSpew) print("all done trap(), ur is %p, pc %p\n", ureg, ureg->pc);
 	if (0) print("time %p cmp %p, SIP %llud\n", rdtime(), rdstimecmp(), getsip());
 soft();

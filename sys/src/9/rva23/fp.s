@@ -41,26 +41,26 @@ TEXT setfcsr(SB), $-4
 	MOV	R(ARG), CSR(FCSR)
 	RET
 
+/* store the fp registers in the argument array; the fpu must be on */
 TEXT fpsaveregs(SB), $-4
 	FENCE_RW				/* sifive u74 erratum cip-930 */
-	MOV	CSR(SSTATUS), R9
-	MOV	$Fsst, R11
-	AND	R11, R9
-	MOV	$(Off<<Fsshft), R10
-	BEQ	R9, R10, noop		/* off, so nothing to do */
-	MOV	$(Dirty<<Fsshft), R10
-	BNE	R9, R10, clean		/* on but clean, just turn off */
-dirty:
-	/* store fp registers into argument double array before turning off */
 	MOV	R(ARG), R9
 	SV(0); SV(1); SV(2); SV(3); SV(4); SV(5); SV(6); SV(7); SV(8); SV(9)
 	SV(10); SV(11); SV(12); SV(13); SV(14); SV(15); SV(16); SV(17); SV(18)
 	SV(19); SV(20); SV(21); SV(22); SV(23); SV(24); SV(25); SV(26); SV(27)
 	SV(28); SV(29); SV(30); SV(31)
-clean:
-	/* fall through */
+	RET
 
-	/* fp state is now clean (registers match argument array), turn off */
+TEXT fpon(SB), 1, $-4
+	MOV	CSR(SSTATUS), R10
+	MOV	$~Fsst, R9
+	AND	R9, R10
+	MOV	$(Clean<<Fsshft), R9
+	OR	R9, R10
+	MOV	R10, CSR(SSTATUS)	/* enable FPU */
+	FENCE_RW
+	RET
+
 TEXT fpoff(SB), 1, $-4
 	FENCE_RW				/* sifive u74 erratum cip-930 */
 	/* Off will cause ill instr traps on fp use */
@@ -71,7 +71,6 @@ TEXT fpoff(SB), 1, $-4
 	OR	R9, R10
 	MOV	R10, CSR(SSTATUS)	/* disable FPU */
 	FENCE_RW
-noop:
 	RET
 
 TEXT isfpon(SB), 1, $-4
