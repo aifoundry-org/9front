@@ -699,7 +699,7 @@ idlehands(void)
 	splx(pl);
 }
 
-#define WRAPCPU(cpu, nonline) ((cpu) >= (nonline)? 0: (cpu))
+#define WRAPCPU(cpu, nmach) ((cpu) >= (nmach)? 0: (cpu))
 
 /*
  * wake some cpus in wfi state.  an interrupt will make one cpu break
@@ -721,7 +721,7 @@ void
 idlewake(void)
 {
 	int left;
-	uint cpu, startcpu, nonline;
+	uint cpu, startcpu, nonline, nmach;
 	uvlong hartbm, imminent;
 	Mach *mp;
 	static int waking;		/* lock with tas */
@@ -739,7 +739,8 @@ idlewake(void)
 	 */
 	imminent = rdtime() + sys->nsthresh;
 	nonline = sys->nonline;
-	startcpu = cpu = WRAPCPU(currcpu, nonline);
+	nmach = conf.nmach;
+	startcpu = cpu = WRAPCPU(currcpu, nmach);
 
 	left = nrdy;
 	if (left == 0)
@@ -750,12 +751,13 @@ idlewake(void)
 	/*
 	 * if a cpu is awaiting an ipi (or other interrupt) and doesn't
 	 * have an imminent clock interrupt, wake it.
-	 * assume on-line cpus are 0 — nonline-1.
+	 * on-line cpus need not be 0 — nonline-1 (cpu0 is the lowest
+	 * hart SBI starts), but only they set ipiwait.
 	 */
 	hartbm = 0;
 	while (left > 0) {
 		mp = MACHP(cpu++);
-		cpu = WRAPCPU(cpu, nonline);
+		cpu = WRAPCPU(cpu, nmach);
 		if (mp != m && mp->ipiwait && mp->timecmp > imminent &&
 		    amoswapw(&mp->ipiwait, 0) != 0) {
 			/* next clock intr not soon & no ipi yet sent */
