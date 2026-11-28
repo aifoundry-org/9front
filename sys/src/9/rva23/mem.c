@@ -141,15 +141,16 @@ e820scan(void)
 /*
  * RAM is what the DTB's /memory nodes describe, or *e820 in their
  * place, or 2GiB from VDRAM without either, less the reserved
- * regions, anything at or above *maxmem and everything below the
- * end of the kernel's area.  Carve conf.mem from it in address
- * order, as pc does.
+ * regions, anything at or above *maxmem, page 0 and the kernel's
+ * own area from VDRAM.  RAM below the kernel is used too, so
+ * firmware there must be reserved in the DTB, as OpenSBI does for
+ * itself.  Carve conf.mem from it in address order, as pc does.
  */
 void
 meminit(void)
 {
 	Confmem *cm;
-	uvlong base, size, top;
+	uvlong base, size, top, k;
 	char *p;
 	extern u64int *sv57, *sv48, *sv39, *pGiB;
 
@@ -163,8 +164,11 @@ meminit(void)
 		memmapadd(VDRAM, (top != -1 ? top : VDRAM + 2ULL*GiB) - VDRAM, MemRAM);
 	if(top != -1)
 		memmapadd(top, -top, MemReserved);
-	/* firmware, Mach pages, kernel and the boot page tables after end */
-	memmapadd(0, ROUND(PGROUND((uintptr)end - KTZERO) + (uintptr)(VDRAM+0x2fffff), 0x200000), MemReserved);
+	/* page 0 is nil */
+	memmapadd(0, BY2PG, MemReserved);
+	/* plan9.ini, Mach pages, kernel and the boot page tables after end */
+	k = ROUND(PGROUND((uintptr)end - KTZERO) + (uintptr)(VDRAM+0x2fffff), 0x200000);
+	memmapadd(VDRAM, k - VDRAM, MemReserved);
 
 	cm = conf.mem;
 	for(base = memmapnext(-1, MemRAM); base != -1; base = memmapnext(base, MemRAM)){
