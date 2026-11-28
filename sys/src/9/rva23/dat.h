@@ -93,22 +93,16 @@ struct PFPU
 	FPalloc	*kfpsave;
 };
 
+/*
+ * FPU states.  The registers are loaded lazily: sstatus.FS is off
+ * unless they are live on this hart, and the first FP instruction
+ * traps to mathtrap.
+ */
 enum
 {
-	/* these names are known to port/. They're not quite right
-	 * for RISC-V but we have to use them. */
-	/* In this state, FP use will cause a trap. */
-	FPinit,
-	/* In this state, the FP is on but has not been used */
-	FPidle,
-	/* In this state, the FP is on but "clean". It is not completely
-	 * clear why this state was needed, but it is in the spec. */
-	FPclean,
-	/* In this state, the FP has been changed in some way and
-	 * must be saved off before it can be used by kernel, note handler,
-	 * or other process. */
-	FPdirty,
-	FPinactive = FPidle,
+	FPinit,		/* not used yet */
+	FPactive,	/* registers live on this hart */
+	FPinactive,	/* registers saved in fpsave */
 
 	/* bits or'd with the state */
 	FPnotify = 0x100,
@@ -127,7 +121,7 @@ struct Conf
 {
 	ulong	nmach;		/* processors */
 	ulong	nproc;		/* processes */
-	Confmem	mem[3];		/* physical memory */
+	Confmem	mem[8];		/* physical memory */
 	ulong	npage;		/* total physical pages of memory */
 	ulong	upages;		/* user page pool */
 	ulong	copymode;	/* 0 is copy on write, 1 is copy on reference */
@@ -229,7 +223,6 @@ struct Mach
 
 	/* from Geoff's port. */
 	uvlong boottsc;
-	uint plicctxt;
 	uchar	clockintrsok;	/* flag: safe to call timerintr */
 	ulong	ipiwait;	/* flag: cpu is idling, wake it with an ipi */
 	int	clockintrdepth;
@@ -249,8 +242,8 @@ struct
 
 #define MACHP(n)	((Mach*)MACHADDR(n))
 
-extern uintptr uzero;						/* uzero; set in main.c, moved by meminit */
 extern void _start(void);		/* KTZERO */
+extern uintptr uzero;			/* user space start; set in meminit */
 
 extern register Mach* m;			/* R7 */
 extern register Proc* up;			/* R6 */
@@ -360,6 +353,8 @@ struct Dtbnode {
 	int	compatlen;
 	char	phynames[32];	/* phy-names, NUL-separated */
 	int	phynameslen;
+	uchar	ranges[3*7*4];	/* raw, if it fits; e.g. 3 PCI windows */
+	int	rangeslen;
 	uvlong	base;		/* first reg entry */
 	uvlong	size;
 	int	ok;		/* status = "okay" */
@@ -393,6 +388,9 @@ struct Soc {
 	uvlong	aplicsize;
 	uvlong	imsicsize;
 	u32int	naplicsrc;	/* wired sources the APLIC domain has */
+	uvlong	plicsize;
+	u32int	nplicsrc;	/* riscv,ndev */
+	int	plicsctx;	/* PLIC context for the boot hart's S mode, or -1 */
 	uchar	*l2cache;	/* sifive l2 cache controller */
 //	uchar	*pl2caches[HARTMAX]; /* sifive per-hart l2 cache controllers */
 	uchar	*l3cache;	/* sifive l3 cache controller */
@@ -408,14 +406,7 @@ struct Soc {
 				/* when kern addr spc for ram < ram size */
 
 	/* hardware and firmware choices and bugs */
-	/*
-	 * plic contexts are machine-dependent, but are usually hartid*2 +
-	 * mode.  if there's a cut-down management hart at hartid 0 (i.e.,
-	 * it's hobbled), they may instead be 1 + 2*(hartid-1) + mode, as
-	 * on the icicle.
-	 */
 	uchar	hobbled; /* # puny visible mgmt harts (often only M context) */
-	uchar	context0;	/* M context of first non-mgmt hart */
 	uchar	dwuart;		/* flag: workaround synopsys 8250 */
 	uchar	xscaleuart;	/* flag: workaround xscale uart */
 	uchar	c910;		/* flag; workaround c910 bugs */
@@ -508,10 +499,6 @@ uintptr	uartregs[]; /* from kernel config; not yet used for anything significant
 
 enum {
 	Ncontexts = 31*512,
-};
-enum Cpumodes {			/* plic context offsets for priv modes */
-	Machine, Super,		/* order matters, see plic contexts */
-	Hyper, User,		/* these are optional */
 };
 typedef struct Plic Plic;
 typedef struct Plictxt Plictxt;

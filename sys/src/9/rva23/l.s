@@ -57,7 +57,7 @@ TEXT	_start(SB), 1, $-4
 	 */
 	WORD $0x040000ef	/* code0: jal x1, +64 */
 	WORD $0x00000013	/* code1: nop */
-	WORD $0x40200000	/* text_offset[31:0] (bianbu u-boot treats it absolute; spec-compliant loaders add their DRAM base) */
+	WORD $TEXTOFF		/* text_offset[31:0] (bianbu u-boot treats it absolute; spec-compliant loaders add their DRAM base) */
 	WORD $0			/* text_offset[63:32] */
 	WORD $0x01000000	/* image_size[31:0] = 16 MiB (upper bound; booti rejects 0) */
 	WORD $0			/* image_size[63:32] */
@@ -441,8 +441,8 @@ TEXT touser(SB), 1, $-4
 	AND	R10, R9, R9		/* clear SPP */
 	OR	$0x20, R9, R9		/* set SPIE */
 	MOV	R9, CSR(SSTATUS)
-	MOV uzero(SB), R12
-	ADD  $0x28, R12	/* skip unextended exec hdr of init */
+	MOV	uzero(SB), R12		/* UTZERO */
+	ADD	$0x28, R12		/* skip unextended exec hdr of init */
 	MOV	R12, CSR(SEPC)		/* new pc */
 	MOV	RARG, R2		/* new sp */
 	WORD $0x10200073 //SRET

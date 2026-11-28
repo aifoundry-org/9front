@@ -44,6 +44,47 @@ mmu0init(uintptr *l1)
 #endif
 }
 
+uintptr uzero = 0x1000000000ULL;	/* until meminit */
+
+static void
+addbank(uvlong base, uvlong limit)
+{
+	Confmem *cm;
+
+	base = PGROUND(base);
+	limit &= ~(uvlong)(BY2PG-1);
+	if(limit <= base || limit - base < MiB)
+		return;
+	for(cm = &conf.mem[1]; cm < &conf.mem[nelem(conf.mem)]; cm++)
+		if(cm->npage == 0)
+			break;
+	if(cm == &conf.mem[nelem(conf.mem)]){
+		print("meminit: no room for bank %#llux-%#llux\n", base, limit);
+		return;
+	}
+	cm->base = base;
+	cm->limit = limit;
+	cm->npage = (limit - base)/BY2PG;
+}
+
+/* add [base, limit) less the reserved regions from the r'th on */
+static void
+addrange(uvlong base, uvlong limit, int r)
+{
+	uvlong rb, rl;
+
+	for(; dtbmemregion(1, r, &rb, &rl) == 0; r++){
+		if(rl <= base || rb >= limit)
+			continue;
+		if(rb > base)
+			addrange(base, rb, r+1);
+		base = rl;
+		if(base >= limit)
+			return;
+	}
+	addbank(base, limit);
+}
+
 /*
  * User space starts above all RAM, on a root table slot boundary
  * and never below 4GiB.  *uzero moves it; RAM above it is not used.
@@ -78,6 +119,9 @@ setuzero(void)
 		}
 		if(cm->limit < cm->base)
 			cm->limit = cm->base;
+		cm->npage = (cm->limit - cm->base)/BY2PG;
+		if(cm->npage != 0)
+			print("meminit: bank %#p-%#p\n", cm->base, cm->limit);
 	}
 }
 
@@ -86,27 +130,29 @@ meminit(void)
 {
 	char *p;
 	uintptr l = VDRAM + 2ULL * GiB;
+	uvlong b, e;
+	int i;
 	extern u64int *sv57, *sv48, *sv39, *pGiB;
-	extern uintptr klimit;
 
-	klimit = uzero;
 	if(p = getconf("*maxmem"))
 		l = strtoull(p, 0, 0);
 
 	// leave a big hole after end, for now. We need it for this and that.
 	conf.mem[0].base = ROUND(PGROUND((uintptr)end - KTZERO) + (uintptr)(VDRAM+0x2fffff), 0x200000);
 	conf.mem[0].limit = l;
-	setuzero();
-	klimit = uzero;
 
-	if(l > klimit)
-		l = klimit;
+	/* the other RAM banks in the DTB */
+	for(i = 0; dtbmemregion(0, i, &b, &e) == 0; i++)
+		if(VDRAM < b || VDRAM >= e)
+			addrange(b, e, 0);
+	setuzero();
+
 	sv57 = (void *)PGROUND((uintptr)end);
 	sv48 = (void *)PGROUND((uintptr)sv57 + 1);
 	sv39 = (void *)PGROUND((uintptr)sv48 + 1);
 	pGiB = (void *)PGROUND((uintptr)sv39 + 1);
 	memset(sv57, 0, 16384);
-	kmapram(conf.mem[0].base, l);
+	kmapram();
 
 	conf.mem[0].npage = (conf.mem[0].limit - conf.mem[0].base)/BY2PG;
 }

@@ -200,8 +200,6 @@ sbiputs(char *s)
 	}
 }
 
-uintptr uzero = 0;
-
 int i = 1;
 int once = 0;
 void
@@ -212,7 +210,6 @@ main(u64int hartid, uintptr dtb)
 	dtbphys = dtb;
 
 	if(!once){
-		uzero = 0x1000000000ULL;
 		/*
 		 * Zero every per-cpu Mach page, not just cpu0's.  The Mach
 		 * pages stack downward from just below KTZERO (MACHADDR(n) =
@@ -299,15 +296,6 @@ main(u64int hartid, uintptr dtb)
 	links();
 	chandevreset();
 	userinit();
-	/* Wire pid 1 to cpu0: the rest of the harts are not yet cache-coherent. */
-	{
-		Proc *p;
-		int i;
-
-		for(i = 0; (p = proctab(i)) != nil; i++)
-			if(p->pid != 0 && p->text != nil && strcmp(p->text, "*init*") == 0)
-				procwired(p, 0);
-	}
 	mpinit();
 	u64int tm = rdtime();
 	u64int cm = rdstimecmp();

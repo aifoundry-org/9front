@@ -10,3 +10,9 @@
 
 %.$O:	../rva23/k3/%.c
 	$CC $CFLAGS -I. ../rva23/k3/$stem.c
+
+%.$O:	../rva23/virt/%.c
+	$CC $CFLAGS -I. ../rva23/virt/$stem.c
+
+%.$O:	../rva23/mpfs/%.c
+	$CC $CFLAGS -I. ../rva23/mpfs/$stem.c

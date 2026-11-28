@@ -19,7 +19,7 @@ X
 script() {
 	cat <<'X'
 rc
-has {cat '#P/archctl'} "soc none"
+has {cat '#P/archctl'} "soc virt riscv-virtio"
 lacks {ls '#S'} "sdM" "sdN"
 lacks {ls '#J'} "i2c"
 lacks {ls '#u'} "ep"
