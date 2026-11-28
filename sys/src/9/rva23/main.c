@@ -296,15 +296,6 @@ main(u64int hartid, uintptr dtb)
 	links();
 	chandevreset();
 	userinit();
-	/* Wire pid 1 to cpu0: the rest of the harts are not yet cache-coherent. */
-	{
-		Proc *p;
-		int i;
-
-		for(i = 0; (p = proctab(i)) != nil; i++)
-			if(p->pid != 0 && p->text != nil && strcmp(p->text, "*init*") == 0)
-				procwired(p, 0);
-	}
 	mpinit();
 	u64int tm = rdtime();
 	u64int cm = rdstimecmp();
