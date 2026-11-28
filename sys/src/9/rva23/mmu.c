@@ -10,12 +10,10 @@ enum {
 
 #define INITMAP	(ROUND((uintptr)end + BY2PG, PGLSZ(1))-KZERO)
 
-uintptr klimit = 0x1000000000ULL;	/* until meminit */
-
 uintptr
 paddr(void *va)
 {
-	if((uintptr)va < klimit)
+	if((uintptr)va < UZERO)
 		return (uintptr)va;
 	panic("paddr: va=%#p pc=%#p", va, getcallerpc(&va));
 }
@@ -23,17 +21,16 @@ paddr(void *va)
 uintptr
 cankaddr(uintptr pa)
 {
-//	print("cankaddr %p, -KZ %p\n", pa,(uintptr)-KZERO );
-	if(pa < (uintptr)klimit)
-		return klimit - pa;
+	if(pa < UZERO)
+		return UZERO - pa;
 	return 0;
 }
 
 void*
 kaddr(uintptr pa)
 {
-	if(pa < (uintptr)klimit)
-		return (void*)(pa);
+	if(pa < UZERO)
+		return (void*)pa;
 	panic("kaddr: pa=%#p pc=%#p", pa, getcallerpc(&pa));
 }
 
@@ -355,7 +352,7 @@ mmuswitch(Proc *p, int newtlb)
 	uintptr va;
 	Page *t;
 if (0)	print("SWITCH MMUTOP IS %p, @ 100 is %p\n", m->mmutop, m->mmutop[0x100]);
-	for(va = uzero; va < USTKTOP; va += PGLSZ(PTLEVELS-1))
+	for(va = UZERO; va < USTKTOP; va += PGLSZ(PTLEVELS-1))
 		m->mmutop[PTLX(va, PTLEVELS-1)] = 0;
 
 if (0)	print("p %p for setting tbr?\n", p);

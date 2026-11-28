@@ -59,14 +59,12 @@
 #define	KTZERO		((uintptr)_start)	/* kernel text start */
 
 #define	KZERO		(0x0000000000000000ULL)	/* 0x00000000 - kernel address space */
-#define KLIMIT 		klimit
-//#define KLIMIT			(0x800000000000ULL) // half of the hole.
-#define iskern(v) (((uintptr)v)<=uzero)
 /*
  * the kernel is identity-mapped low memory with user space above it,
  * so the usual "above KZERO" test for kernel addresses is inverted.
  */
-#define iskaddr(a) (((uintptr)(a)) < uzero)
+#define iskern(v)	(((uintptr)(v)) <= UZERO)
+#define iskaddr(a)	(((uintptr)(a)) < UZERO)
 
 /* shared kernel page table for TTBR1 */
 #define L1		(L1TOP-L1SIZE)
@@ -74,6 +72,9 @@
 #define L1TOP		((MACHADDR(MAXMACH-1)-L1TOPSIZE)&-BY2PG)
 
 #define MACHADDR(n)	(KTZERO-((n)+1)*MACHSIZE)
+
+/* booti image header text_offset; see l.s */
+#define TEXTOFF		0x40200000
 
 #define CONFADDR	(VDRAM + 0x10000)	/* 0x40010000 on the bpi-f3 */
 
@@ -92,7 +93,7 @@
  * user space is [UZERO, USTKTOP), above all the memory and devices the
  * kernel maps; meminit chooses UZERO at boot.
  */
-#define	UZERO		(uzero)			/* user segment */
+#define	UZERO		uzero			/* user segment */
 #define	UTZERO		(UZERO)		/* user text start */
 #define	USTKTOP		((1ULL<<(EVASHIFT-1))-BY2PG)	/* user segment end +1 */
 #define	USTKSIZE	(16*1024*1024)		/* user stack size */

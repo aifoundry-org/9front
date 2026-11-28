@@ -73,9 +73,35 @@ static int ndtbufs;
 static Dtbnode dtbnodes[MAXDTBNODES];
 static int ndtbnodes;
 static Dtbnode dtbcur;			/* node being parsed */
+
+/*
+ * each node's interrupts and the interrupt-parent it has or
+ * inherits, decoded once the APLIC is known
+ */
+typedef struct Dtbirq Dtbirq;
+struct Dtbirq {
+	u32int	parent;
+	u32int	cell[8];
+	int	ncell;
+};
+static Dtbirq dtbirqs[MAXDTBNODES];
+static int ndtbirqs;
+static Dtbirq dtbcurirq;		/* of the node being parsed */
+static uchar irqsense[1024];		/* APLIC source -> IRQ_TYPE flags */
 static char dtbalias[MAXDTBUARTS][64];	/* serial<N> -> DT node path */
 static char dtbethalias[MAXDTBETHERS][64]; /* ethernet<N> -> DT node path */
 static char dtbstdout[64];
+
+/*
+ * RAM banks (/memory reg) and regions not to allocate from
+ * (/reserved-memory reg and alloc-ranges), as [base, limit).
+ * Two address and two size cells, as on every board we run on.
+ */
+#define MAXDTBMEM 8
+static uvlong dtbmem[MAXDTBMEM][2];
+static int ndtbmem;
+static uvlong dtbresv[MAXDTBMEM][2];
+static int ndtbresv;
 static int dtbhasplic_;			/* root interrupt controller is a PLIC */
 static char dtbrootcompat[128];		/* root "compatible": NUL-separated list */
 static int dtbrootcompatlen;
@@ -107,14 +133,26 @@ struct Dtbintc {
 	uvlong	size;
 	u32int	phandle;
 	u32int	msiparent;	/* phandle of the IMSIC this APLIC sends MSIs to */
-	u32int	nsrc;		/* riscv,num-sources (APLIC) / riscv,num-ids (IMSIC) */
+	u32int	nsrc;		/* riscv,ndev (PLIC) / riscv,num-sources (APLIC) / riscv,num-ids (IMSIC) */
 	int	haschildren;	/* has riscv,children: an M-level APLIC domain */
 	int	extcause;	/* local cause from interrupts-extended; 9 = S external */
+	u32int	ext[2*128];	/* interrupts-extended: <cpu-intc cause> per context */
+	int	next;		/* cells in ext */
 	int	ok;		/* status = "okay" (firmware may disable M-level nodes) */
 };
 static Dtbintc dtbintc[MAXDTBINTC];
 static int ndtbintc;
 static char dtbplicpath[64];		/* path of the node whose compatible = riscv,plic* */
+
+/* each hart's cpu interrupt controller, to read the PLIC's contexts */
+typedef struct Cpuintc Cpuintc;
+struct Cpuintc {
+	u32int	hart;
+	u32int	phandle;
+};
+static Cpuintc cpuintc[64];
+static int ncpuintc;
+static u32int dtbcurhart;		/* reg of the /cpus/cpu@ node being parsed */
 
 int
 dtbnuart(void)
@@ -505,6 +543,17 @@ dtbnodeprop(char *key, uchar *p, int len)
 		dtbstrs(n->phynames, sizeof n->phynames, &n->phynameslen, p, len);
 	else if(strcmp(key, "status") == 0)
 		n->ok = len >= 5 && strcmp((char*)p, "okay") == 0;
+	else if(strcmp(key, "interrupt-parent") == 0 && len == 4)
+		dtbcurirq.parent = beget4(p);
+	else if(strcmp(key, "interrupts") == 0){
+		for(dtbcurirq.ncell = 0; dtbcurirq.ncell < nelem(dtbcurirq.cell)
+		&& dtbcurirq.ncell*4+4 <= len; dtbcurirq.ncell++)
+			dtbcurirq.cell[dtbcurirq.ncell] = beget4(p + 4*dtbcurirq.ncell);
+	}
+	else if(strcmp(key, "ranges") == 0 && len <= sizeof n->ranges){
+		memmove(n->ranges, p, len);
+		n->rangeslen = len;
+	}
 	else if(strcmp(key, "reg") == 0){
 		/* #address-cells and #size-cells both 2, or both 1 */
 		if(len >= 16){
@@ -515,6 +564,43 @@ dtbnodeprop(char *key, uchar *p, int len)
 			n->size = beget4(p+4);
 		}
 	}
+}
+
+/* append the <base size> pairs in a reg-like property to r */
+static int
+dtbranges(uvlong (*r)[2], int n, uchar *p, int len)
+{
+	for(; len >= 16 && n < MAXDTBMEM; len -= 16, p += 16){
+		r[n][0] = (uvlong)beget4(p)<<32 | beget4(p+4);
+		r[n][1] = r[n][0] + ((uvlong)beget4(p+8)<<32 | beget4(p+12));
+		if(r[n][1] > r[n][0])
+			n++;
+	}
+	return n;
+}
+
+/*
+ * Return in *base and *limit the i'th RAM bank of the DTB, or of
+ * its reserved regions if resv is set; -1 past the last.
+ */
+int
+dtbmemregion(int resv, int i, uvlong *base, uvlong *limit)
+{
+	uvlong (*r)[2];
+	int n;
+
+	if(resv){
+		r = dtbresv;
+		n = ndtbresv;
+	} else {
+		r = dtbmem;
+		n = ndtbmem;
+	}
+	if(i < 0 || i >= n)
+		return -1;
+	*base = r[i][0];
+	*limit = r[i][1];
+	return 0;
 }
 
 static void
@@ -543,8 +629,14 @@ devtreeprop(char *path, char *key, void *val, int len)
 		dtbrootmodel[n] = 0;
 		return;
 	}
+	if(strncmp(path, "/reserved-memory/", 17) == 0
+	   && (strcmp(key, "reg") == 0 || strcmp(key, "alloc-ranges") == 0)){
+		ndtbresv = dtbranges(dtbresv, ndtbresv, p, len);
+		return;
+	}
 	if((strncmp(path, "/memory", 7) == 0 || strncmp(path, "/memory@0", 9) == 0)
 	   && strcmp(key, "reg") == 0){
+		ndtbmem = dtbranges(dtbmem, ndtbmem, p, len);
 		if(findconf("*maxmem") < 0 && len == 16){
 			/* <base size>, two BE cells each: limit = base + size */
 			addr = (uvlong)beget4(p)<<32 | beget4(p+4);
@@ -557,6 +649,16 @@ devtreeprop(char *path, char *key, void *val, int len)
 	}
 	if(strncmp(path, "/cpus/cpu", 9) == 0 && strcmp(key, "reg") == 0){
 		hartcnt++;		/* count harts the DTB lists (see confinit) */
+		dtbcurhart = len >= 8? beget4(p+4): beget4(p);
+		return;
+	}
+	if(strncmp(path, "/cpus/cpu@", 10) == 0 && strstr(path, "/interrupt-controller") != nil
+	&& strcmp(key, "phandle") == 0 && len >= 4){
+		if(ncpuintc < nelem(cpuintc)){
+			cpuintc[ncpuintc].hart = dtbcurhart;
+			cpuintc[ncpuintc].phandle = beget4(p);
+			ncpuintc++;
+		}
 		return;
 	}
 	/*
@@ -784,6 +886,8 @@ devtreeprop(char *path, char *key, void *val, int len)
 			ic->phandle = beget4(p);
 		} else if(strcmp(key, "msi-parent") == 0 && len >= 4){
 			ic->msiparent = beget4(p);
+		} else if(strcmp(key, "riscv,ndev") == 0 && len >= 4){
+			ic->nsrc = beget4(p);
 		} else if(strcmp(key, "riscv,num-sources") == 0 && len >= 4){
 			ic->nsrc = beget4(p);
 		} else if(strcmp(key, "riscv,num-ids") == 0 && len >= 4){
@@ -791,8 +895,10 @@ devtreeprop(char *path, char *key, void *val, int len)
 		} else if(strcmp(key, "riscv,children") == 0){
 			ic->haschildren = 1;
 		} else if(strcmp(key, "interrupts-extended") == 0 && len >= 8){
-			/* <cpu-intc-phandle cause> pairs; every pair has the same cause */
+			/* <cpu-intc-phandle cause> pairs, one per context */
 			ic->extcause = beget4(p + 4);
+			for(ic->next = 0; ic->next < nelem(ic->ext) && ic->next*4 < len; ic->next++)
+				ic->ext[ic->next] = beget4(p + 4*ic->next);
 		} else if(strcmp(key, "status") == 0){
 			ic->ok = (len >= 5 && strcmp((char*)val, "okay") == 0);
 		}
@@ -838,7 +944,7 @@ dtbnop(uchar *p, uchar *e)
 }
 
 static uchar*
-devtreenode(Devtree *t, uchar *p, char *cp)
+devtreenode(Devtree *t, uchar *p, char *cp, u32int iparent)
 {
 	uchar *e = (uchar*)t->stab;
 	char *s;
@@ -857,6 +963,7 @@ devtreenode(Devtree *t, uchar *p, char *cp)
 	*cp = 0;
 	p += (n + 4) & ~3;
 	memset(&dtbcur, 0, sizeof dtbcur);
+	memset(&dtbcurirq, 0, sizeof dtbcurirq);
 	dtbcur.ok = 1;
 	for(p = dtbnop(p, e); p+12 <= e && beget4(p) == DtProp; p = dtbnop(p, e)){
 		n = beget4(p+4);
@@ -869,6 +976,12 @@ devtreenode(Devtree *t, uchar *p, char *cp)
 		devtreeprop(t->path, s, p+12, n);
 		p += 12 + ((n + 3) & ~3);
 	}
+	if(dtbcurirq.parent != 0)
+		iparent = dtbcurirq.parent;
+	if(dtbcurirq.ncell > 0 && ndtbirqs < nelem(dtbirqs)){
+		dtbcurirq.parent = iparent;
+		dtbirqs[ndtbirqs++] = dtbcurirq;
+	}
 	if(dtbcur.compatlen > 0){
 		if(ndtbnodes < nelem(dtbnodes))
 			dtbnodes[ndtbnodes++] = dtbcur;
@@ -877,7 +990,7 @@ devtreenode(Devtree *t, uchar *p, char *cp)
 	}
 	for(; p+4 <= e && beget4(p) == DtBeginNode; p = dtbnop(p, e)){
 		*cp = '/';
-		p = devtreenode(t, p, cp+1);
+		p = devtreenode(t, p, cp+1, iparent);
 		if(p == nil)
 			return nil;
 	}
@@ -896,6 +1009,47 @@ devtreenode(Devtree *t, uchar *p, char *cp)
  * riscv,children is at least not the M-level domain.  M-level nodes the
  * firmware marked disabled are skipped throughout.
  */
+/* the PLIC context raising supervisor external interrupts on hart, or -1 */
+static int
+plicsctx(Dtbintc *ic, u32int hart)
+{
+	int i, j;
+
+	for(i = 0; i < ncpuintc; i++){
+		if(cpuintc[i].hart != hart)
+			continue;
+		for(j = 0; j+1 < ic->next; j += 2)
+			if(ic->ext[j] == cpuintc[i].phandle && ic->ext[j+1] == 9)
+				return j/2;
+	}
+	return -1;
+}
+
+/* the APLIC's #interrupt-cells is 2: <source IRQ_TYPE flags> */
+static void
+aplicsense(u32int phandle)
+{
+	Dtbirq *d;
+	int i;
+
+	for(d = dtbirqs; d < dtbirqs+ndtbirqs; d++){
+		if(d->parent != phandle)
+			continue;
+		for(i = 0; i+1 < d->ncell; i += 2)
+			if(d->cell[i] < nelem(irqsense))
+				irqsense[d->cell[i]] = d->cell[i+1];
+	}
+}
+
+/* IRQ_TYPE flags the DT gives APLIC source irq, or 0 */
+int
+dtbirqsense(int irq)
+{
+	if(irq < 0 || irq >= nelem(irqsense))
+		return 0;
+	return irqsense[irq];
+}
+
 static void
 finishdtbintc(void)
 {
@@ -903,11 +1057,16 @@ finishdtbintc(void)
 	int i;
 
 	if(dtbhasplic_ && dtbplicpath[0] != 0){
-		for(i = 0; i < ndtbintc; i++)
-			if(strcmp(dtbintc[i].path, dtbplicpath) == 0){
-				soc.plic = (uchar*)(uintptr)dtbintc[i].base;
+		for(i = 0; i < ndtbintc; i++){
+			ic = &dtbintc[i];
+			if(strcmp(ic->path, dtbplicpath) == 0){
+				soc.plic = (uchar*)(uintptr)ic->base;
+				soc.plicsize = ic->size;
+				soc.nplicsrc = ic->nsrc;
+				soc.plicsctx = plicsctx(ic, m->hartid);
 				return;
 			}
+		}
 	}
 
 	im = nil;
@@ -938,6 +1097,7 @@ finishdtbintc(void)
 		soc.aplic = (uchar*)(uintptr)ap->base;
 		soc.aplicsize = ap->size;
 		soc.naplicsrc = ap->nsrc;
+		aplicsense(ap->phandle);
 	}
 	if(im != nil){
 		soc.imsic = (uchar*)(uintptr)im->base;
@@ -949,8 +1109,8 @@ finishdtbintc(void)
  * After the whole tree is walked, link each Dtbuart back to its serial<N>
  * alias and mark the entry that /chosen/stdout-path picks as the console.
  * soc.plic/soc.aplic/soc.imsic end up set (by finishdtbintc) if and only
- * if the DTB says where they are; otherwise socidentify() falls back to
- * a vendor-specific default.
+ * if the DTB says where they are; otherwise intrinit() runs without
+ * external interrupts.
  */
 static void
 finishdtbuarts(void)
@@ -1037,7 +1197,7 @@ parsedevtree(uchar *base)
 	t->stab = (char*)base + beget4(base+12);
 	if(t->stab >= (char*)t->end)
 		return -1;
-	devtreenode(t, base + beget4(base+8), t->path);
+	devtreenode(t, base + beget4(base+8), t->path, 0);
 	finishdtbintc();
 	finishdtbuarts();
 	if(preloadedini)

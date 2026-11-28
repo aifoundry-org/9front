@@ -54,6 +54,12 @@ jobs:
           tar -xf "$RUNNER_TEMP/binaries/riscv64.tar.gz" riscv64/9rva23
           .github/ci/qemutest.sh -o "$RUNNER_TEMP/qemutest" riscv64/9rva23
 
+      - name: QEMU tests of 9maxion
+        if: matrix.kernel == '9rva23'
+        run: |
+          tar -xf "$RUNNER_TEMP/binaries/riscv64.tar.gz" riscv64/9maxion
+          .github/ci/qemutest.sh -o "$RUNNER_TEMP/qemutest" riscv64/9maxion maxion/smoke maxion/mxp
+
       - name: Upload QEMU test logs
         if: failure() && matrix.kernel == '9rva23'
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2

@@ -36,6 +36,7 @@ enum {
 	Domaincfg	= 0x0000/4,
 	Sourcecfg	= 0x0004/4,	/* + (i-1) */
 	Setipnum	= 0x1cdc/4,
+	Inclrip		= 0x1d00/4,	/* + i/32: rectified inputs */
 	Clripnum	= 0x1ddc/4,
 	Setienum	= 0x1edc/4,
 	Clrienum	= 0x1fdc/4,
@@ -55,6 +56,12 @@ enum {
 	Smedgefall	= 5,
 	Smlevelhigh	= 6,
 	Smlevellow	= 7,
+
+	/* DT IRQ_TYPE flags */
+	Edgerising	= 1,
+	Edgefalling	= 2,
+	Levelhigh	= 4,
+	Levellow	= 8,
 
 	/* target, MSI delivery mode */
 	Thartshift	= 18,
@@ -140,13 +147,13 @@ aplicirq(Ureg *ureg)
 			for(; v != nil; v = v->next)
 				v->f(ureg, v->a);
 			/*
-			 * MSI delivery clears a level source's pending bit when
-			 * the MSI is sent, and only a fresh edge would set it
-			 * again.  If the handler left the device asserted (more
-			 * work arrived), poking setipnum re-raises the source;
-			 * if the line dropped, it's a no-op.
+			 * MSI delivery clears a level source's pending bit
+			 * when the MSI is sent; re-raise it if the handler
+			 * left the line asserted.  Only while the input is
+			 * high: qemu pends on any setipnum write.
 			 */
-			if(id <= nsrc && srcmode[id] >= Smlevelhigh)
+			if(id <= nsrc && srcmode[id] >= Smlevelhigh
+			&& regs[Inclrip + id/32] & 1<<(id%32))
 				regs[Setipnum] = id;
 		}
 		if(--trips <= 0){
@@ -160,6 +167,21 @@ aplicirq(Ureg *ureg)
 	}
 	idlewake();
 	return 0;
+}
+
+/* source mode from the DT; level high, as PCI INTx, if it doesn't say */
+static int
+sourcemode(int irq)
+{
+	switch(dtbirqsense(irq) & 0xf){
+	case Edgerising:
+		return Smedgerise;
+	case Edgefalling:
+		return Smedgefall;
+	case Levellow:
+		return Smlevellow;
+	}
+	return Smlevelhigh;
 }
 
 void
@@ -194,7 +216,7 @@ aplicintrenable(int irq, void (*f)(Ureg*, void*), void *a, int tbdf, char *name)
 	vctl[irq] = v;
 
 	if(srcmode[irq] == Sminactive)
-		srcmode[irq] = Smlevelhigh;	/* qemu-virt peripherals; TODO: modes from DTB interrupt flags */
+		srcmode[irq] = sourcemode(irq);
 	/*
 	 * order matters: target[i] is read-only zero (writes discarded)
 	 * while source i is inactive, so sourcecfg must go live first.

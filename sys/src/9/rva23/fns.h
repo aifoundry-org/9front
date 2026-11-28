@@ -77,7 +77,7 @@ extern void kmapinval(void);
 extern KMap *kmap(Page*);
 extern void kunmap(KMap*);
 extern uintptr mmukmap(uintptr, uintptr, usize);
-extern void kmapram(uintptr, uintptr);
+extern void kmapram(void);
 extern void* vmap(uvlong, vlong);
 extern void vunmap(void*, vlong);
 extern void mmu1init(void);
@@ -152,6 +152,7 @@ extern int plicirq(Ureg*);
 extern void plicintrenable(int, void (*)(Ureg*, void*), void*, int, char*);
 extern void plicintrdisable(int, void (*)(Ureg*, void*), void*, int, char*);
 extern void aplicinit(void);
+extern int dtbirqsense(int);
 extern int aplicirq(Ureg*);
 extern void aplicintrenable(int, void (*)(Ureg*, void*), void*, int, char*);
 extern void aplicintrdisable(int, void (*)(Ureg*, void*), void*, int, char*);
@@ -225,6 +226,7 @@ extern void pciintrdisable(int tbdf, void (*f)(Ureg*, void*), void *a);
 
 /* bootargs */
 extern void bootargsinit(void);
+extern int dtbmemregion(int, int, uvlong*, uvlong*);
 extern int dtbnuart(void);
 extern Dtbuart *dtbuart(int);
 extern int dtbhasplic(void);
@@ -321,7 +323,6 @@ int peekl(void *addr, u32int *dst, int numwords);
 /* archrv */
 void calibrate(void);
 u64int *bootptpage(void);
-uint mach2context(Mach *);
 void cpuinit(int);
 void clintipitohart(int hart);
 int ipitohart(int hart);

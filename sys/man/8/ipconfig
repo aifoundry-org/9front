@@ -85,6 +85,7 @@ may be
 .BR gbe ,
 .BR ppp ,
 .BR pkt ,
+.BR netdev ,
 .BR null ,
 or
 .BR loopback .
@@ -96,6 +97,10 @@ except that it allows jumbo packets (up to ~9KB).
 The
 .B pkt
 interface passes all IP packets to and from a user program.
+The
+.B netdev
+interface reads and writes one IP packet at a time on the device,
+a file such as a point-to-point link's data file.
 For
 .B ppp
 the device can be any byte stream device.

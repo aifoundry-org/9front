@@ -121,11 +121,8 @@ ourcpu(void)
 /*
  * Identify the SoC via mvendorid/marchid/mimpid (read through the SBI Base
  * extension, since these CSRs are M-mode read-only) and stash the answers
- * in soc.  bootargsinit() may already have set soc.plic from the DTB
- * (preferred — it speaks for the actual board); only fall back to a
- * vendor-keyed default when the DTB didn't tell us.  Must run before
- * intrinit(): plic.c's intrinit vmaps soc.plic and writes priority/enable
- * bits there.
+ * in soc.  The interrupt controller comes from the DTB alone, via
+ * bootargsinit().
  */
 void
 socidentify(void)
@@ -139,25 +136,6 @@ socidentify(void)
 	soc.arch   = (u32int)(a < 0? 0: a);
 	soc.impl   = (u32int)(i < 0? 0: i);
 
-	if(soc.plic == nil && soc.aplic == nil){
-		/* DTB named no interrupt controller; pick a default by part. */
-		switch(soc.vendor){
-		case 0x710:	/* SpacemiT */
-			/*
-			 * only the K1 X60 gets the PLIC guess: the K3 X100
-			 * has an APLIC, and poking 0xe0000000 there just
-			 * yields a boot with silently dead interrupts.
-			 */
-			if(soc.impl == 0x49772200)
-				soc.plic = (uchar*)0xe0000000;
-			break;
-		default:
-			/* QEMU virt; anywhere else a guess would be wrong */
-			if(dtbsocmatch("riscv-virtio"))
-				soc.plic = (uchar*)0x0c000000;
-			break;
-		}
-	}
 	print("socidentify: vendor %#ullx arch %#ullx impl %#ullx plic %#p aplic %#p imsic %#p\n",
 		soc.vendor, soc.arch, soc.impl, soc.plic, soc.aplic, soc.imsic);
 }
@@ -415,7 +393,6 @@ cpuinit(int cpu)
 	 */
 	putscounteren(1<<0 | 1<<1 | 1<<2);
 
-	m->plicctxt = mach2context(m);	/* base context without priv mode */
 	clockoff();
 
 	/*	TODO: hardware entropy.  The X60 and X100 have no seed CSR (Zkr), so there is
@@ -1063,7 +1040,7 @@ haveinstr(void *fn, uintptr arg)
 static void
 prcpuchar(void)
 {
-	print("hart %d plic M context %d", m->hartid, m->plicctxt);
+	print("hart %d", m->hartid);
 }
 
 static void
