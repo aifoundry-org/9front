@@ -8,6 +8,8 @@
 #	SMP MEM CPU	-smp, -m, -cpu
 #	QEMUARGS	more qemu arguments
 #	APPEND	kernel command line (default console=0)
+#	LOADADDR	physical address to load the kernel at (default
+#		QEMU's, 2MiB into RAM)
 # and may define dts(), a filter from the machine's own device tree
 # source to the one booted.  It must define script(), whose output is
 # expect commands using the procs in qemutest.exp.
@@ -32,7 +34,7 @@ for t in "$@"; do
 	t=${t%.t}
 	(
 		MACHINE=virt SMP=1 MEM=1G CPU=rv64,svpbmt=true,zicbom=true,sstc=true
-		QEMUARGS= APPEND=console=0
+		QEMUARGS= APPEND=console=0 LOADADDR=
 		. "$ci/qemutest/$t.t"
 		q="qemu-system-riscv64 -M $MACHINE -smp $SMP -m $MEM -cpu $CPU"
 		dtb=
@@ -42,7 +44,20 @@ for t in "$@"; do
 			dtc -q -I dts -O dtb -o "$out/$t.dtb" "$out/$t.dts" || exit 1
 			dtb="-dtb $out/$t.dtb"
 		fi
-		export QEMU="$q -bios default -nodefaults -nographic -monitor none -serial stdio $dtb $QEMUARGS -kernel $kernel"
+		k=$kernel
+		if [ -n "$LOADADDR" ]; then
+			# QEMU loads an ELF where its program header says
+			k=$out/$t.elf
+			python3 - "$LOADADDR" "$kernel" >"$k" <<-'P' || exit 1
+			import struct, sys
+			a = int(sys.argv[1], 0)
+			b = open(sys.argv[2], "rb").read()
+			h = b"\x7fELF\2\1\1" + bytes(9) + struct.pack("<HHIQQQIHHHHHH", 2, 243, 1, a, 64, 0, 0, 64, 56, 1, 0, 0, 0)
+			h += struct.pack("<IIQQQQQQ", 1, 7, 0x1000, a, a, len(b), len(b), 0x1000)
+			sys.stdout.buffer.write(h.ljust(0x1000, b"\0") + b)
+			P
+		fi
+		export QEMU="$q -bios default -nodefaults -nographic -monitor none -serial stdio $dtb $QEMUARGS -kernel $k"
 		export APPEND
 		{ cat "$ci/qemutest.exp"; script; echo pass; } >"$out/$t.exp"
 		expect -f "$out/$t.exp" >"$out/$t.log" 2>&1 </dev/null
