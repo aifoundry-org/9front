@@ -73,7 +73,7 @@ void
 confinit(void)
 {
 	int userpcnt;
-	ulong kpages;
+	ulong kpages, n;
 	char *p;
 	int i;
 
@@ -120,6 +120,10 @@ confinit(void)
 	 */
 	if(kpages > (2ULL*GiB)/BY2PG)
 		kpages = (2ULL*GiB)/BY2PG;
+	/* devices get the kernel's memory from xinit, lowest pages first */
+	n = dmapages();
+	if(kpages > n)
+		kpages = n;
 
 	conf.upages = conf.npage - kpages;
 	conf.ialloc = (kpages/2)*BY2PG;
@@ -200,8 +204,6 @@ sbiputs(char *s)
 	}
 }
 
-uintptr uzero = 0;
-
 int i = 1;
 int once = 0;
 void
@@ -212,7 +214,6 @@ main(u64int hartid, uintptr dtb)
 	dtbphys = dtb;
 
 	if(!once){
-		uzero = 0x1000000000ULL;
 		/*
 		 * Zero every per-cpu Mach page, not just cpu0's.  The Mach
 		 * pages stack downward from just below KTZERO (MACHADDR(n) =

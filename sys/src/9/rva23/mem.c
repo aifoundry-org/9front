@@ -44,6 +44,23 @@ mmu0init(uintptr *l1)
 #endif
 }
 
+uintptr uzero = 0x1000000000ULL;	/* until meminit */
+
+/* pages below the DMA limit, which the kernel's share must stay within */
+ulong
+dmapages(void)
+{
+	Confmem *cm;
+	uvlong lim, n;
+
+	lim = dtbdmalimit();
+	n = 0;
+	for(cm = conf.mem; cm < &conf.mem[nelem(conf.mem)]; cm++)
+		if(cm->npage != 0 && cm->base < lim)
+			n += ((cm->limit < lim ? cm->limit : lim) - cm->base)/BY2PG;
+	return n;
+}
+
 /*
  * User space starts above all RAM, on a root table slot boundary
  * and never below 4GiB.  *uzero moves it; RAM above it is not used.
@@ -78,35 +95,108 @@ setuzero(void)
 		}
 		if(cm->limit < cm->base)
 			cm->limit = cm->base;
+		cm->npage = (cm->limit - cm->base)/BY2PG;
+		if(cm->npage != 0)
+			print("meminit: bank %#p-%#p\n", cm->base, cm->limit);
 	}
 }
 
+/*
+ * *e820, in pc's format, replaces the DTB's RAM: regions of type 1
+ * are RAM, the others are reserved.  The DTB's reserved regions
+ * still count.
+ */
+static int
+e820scan(void)
+{
+	uvlong base, top;
+	int type;
+	char *s;
+
+	if((s = getconf("*e820")) == nil)
+		return -1;
+	for(;;){
+		while(*s == ' ')
+			s++;
+		if(*s == 0)
+			break;
+		type = 1;
+		if(s[1] == ' '){	/* new format */
+			type = s[0] - '0';
+			s += 2;
+		}
+		base = strtoull(s, &s, 16);
+		if(*s != ' ')
+			break;
+		top = strtoull(s, &s, 16);
+		if(*s != ' ' && *s != 0)
+			break;
+		if(base >= top)
+			continue;
+		memmapadd(base, top - base, type == 1 ? MemRAM : MemReserved);
+	}
+	return 0;
+}
+
+/*
+ * RAM is what the DTB's /memory nodes describe, or *e820 in their
+ * place, or 2GiB from VDRAM without either, less the reserved
+ * regions, anything at or above *maxmem, page 0 and the kernel's
+ * own area from VDRAM.  RAM below the kernel is used too, so
+ * firmware there must be reserved in the DTB, as OpenSBI does for
+ * itself.  Carve conf.mem from it in address order, as pc does.
+ */
 void
 meminit(void)
 {
+	Confmem *cm;
+	uvlong base, size, top, k;
 	char *p;
-	uintptr l = VDRAM + 2ULL * GiB;
 	extern u64int *sv57, *sv48, *sv39, *pGiB;
-	extern uintptr klimit;
 
-	klimit = uzero;
+	if(e820scan() < 0)
+		for(base = memmapnext(-1, MemDT); base != -1; base = memmapnext(base, MemDT))
+			memmapadd(base, memmapsize(base, 0), MemRAM);
+	top = -1;
 	if(p = getconf("*maxmem"))
-		l = strtoull(p, 0, 0);
+		top = strtoull(p, 0, 0);
+	if(memmapnext(-1, MemRAM) == -1)
+		memmapadd(VDRAM, (top != -1 ? top : VDRAM + 2ULL*GiB) - VDRAM, MemRAM);
+	if(top != -1)
+		memmapadd(top, -top, MemReserved);
+	/* page 0 is nil */
+	memmapadd(0, BY2PG, MemReserved);
+	/* plan9.ini, Mach pages, kernel and the boot page tables after end */
+	k = ROUND(PGROUND((uintptr)end - KTZERO) + (uintptr)(VDRAM+0x2fffff), 0x200000);
+	memmapadd(VDRAM, k - VDRAM, MemReserved);
 
-	// leave a big hole after end, for now. We need it for this and that.
-	conf.mem[0].base = ROUND(PGROUND((uintptr)end - KTZERO) + (uintptr)(VDRAM+0x2fffff), 0x200000);
-	conf.mem[0].limit = l;
+	cm = conf.mem;
+	for(base = memmapnext(-1, MemRAM); base != -1; base = memmapnext(base, MemRAM)){
+		size = memmapsize(base, BY2PG) & ~(uvlong)(BY2PG-1);
+		if(size == 0)
+			continue;
+		if(cm >= &conf.mem[nelem(conf.mem)]){
+			print("meminit: out of entries, losing %#llux-%#llux\n", base, base+size);
+			continue;
+		}
+		base = memmapalloc(base, size, BY2PG, MemRAM);
+		if(base == -1)
+			continue;
+		cm->base = base;
+		cm->limit = base + size;
+		cm->npage = size/BY2PG;
+		cm++;
+	}
+	if(conf.mem[0].npage == 0)
+		panic("meminit: no memory");
 	setuzero();
-	klimit = uzero;
+	if(dtbdmalimit() != ~0ULL)
+		print("meminit: dma limit %#llux\n", dtbdmalimit());
 
-	if(l > klimit)
-		l = klimit;
 	sv57 = (void *)PGROUND((uintptr)end);
 	sv48 = (void *)PGROUND((uintptr)sv57 + 1);
 	sv39 = (void *)PGROUND((uintptr)sv48 + 1);
 	pGiB = (void *)PGROUND((uintptr)sv39 + 1);
 	memset(sv57, 0, 16384);
-	kmapram(conf.mem[0].base, l);
-
-	conf.mem[0].npage = (conf.mem[0].limit - conf.mem[0].base)/BY2PG;
+	kmapram();
 }

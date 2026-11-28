@@ -1,7 +1,7 @@
 # Procs for qemutest scripts.  Patterns are exact strings; a panic
 # fails the test unless it is the string being waited for.
 set timeout 60
-spawn -noecho sh -c "exec $env(QEMU) -append '$env(APPEND)'"
+spawn -noecho sh -c "exec $env(QEMU) -append \"\$APPEND\""
 
 proc fail {why} {
 	puts "\nFAIL: $why"

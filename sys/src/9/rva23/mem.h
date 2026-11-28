@@ -59,8 +59,6 @@
 #define	KTZERO		((uintptr)_start)	/* kernel text start */
 
 #define	KZERO		(0x0000000000000000ULL)	/* 0x00000000 - kernel address space */
-#define KLIMIT 		klimit
-//#define KLIMIT			(0x800000000000ULL) // half of the hole.
 #define iskern(v) (((uintptr)v)<=uzero)
 /*
  * the kernel is identity-mapped low memory with user space above it,

@@ -2252,7 +2252,7 @@ dpuk3mode(uvlong addr, ulong stride)
  * contiguous and properly accounted, so nothing else can ever be
  * handed the same pages. This works identically across the 8/16/32GB
  * K3 Pico-ITX variants (xinit() already sizes the kernel pool
- * correctly via bootargs.c's normal *maxmem-from-DTB path), needing
+ * from the DTB's memory banks), needing
  * no board-specific constant and no kexec-launcher cooperation.
  *
  * IMPORTANT: xspanalloc() does NOT return nil on failure -- it panics
