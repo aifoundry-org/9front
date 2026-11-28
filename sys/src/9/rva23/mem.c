@@ -102,10 +102,48 @@ setuzero(void)
 }
 
 /*
- * RAM is what the DTB's /memory nodes describe, or 2GiB from VDRAM
- * without them, less the reserved regions, anything at or above
- * *maxmem and everything below the end of the kernel's area.
- * Carve conf.mem from it in address order, as pc does.
+ * *e820, in pc's format, replaces the DTB's RAM: regions of type 1
+ * are RAM, the others are reserved.  The DTB's reserved regions
+ * still count.
+ */
+static int
+e820scan(void)
+{
+	uvlong base, top;
+	int type;
+	char *s;
+
+	if((s = getconf("*e820")) == nil)
+		return -1;
+	for(;;){
+		while(*s == ' ')
+			s++;
+		if(*s == 0)
+			break;
+		type = 1;
+		if(s[1] == ' '){	/* new format */
+			type = s[0] - '0';
+			s += 2;
+		}
+		base = strtoull(s, &s, 16);
+		if(*s != ' ')
+			break;
+		top = strtoull(s, &s, 16);
+		if(*s != ' ' && *s != 0)
+			break;
+		if(base >= top)
+			continue;
+		memmapadd(base, top - base, type == 1 ? MemRAM : MemReserved);
+	}
+	return 0;
+}
+
+/*
+ * RAM is what the DTB's /memory nodes describe, or *e820 in their
+ * place, or 2GiB from VDRAM without either, less the reserved
+ * regions, anything at or above *maxmem and everything below the
+ * end of the kernel's area.  Carve conf.mem from it in address
+ * order, as pc does.
  */
 void
 meminit(void)
@@ -115,6 +153,9 @@ meminit(void)
 	char *p;
 	extern u64int *sv57, *sv48, *sv39, *pGiB;
 
+	if(e820scan() < 0)
+		for(base = memmapnext(-1, MemDT); base != -1; base = memmapnext(base, MemDT))
+			memmapadd(base, memmapsize(base, 0), MemRAM);
 	top = -1;
 	if(p = getconf("*maxmem"))
 		top = strtoull(p, 0, 0);

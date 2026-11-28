@@ -125,6 +125,7 @@ struct Confmem
 
 /* port/memmap.c region types, as on pc; where they overlap the higher wins */
 enum {
+	MemDT		= 1,	/* RAM in the DTB, unless *e820 replaces it */
 	MemRAM		= 2,
 	MemReserved	= 4,
 };

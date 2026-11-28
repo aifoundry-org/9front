@@ -609,7 +609,8 @@ dtbdmalimit(void)
 
 /*
  * At the end of a node's properties.  RAM is the reg of the
- * /memory nodes.  Reserved are the fixed regions of /reserved-memory
+ * /memory nodes, MemDT until meminit knows whether *e820 replaces
+ * it.  Reserved are the fixed regions of /reserved-memory
  * and its pools that must not be mapped (no-map), such as firmware
  * and uncached aliases of RAM.  Plan 9 allocates no pools for their
  * drivers, so the other pools are RAM to it.  Disabled nodes don't
@@ -624,7 +625,7 @@ dtbmemnode(char *path)
 			if(dtbmem.nomap)
 				dtbmemmap(dtbmem.alloc, dtbmem.alloclen, MemReserved);
 		}else if(strcmp(path, "/memory") == 0 || strncmp(path, "/memory@", 8) == 0)
-			dtbmemmap(dtbmem.reg, dtbmem.reglen, MemRAM);
+			dtbmemmap(dtbmem.reg, dtbmem.reglen, MemDT);
 		if(dtbmem.acells == 2 && dtbmem.scells == 2)
 			dtbdmaranges(dtbmem.dma, dtbmem.dmalen);
 	}
